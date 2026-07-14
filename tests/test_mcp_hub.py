@@ -30,3 +30,12 @@ async def test_disabled_server_skipped():
     hub = mcp_hub.McpHub(servers, session_factory=lambda s: FakeSession())
     await hub.connect()
     assert await hub.list_tools() == []
+
+async def test_failing_factory_skipped():
+    def boom(s):
+        raise NotImplementedError("no transport yet")
+    servers = [McpServer(name="fs", type="stdio", command="x")]
+    hub = mcp_hub.McpHub(servers, session_factory=boom)
+    await hub.connect()          # must NOT raise
+    assert await hub.list_tools() == []
+    await hub.close()

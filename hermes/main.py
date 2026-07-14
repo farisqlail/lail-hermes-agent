@@ -111,6 +111,7 @@ async def run():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_msg))
 
     web = create_app(store)
+    web.state.mcp_factory = real_mcp_session_factory
     server = uvicorn.Server(uvicorn.Config(web, host="127.0.0.1", port=8799, log_level="info"))
 
     async with app:

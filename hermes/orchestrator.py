@@ -37,6 +37,7 @@ class Orchestrator:
             steps = parse_plan(raw)
         except Exception as e:
             self.store.set_task_status(task_id, "failed")
+            self.store.append_log(task_id, f"planning failed: {e}")
             await report(task_id, f"planning failed: {e}")
             return
 
@@ -45,11 +46,13 @@ class Orchestrator:
             self.store.set_step_status(sid, "running")
             ok, msg = await self._exec_step(task_id, proj, step)
             self.store.set_step_status(sid, "done" if ok else "failed")
+            self.store.append_log(task_id, f"step {i} [{step.get('type')}]: {msg}")
             await report(task_id, f"step {i} [{step.get('type')}]: {msg}")
             if not ok:
                 self.store.set_task_status(task_id, "failed")
                 return
         self.store.set_task_status(task_id, "done")
+        self.store.append_log(task_id, "task complete")
         await report(task_id, "task complete")
 
     async def _exec_step(self, task_id, proj: Path, step: dict):
@@ -63,6 +66,8 @@ class Orchestrator:
                 res = await self.deps["run_engine"](
                     engine, step.get("prompt", "") + f"\n\nPrevious error:\n{res.stderr[:800]}",
                     proj, self.settings.timeout_code_s)
+            if res.timed_out:
+                return (False, "engine timed out")
             return (res.ok, "coded" if res.ok else f"engine failed: {res.stderr[:200]}")
         if t == "build":
             ptype = self.deps["detect"](proj)

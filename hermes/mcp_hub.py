@@ -23,10 +23,15 @@ class McpHub:
         self._sessions: dict[str, object] = {}
 
     async def connect(self) -> None:
+        import logging
         for srv in self.servers:
             if not srv.enabled:
                 continue
-            self._sessions[srv.name] = self.session_factory(srv)
+            try:
+                self._sessions[srv.name] = self.session_factory(srv)
+            except Exception as e:
+                logging.getLogger("hermes.mcp_hub").warning(
+                    "MCP server %r could not be started, skipping: %s", srv.name, e)
 
     async def list_tools(self) -> list[dict]:
         out = []
