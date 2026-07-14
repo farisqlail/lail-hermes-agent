@@ -28,9 +28,18 @@ class Orchestrator:
         self.planner = planner          # async (text, tools) -> str
         self.deps = deps                # run_engine, build_apk, detect, test_*
 
+    def get_settings(self):
+        from . import config, paths
+        if not (paths.config_dir() / "config.yaml").exists():
+            return self.settings
+        return config.load_settings()
+
     async def run_task(self, task_id: str, chat_id: int, text: str, report) -> None:
+        from . import paths
+        self.settings = self.get_settings()
         self.store.set_task_status(task_id, "running")
-        proj = Path(self.settings.projects_path) / task_id
+        projects_path = self.settings.projects_path or str(paths.projects_dir())
+        proj = Path(projects_path) / task_id
         proj.mkdir(parents=True, exist_ok=True)
         try:
             raw = await self.planner(text, [])
