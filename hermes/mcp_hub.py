@@ -34,9 +34,16 @@ class McpHub:
                     "MCP server %r could not be started, skipping: %s", srv.name, e)
 
     async def list_tools(self) -> list[dict]:
+        import logging
         out = []
         for name, sess in self._sessions.items():
-            for t in await sess.list_tools():
+            try:
+                tools = await sess.list_tools()
+            except Exception as e:
+                logging.getLogger("hermes.mcp_hub").warning(
+                    "MCP server %r failed to list tools, skipping: %s", name, e)
+                continue
+            for t in tools:
                 out.append({"server": name, "name": t["name"],
                             "description": t.get("description", ""),
                             "input_schema": t.get("input_schema",
@@ -55,6 +62,78 @@ class McpHub:
                 await close()
         self._sessions.clear()
 
+OPEN_TIMEOUT_S = 20    # transport + initialize handshake
+LIST_TIMEOUT_S = 20    # tools/list
+CALL_TIMEOUT_S = 120   # tools/call
+
+class RealMcpSession:
+    """MCP client session over stdio or HTTP/SSE.
+
+    Construction is cheap and never raises; the transport is opened lazily on
+    first use so `McpHub.connect` (which calls the factory synchronously) can
+    register servers without blocking on subprocess/network startup. Every
+    remote operation is bounded — a wedged server must never stall planning.
+    """
+
+    def __init__(self, srv: McpServer):
+        self.srv = srv
+        self._stack = None
+        self._session = None
+
+    async def _ensure(self):
+        if self._session is not None:
+            return self._session
+        import os
+        from contextlib import AsyncExitStack
+        from mcp import ClientSession, StdioServerParameters
+        stack = AsyncExitStack()
+        try:
+            if self.srv.type == "stdio":
+                from mcp.client.stdio import stdio_client
+                params = StdioServerParameters(
+                    command=self.srv.command, args=self.srv.args,
+                    env={**os.environ, **self.srv.env})
+                read, write = await stack.enter_async_context(stdio_client(params))
+            else:
+                from mcp.client.sse import sse_client
+                read, write = await stack.enter_async_context(sse_client(self.srv.url))
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+        except BaseException:
+            await stack.aclose()
+            raise
+        self._stack, self._session = stack, session
+        return session
+
+    async def list_tools(self) -> list[dict]:
+        import asyncio
+        s = await asyncio.wait_for(self._ensure(), OPEN_TIMEOUT_S)
+        res = await asyncio.wait_for(s.list_tools(), LIST_TIMEOUT_S)
+        return [{"name": t.name,
+                 "description": t.description or "",
+                 "input_schema": t.inputSchema or {"type": "object", "properties": {}}}
+                for t in res.tools]
+
+    async def call_tool(self, name: str, arguments: dict) -> str:
+        import asyncio
+        s = await asyncio.wait_for(self._ensure(), OPEN_TIMEOUT_S)
+        res = await asyncio.wait_for(s.call_tool(name, arguments), CALL_TIMEOUT_S)
+        parts = []
+        for c in getattr(res, "content", None) or []:
+            text = getattr(c, "text", None)
+            parts.append(text if text is not None else str(c))
+        return "\n".join(parts)
+
+    async def close(self):
+        if self._stack is None:
+            return
+        try:
+            await self._stack.aclose()
+        except Exception:
+            # anyio cancel scopes must unwind in the task that opened them;
+            # closing from another task is best-effort.
+            pass
+        self._stack = self._session = None
+
 def _default_session(srv: McpServer):
-    # Real MCP transport wired in Task 12; unit tests inject a fake factory.
-    raise NotImplementedError("real MCP session created at runtime in main wiring")
+    return RealMcpSession(srv)

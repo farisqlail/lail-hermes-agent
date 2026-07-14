@@ -5,8 +5,12 @@ from pathlib import Path
 from typing import Callable, Literal
 
 # each entry maps a prompt to an argv list; overridable in tests
+# claude runs non-interactively (-p): it cannot prompt for tool permissions, so
+# without --dangerously-skip-permissions every file edit is denied and the model
+# churns until timeout. Safe here: engines run inside an isolated project dir
+# and risky tasks are gated behind Telegram confirmation.
 COMMANDS: dict[str, Callable[[str], list[str]]] = {
-    "claude": lambda p: ["claude", "-p", p],
+    "claude": lambda p: ["claude", "-p", p, "--dangerously-skip-permissions"],
     "antigravity": lambda p: ["agy", "-p", p],
 }
 

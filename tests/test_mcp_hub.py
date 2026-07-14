@@ -39,3 +39,26 @@ async def test_failing_factory_skipped():
     await hub.connect()          # must NOT raise
     assert await hub.list_tools() == []
     await hub.close()
+
+async def test_broken_session_skipped_in_list_tools():
+    class BrokenSession:
+        async def list_tools(self):
+            raise ConnectionError("server died")
+    servers = [McpServer(name="bad", type="stdio", command="x"),
+               McpServer(name="fs", type="stdio", command="x")]
+    def factory(s):
+        return BrokenSession() if s.name == "bad" else FakeSession()
+    hub = mcp_hub.McpHub(servers, session_factory=factory)
+    await hub.connect()
+    disc = await hub.list_tools()   # broken server skipped, healthy one listed
+    assert [d["server"] for d in disc] == ["fs"]
+
+def test_default_factory_is_lazy_real_session():
+    srv = McpServer(name="fs", type="stdio", command="definitely-not-a-real-binary")
+    sess = mcp_hub._default_session(srv)
+    assert isinstance(sess, mcp_hub.RealMcpSession)  # construction must not spawn anything
+
+async def test_real_session_close_before_open_is_noop():
+    sess = mcp_hub.RealMcpSession(
+        McpServer(name="fs", type="stdio", command="x"))
+    await sess.close()  # must not raise

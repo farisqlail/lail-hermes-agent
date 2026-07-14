@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,8 +10,18 @@ class TestResult:
     detail: str
 
 async def test_emulator(apk_path: str, avd: str, out_dir: Path,
-                        timeout_s: int, adb) -> TestResult:
+                        timeout_s: int, adb, pkg: str) -> TestResult:
+    try:
+        return await asyncio.wait_for(
+            _emulator_flow(apk_path, avd, out_dir, adb, pkg), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        return TestResult(False, None, f"emulator test timed out after {timeout_s}s")
+
+async def _emulator_flow(apk_path: str, avd: str, out_dir: Path,
+                         adb, pkg: str) -> TestResult:
     out_dir.mkdir(parents=True, exist_ok=True)
+    if not pkg:
+        return TestResult(False, None, "no application id — cannot launch app")
     if not await adb.is_running():
         ok, d = await adb.start(avd)
         if not ok:
@@ -18,7 +29,7 @@ async def test_emulator(apk_path: str, avd: str, out_dir: Path,
     ok, d = await adb.install(apk_path)
     if not ok:
         return TestResult(False, None, f"install failed: {d}")
-    ok, d = await adb.launch()
+    ok, d = await adb.launch(pkg)
     if not ok:
         return TestResult(False, None, f"launch failed: {d}")
     shot = out_dir / "emulator.png"
@@ -29,6 +40,13 @@ async def test_emulator(apk_path: str, avd: str, out_dir: Path,
 
 async def test_browser(url: str, out_dir: Path, timeout_s: int,
                        capture=None) -> TestResult:
+    try:
+        return await asyncio.wait_for(
+            _browser_flow(url, out_dir, capture), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        return TestResult(False, None, f"browser test timed out after {timeout_s}s")
+
+async def _browser_flow(url: str, out_dir: Path, capture) -> TestResult:
     out_dir.mkdir(parents=True, exist_ok=True)
     shot = out_dir / "browser.png"
     if capture is None:

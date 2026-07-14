@@ -41,6 +41,7 @@ class Orchestrator:
         projects_path = self.settings.projects_path or str(paths.projects_dir())
         proj = Path(projects_path) / task_id
         proj.mkdir(parents=True, exist_ok=True)
+        await report(task_id, "planning...")
         try:
             raw = await self.planner(text, [])
             steps = parse_plan(raw)
@@ -50,9 +51,12 @@ class Orchestrator:
             await report(task_id, f"planning failed: {e}")
             return
 
+        await report(task_id, f"plan ready: {len(steps)} step(s) — "
+                              + ", ".join(s.get("type", "?") for s in steps))
         for i, step in enumerate(steps):
             sid = self.store.add_step(task_id, i, step.get("type", "?"), json.dumps(step))
             self.store.set_step_status(sid, "running")
+            await report(task_id, f"step {i} [{step.get('type')}] started...")
             ok, msg = await self._exec_step(task_id, proj, step)
             self.store.set_step_status(sid, "done" if ok else "failed")
             self.store.append_log(task_id, f"step {i} [{step.get('type')}]: {msg}")
@@ -91,7 +95,11 @@ class Orchestrator:
                 apks = [a["path"] for a in self.store.get_artifacts(task_id) if a["kind"] == "apk"]
                 if not apks:
                     return (False, "no apk artifact to test")
-                res = await self.deps["test_emulator"](apks[-1], out)
+                detect_app_id = self.deps.get("detect_app_id")
+                pkg = detect_app_id(proj) if detect_app_id else None
+                if not pkg:
+                    return (False, "could not determine application id for emulator launch")
+                res = await self.deps["test_emulator"](apks[-1], out, pkg)
             elif mode == "browser" and self.deps.get("test_browser"):
                 res = await self.deps["test_browser"](step.get("url", "http://localhost:3000"), out)
             else:

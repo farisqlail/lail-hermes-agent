@@ -17,6 +17,24 @@ def test_settings_roundtrip_api(hermes_home):
     assert r.status_code == 200
     assert config.load_settings().model == "qwen/qwen2.5-coder-32b-instruct"
 
+def test_settings_post_malformed_returns_422(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+    r = client.post("/api/settings", json={"timeout_code_s": "not-a-number"})
+    assert r.status_code == 422
+    r = client.post("/api/settings", json={"default_engine": "bogus"})
+    assert r.status_code == 422
+
+def test_mcp_post_malformed_returns_422(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+    r = client.post("/api/mcp", json=[{"name": "x", "type": "carrier-pigeon"}])
+    assert r.status_code == 422
+    r = client.post("/api/mcp", json={"not": "a list"})
+    assert r.status_code == 422
+
 def test_secrets_masked(hermes_home):
     paths.ensure_dirs()
     config.save_secrets(config.Secrets(nvidia_api_key="real", telegram_bot_token=""))

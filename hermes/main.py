@@ -1,13 +1,13 @@
 from __future__ import annotations
-import asyncio, subprocess
+import asyncio, json, subprocess
 from pathlib import Path
 from openai import AsyncOpenAI
 import uvicorn
-from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CallbackQueryHandler, MessageHandler, CommandHandler, filters
 from . import config, paths
 from .session_store import Store
-from .mcp_hub import McpHub, to_openai_tools
+from .mcp_hub import McpHub, RealMcpSession, to_openai_tools
 from .orchestrator import Orchestrator
 from .telegram_bridge import Bridge
 from .web_ui import create_app
@@ -35,15 +35,19 @@ class Adb:
         return (ok, out)
 
     async def install(self, apk): return await self._run([self.adb, "install", "-r", apk])
-    async def launch(self):
+    async def launch(self, pkg):
         return await self._run([self.adb, "shell", "monkey", "-p",
-                                "%PKG%", "-c", "android.intent.category.LAUNCHER", "1"])
+                                pkg, "-c", "android.intent.category.LAUNCHER", "1"])
     async def screencap(self, dest):
         p = await asyncio.create_subprocess_exec(
             self.adb, "exec-out", "screencap", "-p", stdout=asyncio.subprocess.PIPE)
         out, _ = await p.communicate()
         Path(dest).write_bytes(out)
         return (p.returncode == 0, "")
+
+MAX_TOOL_ROUNDS = 8  # bound NIM tool round-trips so a misbehaving model/tool can't loop forever
+PLANNER_REQUEST_TIMEOUT_S = 120   # single NIM completion call
+MCP_DISCOVERY_TIMEOUT_S = 20      # tool discovery must never stall planning
 
 def build_nim_planner(settings, secrets, hub):
     system = ("You are Hermes' planner. Output ONLY JSON: "
@@ -52,12 +56,17 @@ def build_nim_planner(settings, secrets, hub):
     async def planner(text: str, tools: list) -> str:
         if not secrets.nvidia_api_key:
             raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
-        client = AsyncOpenAI(base_url=settings.nvidia_base_url, api_key=secrets.nvidia_api_key)
-        discovered = await hub.list_tools()
+        client = AsyncOpenAI(base_url=settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
+                             timeout=PLANNER_REQUEST_TIMEOUT_S)
+        try:
+            discovered = await asyncio.wait_for(hub.list_tools(), MCP_DISCOVERY_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            print(f"MCP tool discovery timed out after {MCP_DISCOVERY_TIMEOUT_S}s; planning without tools")
+            discovered = []
         oa_tools = to_openai_tools(discovered)
         msgs = [{"role": "system", "content": system},
                 {"role": "user", "content": text}]
-        while True:
+        for _ in range(MAX_TOOL_ROUNDS):
             resp = await client.chat.completions.create(
                 model=settings.model, messages=msgs,
                 tools=oa_tools or None)
@@ -65,16 +74,16 @@ def build_nim_planner(settings, secrets, hub):
             if m.tool_calls:
                 msgs.append(m.model_dump())
                 for tc in m.tool_calls:
-                    import json
                     result = await hub.call(tc.function.name,
                                             json.loads(tc.function.arguments or "{}"))
                     msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
                 continue
             return m.content or ""
+        raise ValueError(f"planner exceeded {MAX_TOOL_ROUNDS} tool-call rounds without a final answer")
     return planner
 
 def real_mcp_session_factory(srv):
-    raise NotImplementedError  # fill with mcp.client stdio/sse at integration time
+    return RealMcpSession(srv)
 
 async def run():
     settings = config.load_settings()
@@ -91,8 +100,9 @@ async def run():
         run_engine=engine_runner.run_engine,
         build_apk=build_runner.build_apk,
         detect=project_detect.detect,
-        test_emulator=lambda apk, out: test_runner.test_emulator(
-            apk, settings.emulator_avd, out, settings.timeout_test_s, adb=adb),
+        detect_app_id=project_detect.detect_app_id,
+        test_emulator=lambda apk, out, pkg: test_runner.test_emulator(
+            apk, settings.emulator_avd, out, settings.timeout_test_s, adb=adb, pkg=pkg),
         test_browser=lambda url, out: test_runner.test_browser(
             url, out, settings.timeout_test_s),
     )
@@ -107,7 +117,31 @@ async def run():
             async def sender(chat_id, text):
                 await app.bot.send_message(chat_id=chat_id, text=text)
 
-            bridge = Bridge(settings, store, orch, sender)
+            def crash_reporter(chat_id):
+                # done-callback for fire-and-forget tasks: without it, a crash
+                # outside run_task's try/except is silently dropped.
+                def _cb(t: asyncio.Task):
+                    if t.cancelled():
+                        return
+                    exc = t.exception()
+                    if exc:
+                        print(f"Background task crashed: {exc!r}")
+                        asyncio.create_task(sender(
+                            chat_id, f"Internal error — task crashed: {exc}"))
+                return _cb
+
+            async def ask_confirm(chat_id, task_id, reasons):
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Run", callback_data=f"confirm:{task_id}:yes"),
+                    InlineKeyboardButton("❌ Cancel", callback_data=f"confirm:{task_id}:no"),
+                ]])
+                await app.bot.send_message(
+                    chat_id=chat_id,
+                    text=(f"Task {task_id} needs confirmation before running:\n- "
+                          + "\n- ".join(reasons)),
+                    reply_markup=kb)
+
+            bridge = Bridge(settings, store, orch, sender, ask_confirm=ask_confirm)
 
             async def check_auth_and_respond(update: Update) -> bool:
                 u = update.effective_user.id
@@ -128,7 +162,23 @@ async def run():
                 if not prompt:
                     await sender(c, "Harap sertakan deskripsi tugas. Contoh: /task buat app counter Flutter")
                     return
-                asyncio.create_task(bridge.handle_task(update.effective_user.id, c, prompt))
+                t = asyncio.create_task(bridge.handle_task(update.effective_user.id, c, prompt))
+                t.add_done_callback(crash_reporter(c))
+
+            async def on_confirm(update: Update, ctx):
+                q = update.callback_query
+                await q.answer()
+                parts = (q.data or "").split(":", 2)
+                if len(parts) != 3:
+                    return
+                _, task_id, ans = parts
+                from .telegram_bridge import is_allowed
+                if not is_allowed(q.from_user.id, bridge.get_settings()):
+                    return
+                c = q.message.chat_id
+                t = asyncio.create_task(
+                    bridge.resolve_confirm(q.from_user.id, task_id, ans == "yes"))
+                t.add_done_callback(crash_reporter(c))
 
             async def on_chat(update: Update, ctx):
                 if not await check_auth_and_respond(update):
@@ -141,6 +191,7 @@ async def run():
                                 "`/task buat app counter Flutter, build APK, test di emulator`")
 
             app.add_handler(CommandHandler("task", on_task))
+            app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^confirm:"))
             app.add_handler(CommandHandler("start", on_chat))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_chat))
             print("Telegram bot initialized successfully.")

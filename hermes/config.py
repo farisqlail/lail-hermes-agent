@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import Literal
-import json
 from pydantic import BaseModel, Field
 from dotenv import dotenv_values
 from . import paths
@@ -23,6 +22,7 @@ class Settings(BaseModel):
     android_sdk_path: str = ""
     emulator_avd: str = ""
     default_test_mode: Literal["browser", "emulator", "none"] = "none"
+    confirm_risky: bool = True  # gate risky tasks (git push / delete / outside paths) behind Telegram confirmation
     timeout_code_s: int = 900
     timeout_build_s: int = 1200
     timeout_test_s: int = 600

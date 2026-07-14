@@ -21,6 +21,10 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+  # starlette's TestClient warns about its httpx dependency; not actionable here
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 
 [tool.setuptools.packages.find]
 include = ["hermes*"]

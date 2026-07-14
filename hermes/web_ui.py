@@ -2,8 +2,13 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pathlib import Path
+from pydantic import BaseModel
 from . import config, paths
 from .session_store import Store
+
+class SecretsUpdate(BaseModel):
+    nvidia_api_key: str | None = None
+    telegram_bot_token: str | None = None
 
 def load_spa_html() -> str:
     path = Path(__file__).parent / "spa.html"
@@ -58,8 +63,8 @@ def create_app(store: Store) -> FastAPI:
     def get_settings(): return config.load_settings().model_dump()
 
     @app.post("/api/settings")
-    def post_settings(body: dict):
-        config.save_settings(config.Settings.model_validate(body))
+    def post_settings(body: config.Settings):
+        config.save_settings(body)
         return {"ok": True}
 
     @app.get("/api/secrets/status")
@@ -69,29 +74,27 @@ def create_app(store: Store) -> FastAPI:
                 "telegram_bot_token_set": bool(s.telegram_bot_token)}
 
     @app.post("/api/secrets")
-    def post_secrets(body: dict):
+    def post_secrets(body: SecretsUpdate):
         cur = config.load_secrets()
         def keep(new, old): return old if new in ("", "***", None) else new
         config.save_secrets(config.Secrets(
-            nvidia_api_key=keep(body.get("nvidia_api_key"), cur.nvidia_api_key),
-            telegram_bot_token=keep(body.get("telegram_bot_token"), cur.telegram_bot_token)))
+            nvidia_api_key=keep(body.nvidia_api_key, cur.nvidia_api_key),
+            telegram_bot_token=keep(body.telegram_bot_token, cur.telegram_bot_token)))
         return {"ok": True}
 
     @app.get("/api/mcp")
     def get_mcp(): return [m.model_dump() for m in config.load_settings().mcp_servers]
 
     @app.post("/api/mcp")
-    def post_mcp(body: list):
+    def post_mcp(body: list[config.McpServer]):
         s = config.load_settings()
-        s.mcp_servers = [config.McpServer.model_validate(m) for m in body]
+        s.mcp_servers = body
         config.save_settings(s)
         return {"ok": True}
 
     @app.post("/api/mcp/test")
-    async def mcp_test(body: dict):
+    async def mcp_test(srv: config.McpServer):
         from .mcp_hub import McpHub
-        from .config import McpServer
-        srv = McpServer.model_validate(body)
         factory = getattr(app.state, "mcp_factory", None)
         if factory is None:
             return {"ok": False, "error": "no mcp factory configured"}
