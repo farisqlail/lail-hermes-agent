@@ -57,7 +57,10 @@ class Orchestrator:
             sid = self.store.add_step(task_id, i, step.get("type", "?"), json.dumps(step))
             self.store.set_step_status(sid, "running")
             await report(task_id, f"step {i} [{step.get('type')}] started...")
-            ok, msg = await self._exec_step(task_id, proj, step)
+            try:
+                ok, msg = await self._exec_step(task_id, proj, step)
+            except Exception as e:
+                ok, msg = False, f"step crashed: {e}"
             self.store.set_step_status(sid, "done" if ok else "failed")
             self.store.append_log(task_id, f"step {i} [{step.get('type')}]: {msg}")
             await report(task_id, f"step {i} [{step.get('type')}]: {msg}")

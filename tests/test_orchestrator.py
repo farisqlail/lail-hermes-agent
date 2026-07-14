@@ -88,6 +88,25 @@ async def test_code_step_failure_halts_task(hermes_home):
     assert store.get_task("t1")["status"] == "failed"
     assert built == []  # build step never reached
 
+async def test_step_crash_marks_task_failed(hermes_home):
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude", projects_path=str(hermes_home / "proj"))
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "x"}]})
+
+    async def exploding_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+        raise FileNotFoundError("engine executable 'claude' not found on PATH")
+
+    orch = Orchestrator(settings, store, planner, dict(run_engine=exploding_engine))
+    reports = []
+    async def report(tid, msg): reports.append(msg)
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report)
+
+    assert store.get_task("t1")["status"] == "failed"
+    assert any("step crashed" in m and "not found on PATH" in m for m in reports)
+
 async def test_emulator_step_passes_app_id(hermes_home):
     store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(projects_path=str(hermes_home / "proj"))

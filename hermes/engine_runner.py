@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, os
+import asyncio, os, shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
@@ -10,9 +10,12 @@ from typing import Callable, Literal
 # churns until timeout. Safe here: engines run inside an isolated project dir
 # and risky tasks are gated behind Telegram confirmation.
 COMMANDS: dict[str, Callable[[str], list[str]]] = {
-    "claude": lambda p: ["claude", "-p", p, "--dangerously-skip-permissions"],
+    "claude": lambda p: ["claude", "-p", "--dangerously-skip-permissions"],
     "antigravity": lambda p: ["agy", "-p", p],
 }
+# engines that read the prompt from stdin instead of argv: sidesteps cmd.exe
+# quoting of newlines/quotes and the 8191-char command-line limit on Windows
+STDIN_PROMPT = {"claude"}
 
 @dataclass
 class RunResult:
@@ -22,16 +25,43 @@ class RunResult:
     timed_out: bool
     returncode: int | None
 
+def _resolve(argv: list[str]) -> list[str]:
+    """Resolve argv[0] to something CreateProcess can actually run.
+
+    npm installs CLIs as .cmd/.ps1 shims; create_subprocess_exec does not apply
+    PATHEXT, so bare names like "claude" raise WinError 2. Prefer a real .exe,
+    then wrap script shims in their interpreter.
+    """
+    name = argv[0]
+    exe = None
+    for ext in (".exe", ".cmd", ".bat", ".ps1"):
+        exe = shutil.which(name + ext)
+        if exe:
+            break
+    exe = exe or shutil.which(name)
+    if exe is None:
+        raise FileNotFoundError(
+            f"engine executable {name!r} not found on PATH — is it installed?")
+    low = exe.lower()
+    if low.endswith(".ps1"):
+        return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", exe, *argv[1:]]
+    if low.endswith((".cmd", ".bat")):
+        return ["cmd", "/c", exe, *argv[1:]]
+    return [exe, *argv[1:]]
+
 async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
                      cwd: Path, timeout_s: int,
                      extra_env: dict | None = None) -> RunResult:
-    argv = COMMANDS[engine](prompt)
+    argv = _resolve(COMMANDS[engine](prompt))
     env = {**os.environ, **(extra_env or {})}
+    send = prompt.encode() if engine in STDIN_PROMPT else None
     proc = await asyncio.create_subprocess_exec(
         *argv, cwd=str(cwd), env=env,
+        stdin=asyncio.subprocess.PIPE if send is not None else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        out, err = await asyncio.wait_for(proc.communicate(send), timeout=timeout_s)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
