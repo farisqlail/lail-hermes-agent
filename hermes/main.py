@@ -46,11 +46,13 @@ class Adb:
         return (p.returncode == 0, "")
 
 def build_nim_planner(settings, secrets, hub):
-    client = AsyncOpenAI(base_url=settings.nvidia_base_url, api_key=secrets.nvidia_api_key)
     system = ("You are Hermes' planner. Output ONLY JSON: "
               '{"steps":[{"type":"code|build|test","engine":"claude|antigravity",'
               '"prompt":"...","target":"apk","mode":"browser|emulator"}]}')
     async def planner(text: str, tools: list) -> str:
+        if not secrets.nvidia_api_key:
+            raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
+        client = AsyncOpenAI(base_url=settings.nvidia_base_url, api_key=secrets.nvidia_api_key)
         discovered = await hub.list_tools()
         oa_tools = to_openai_tools(discovered)
         msgs = [{"role": "system", "content": system},
@@ -96,27 +98,45 @@ async def run():
     )
     orch = Orchestrator(settings, store, planner, deps)
 
-    app = Application.builder().token(secrets.telegram_bot_token).build()
+    bot_token = secrets.telegram_bot_token
+    app = None
+    if bot_token and bot_token.strip():
+        try:
+            app = Application.builder().token(bot_token).build()
 
-    async def sender(chat_id, text):
-        await app.bot.send_message(chat_id=chat_id, text=text)
+            async def sender(chat_id, text):
+                await app.bot.send_message(chat_id=chat_id, text=text)
 
-    bridge = Bridge(settings, store, orch, sender)
+            bridge = Bridge(settings, store, orch, sender)
 
-    async def on_msg(update: Update, ctx):
-        u = update.effective_user.id
-        c = update.effective_chat.id
-        asyncio.create_task(bridge.handle_task(u, c, update.message.text or ""))
+            async def on_msg(update: Update, ctx):
+                u = update.effective_user.id
+                c = update.effective_chat.id
+                asyncio.create_task(bridge.handle_task(u, c, update.message.text or ""))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_msg))
+            app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_msg))
+            print("Telegram bot initialized successfully.")
+        except Exception as e:
+            print(f"Error initializing Telegram bot: {e}. Bot features will be disabled.")
+            app = None
+    else:
+        print("WARNING: TELEGRAM_BOT_TOKEN is not configured. Telegram bot features will be disabled.")
 
     web = create_app(store)
     web.state.mcp_factory = real_mcp_session_factory
     server = uvicorn.Server(uvicorn.Config(web, host="127.0.0.1", port=8799, log_level="info"))
 
-    async with app:
-        await app.start()
-        await app.updater.start_polling()
+    if app:
+        try:
+            async with app:
+                await app.start()
+                await app.updater.start_polling()
+                await server.serve()
+                await app.updater.stop()
+        except Exception as e:
+            print(f"Error starting Telegram polling: {e}. Bot features will be disabled.")
+            await server.serve()
+    else:
         await server.serve()
 
 if __name__ == "__main__":

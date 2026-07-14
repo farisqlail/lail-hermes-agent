@@ -1,0 +1,2001 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hermes Orchestrator Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: hsl(224, 25%, 5%);
+            --card-bg: hsla(224, 25%, 8%, 0.7);
+            --card-bg-solid: hsl(224, 25%, 8%);
+            --primary: hsl(217, 100%, 61%);
+            --primary-glow: hsla(217, 100%, 61%, 0.15);
+            --primary-hover: hsl(217, 100%, 70%);
+            --border: hsla(224, 25%, 18%, 0.6);
+            --border-hover: hsla(217, 100%, 61%, 0.4);
+            --text-main: hsl(210, 40%, 98%);
+            --text-muted: hsl(215, 20%, 65%);
+            --success: hsl(142, 70%, 50%);
+            --danger: hsl(346, 80%, 55%);
+            --warning: hsl(38, 92%, 50%);
+            --info: hsl(199, 89%, 48%);
+            --font-main: 'Inter', sans-serif;
+            --font-title: 'Outfit', sans-serif;
+            --font-mono: 'Fira Code', monospace;
+            --transition-speed: 0.3s;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-main);
+            font-family: var(--font-main);
+            min-height: 100vh;
+            overflow-x: hidden;
+            position: relative;
+            line-height: 1.5;
+        }
+
+        /* Decorative ambient glow orbs */
+        body::before {
+            content: '';
+            position: absolute;
+            top: -20%;
+            left: -10%;
+            width: 50vw;
+            height: 50vw;
+            background: radial-gradient(circle, hsla(217, 100%, 61%, 0.08) 0%, transparent 70%);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        body::after {
+            content: '';
+            position: absolute;
+            bottom: -10%;
+            right: -10%;
+            width: 40vw;
+            height: 40vw;
+            background: radial-gradient(circle, hsla(142, 70%, 50%, 0.04) 0%, transparent 70%);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        /* Scrollbar styles */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: hsla(224, 25%, 5%, 0.5);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: hsla(224, 25%, 20%, 0.8);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--primary);
+        }
+
+        /* Layout Grid */
+        .app-container {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            min-height: 100vh;
+        }
+
+        /* Glassmorphism Panel base */
+        .glass-panel {
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            transition: border-color var(--transition-speed), box-shadow var(--transition-speed);
+        }
+
+        .glass-panel:hover {
+            border-color: hsla(217, 100%, 61%, 0.15);
+        }
+
+        /* Navigation Header */
+        header.app-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 1.5rem;
+            background: hsla(224, 25%, 6%, 0.8);
+            border-bottom: 1px solid var(--border);
+            border-radius: 16px;
+        }
+
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--primary) 0%, hsl(199, 89%, 48%) 100%);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 15px var(--primary-glow);
+        }
+
+        .logo-icon svg {
+            width: 20px;
+            height: 20px;
+            fill: white;
+        }
+
+        .logo-text {
+            font-family: var(--font-title);
+            font-size: 1.5rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            background: linear-gradient(135deg, #ffffff 0%, var(--text-muted) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .nav-tabs {
+            display: flex;
+            background: hsla(224, 25%, 4%, 0.6);
+            border: 1px solid var(--border);
+            border-radius: 30px;
+            padding: 4px;
+        }
+
+        .nav-tab {
+            padding: 8px 20px;
+            border-radius: 20px;
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all var(--transition-speed);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .nav-tab:hover {
+            color: var(--text-main);
+        }
+
+        .nav-tab.active {
+            background: var(--primary);
+            color: white;
+            box-shadow: 0 4px 12px var(--primary-glow);
+        }
+
+        .system-status {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--success);
+            box-shadow: 0 0 8px var(--success);
+            display: inline-block;
+        }
+
+        .status-dot.warning {
+            background-color: var(--warning);
+            box-shadow: 0 0 8px var(--warning);
+        }
+
+        .status-dot.danger {
+            background-color: var(--danger);
+            box-shadow: 0 0 8px var(--danger);
+        }
+
+        .status-dot.pulse {
+            animation: pulse-glow 2s infinite alternate;
+        }
+
+        @keyframes pulse-glow {
+            0% { transform: scale(0.9); opacity: 0.6; }
+            100% { transform: scale(1.1); opacity: 1; }
+        }
+
+        /* Tab Content Control */
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        /* Dashboard Section */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+        }
+
+        @media (min-width: 992px) {
+            .dashboard-grid {
+                grid-template-columns: 380px 1fr;
+            }
+        }
+
+        .stats-summary {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+        }
+
+        .stat-card {
+            text-align: center;
+            padding: 1rem;
+            background: hsla(224, 25%, 4%, 0.3);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+
+        .stat-num {
+            font-family: var(--font-title);
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 4px;
+        }
+
+        .task-list-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .panel-title {
+            font-family: var(--font-title);
+            font-size: 1.25rem;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .task-items-container {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            max-height: 550px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+
+        .task-item {
+            background: hsla(224, 25%, 10%, 0.4);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .task-item:hover {
+            border-color: var(--border-hover);
+            transform: translateY(-2px);
+            background: hsla(224, 25%, 12%, 0.6);
+        }
+
+        .task-item.active {
+            border-color: var(--primary);
+            background: hsla(217, 100%, 61%, 0.05);
+            box-shadow: 0 0 15px var(--primary-glow);
+        }
+
+        .task-header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .task-id-badge {
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            color: var(--text-main);
+            font-weight: 500;
+        }
+
+        .badge {
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge.queued { background-color: hsla(38, 92%, 50%, 0.15); color: var(--warning); }
+        .badge.running { background-color: hsla(217, 100%, 61%, 0.15); color: var(--primary); }
+        .badge.done { background-color: hsla(142, 70%, 50%, 0.15); color: var(--success); }
+        .badge.failed { background-color: hsla(346, 80%, 55%, 0.15); color: var(--danger); }
+        .badge.stopped { background-color: hsla(215, 20%, 65%, 0.15); color: var(--text-muted); }
+
+        .task-text-preview {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .task-footer-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* Detail Area */
+        .task-detail-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .no-task-selected {
+            height: 100%;
+            min-height: 400px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            gap: 1rem;
+        }
+
+        .no-task-icon svg {
+            width: 64px;
+            height: 64px;
+            stroke: var(--text-muted);
+            opacity: 0.3;
+        }
+
+        .detail-header-block {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            flex-wrap: wrap;
+            gap: 1rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 1rem;
+        }
+
+        .detail-title-group h2 {
+            font-family: var(--font-title);
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .detail-title-group p {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+            margin-top: 2px;
+        }
+
+        .detail-meta-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            background: hsla(224, 25%, 4%, 0.2);
+            padding: 1rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+
+        .meta-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .meta-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .meta-val {
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        /* Steps Timeline */
+        .timeline-container {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .step-row {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            background: hsla(224, 25%, 10%, 0.3);
+            border: 1px solid var(--border);
+            padding: 0.75rem 1rem;
+            border-radius: 10px;
+        }
+
+        .step-num {
+            font-family: var(--font-title);
+            font-size: 1rem;
+            font-weight: 700;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--primary-glow);
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid var(--primary);
+        }
+
+        .step-row.done .step-num {
+            background: hsla(142, 70%, 50%, 0.1);
+            color: var(--success);
+            border-color: var(--success);
+        }
+
+        .step-row.failed .step-num {
+            background: hsla(346, 80%, 55%, 0.1);
+            color: var(--danger);
+            border-color: var(--danger);
+        }
+
+        .step-info {
+            flex: 1;
+        }
+
+        .step-name {
+            font-size: 0.9rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .step-desc {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        /* Terminal Console */
+        .console-container {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .console-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .console-body {
+            background: #05070a;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1rem;
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: hsl(120, 60%, 75%);
+            height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.8);
+            border-left: 3px solid var(--primary);
+        }
+
+        .console-line {
+            margin-bottom: 4px;
+        }
+
+        .console-line.error {
+            color: var(--danger);
+        }
+
+        .console-line.system {
+            color: var(--info);
+        }
+
+        /* Artifacts Card Grid */
+        .artifacts-container {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .artifacts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .artifact-card {
+            background: hsla(224, 25%, 4%, 0.4);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            text-decoration: none;
+            color: inherit;
+            transition: all 0.2s ease;
+        }
+
+        .artifact-card:hover {
+            border-color: var(--primary);
+            background: hsla(217, 100%, 61%, 0.05);
+        }
+
+        .artifact-icon {
+            width: 40px;
+            height: 40px;
+            background: hsla(224, 25%, 15%, 0.5);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .artifact-icon svg {
+            width: 20px;
+            height: 20px;
+            stroke: var(--primary);
+        }
+
+        .artifact-details {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .artifact-name {
+            font-size: 0.85rem;
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .artifact-meta {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .screenshot-preview {
+            max-width: 100%;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            margin-top: 0.5rem;
+        }
+
+        /* Configuration Forms */
+        .settings-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+        }
+
+        @media (min-width: 992px) {
+            .settings-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        .form-section {
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+
+        .form-section-title {
+            font-family: var(--font-title);
+            font-size: 1.15rem;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+            margin-bottom: 0.5rem;
+            color: var(--primary);
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        label {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        .input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        input[type="text"],
+        input[type="number"],
+        input[type="password"],
+        select {
+            width: 100%;
+            background: hsla(224, 25%, 4%, 0.4);
+            border: 1px solid var(--border);
+            padding: 10px 12px;
+            border-radius: 8px;
+            color: white;
+            font-family: var(--font-main);
+            font-size: 0.9rem;
+            transition: all var(--transition-speed);
+            outline: none;
+        }
+
+        input:focus,
+        select:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 8px var(--primary-glow);
+            background: hsla(224, 25%, 4%, 0.6);
+        }
+
+        .input-btn-combo {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .input-btn-combo input {
+            flex: 1;
+        }
+
+        .btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-family: var(--font-main);
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--transition-speed);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .btn:hover {
+            background: var(--primary-hover);
+            box-shadow: 0 0 15px var(--primary-glow);
+        }
+
+        .btn.btn-secondary {
+            background: hsla(224, 25%, 15%, 0.5);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+        }
+
+        .btn.btn-secondary:hover {
+            background: hsla(224, 25%, 20%, 0.8);
+            border-color: var(--text-muted);
+            box-shadow: none;
+        }
+
+        .btn.btn-danger {
+            background: hsla(346, 80%, 55%, 0.15);
+            border: 1px solid hsla(346, 80%, 55%, 0.3);
+            color: var(--danger);
+        }
+
+        .btn.btn-danger:hover {
+            background: hsl(346, 80%, 55%);
+            color: white;
+            box-shadow: 0 0 15px hsla(346, 80%, 55%, 0.25);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            box-shadow: none !important;
+            background: hsla(224, 25%, 15%, 0.3) !important;
+            color: var(--text-muted) !important;
+            border-color: var(--border) !important;
+        }
+
+        /* Toggle switches */
+        .switch-group {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: hsla(224, 25%, 4%, 0.2);
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .switch-label-desc {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 48px;
+            height: 24px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: hsla(224, 25%, 20%, 0.8);
+            transition: .4s;
+            border-radius: 24px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: var(--primary);
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(24px);
+        }
+
+        /* MCP Server Manager */
+        .mcp-servers-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .mcp-card {
+            background: hsla(224, 25%, 4%, 0.3);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .mcp-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .mcp-card-title {
+            font-family: var(--font-title);
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .mcp-card-body {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .mcp-prop-row {
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .mcp-prop-val {
+            font-family: var(--font-mono);
+            color: var(--text-main);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 200px;
+        }
+
+        .mcp-card-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+            border-top: 1px solid var(--border);
+            padding-top: 0.75rem;
+        }
+
+        .mcp-add-card {
+            border: 2px dashed var(--border);
+            background: transparent;
+            cursor: pointer;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+            min-height: 180px;
+        }
+
+        .mcp-add-card:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        /* Modal Overlay */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(8px);
+            z-index: 100;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+        }
+
+        .modal-content {
+            background: var(--card-bg-solid);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            width: 100%;
+            max-width: 500px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.75rem;
+        }
+
+        .modal-title {
+            font-family: var(--font-title);
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .close-modal {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        /* Toast Notifications */
+        .toast-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .toast {
+            background: var(--card-bg-solid);
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--primary);
+            border-radius: 8px;
+            padding: 12px 20px;
+            color: white;
+            font-size: 0.9rem;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            min-width: 250px;
+            animation: slide-in 0.3s ease forwards;
+        }
+
+        .toast.success { border-left-color: var(--success); }
+        .toast.error { border-left-color: var(--danger); }
+        .toast.warning { border-left-color: var(--warning); }
+
+        @keyframes slide-in {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        .toast-fade-out {
+            animation: fade-out 0.3s ease forwards;
+        }
+
+        @keyframes fade-out {
+            from { transform: translateX(0); opacity: 1; }
+            to { transform: translateX(100%); opacity: 0; }
+        }
+
+        /* Tooltip style */
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            cursor: pointer;
+            margin-left: 4px;
+        }
+
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 220px;
+            background-color: hsl(224, 25%, 15%);
+            color: #fff;
+            text-align: center;
+            border-radius: 6px;
+            padding: 8px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-size: 0.75rem;
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        }
+
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+
+<div class="app-container">
+    <!-- Header -->
+    <header class="app-header glass-panel">
+        <a href="#" class="logo-container">
+            <div class="logo-icon">
+                <svg viewBox="0 0 24 24">
+                    <path d="M19,8H17.73A6.16,6.16,0,0,0,12,4,6.16,6.16,0,0,0,6.27,8H5a3,3,0,0,0-3,3v3a3,3,0,0,0,3,3H6.27A6.16,6.16,0,0,0,12,20a6.16,6.16,0,0,0,5.73-4H19a3,3,0,0,0,3-3V11A3,3,0,0,0,19,8ZM12,18a4,4,0,1,1,4-4A4,4,0,0,1,12,18ZM9,14a1,1,0,1,0-1-1A1,1,0,0,0,9,14Zm6,0a1,1,0,1,0-1-1A1,1,0,0,0,15,14Z"/>
+                </svg>
+            </div>
+            <span class="logo-text">HERMES</span>
+        </a>
+
+        <div class="nav-tabs">
+            <button class="nav-tab active" onclick="switchTab('dashboard')">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="12" width="7" height="9"></rect><rect x="3" y="16" width="7" height="5"></rect></svg>
+                Dashboard
+            </button>
+            <button class="nav-tab" onclick="switchTab('settings')">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                Configuration
+            </button>
+        </div>
+
+        <div class="system-status">
+            <div class="status-indicator">
+                <span id="bot-status-dot" class="status-dot warning pulse"></span>
+                <span>Bot: <strong id="bot-status-txt">Loading</strong></span>
+            </div>
+            <div class="status-indicator">
+                <span id="nim-status-dot" class="status-dot warning pulse"></span>
+                <span>NIM: <strong id="nim-status-txt">Loading</strong></span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Tab 1: Dashboard -->
+    <main id="tab-dashboard" class="tab-content active">
+        <div class="dashboard-grid">
+            <!-- Sidebar: Task List -->
+            <section class="task-list-panel glass-panel">
+                <div class="panel-title">
+                    <span>Task History</span>
+                    <div class="stats-summary">
+                        <div class="stat-card" style="padding: 4px 8px; border-radius: 6px;">
+                            <span id="stat-total" class="stat-num" style="font-size: 1rem;">0</span>
+                            <div class="stat-label" style="font-size: 0.55rem; margin-top: 0;">Total</div>
+                        </div>
+                    </div>
+                </div>
+                <div id="task-items" class="task-items-container">
+                    <!-- Dynamic tasks -->
+                    <div class="no-task-selected">No tasks found.</div>
+                </div>
+            </section>
+
+            <!-- Main Area: Task Details -->
+            <section class="glass-panel">
+                <div id="task-detail-content" class="task-detail-panel" style="display: none;">
+                    <div class="detail-header-block">
+                        <div class="detail-title-group">
+                            <h2 id="det-text">Task details</h2>
+                            <p id="det-id">Task ID: -</p>
+                        </div>
+                        <span id="det-status" class="badge queued">queued</span>
+                    </div>
+
+                    <div class="detail-meta-grid">
+                        <div class="meta-item">
+                            <span class="meta-label">Chat ID</span>
+                            <span id="det-chat-id" class="meta-val">-</span>
+                        </div>
+                        <span style="border-right: 1px solid var(--border);"></span>
+                        <div class="meta-item">
+                            <span class="meta-label">Created Time</span>
+                            <span id="det-created" class="meta-val">-</span>
+                        </div>
+                    </div>
+
+                    <!-- Steps Timeline -->
+                    <div class="timeline-container">
+                        <h3>Execution Steps</h3>
+                        <div id="det-steps" style="display: flex; flex-direction: column; gap: 0.5rem;">
+                            <!-- Dynamic steps -->
+                        </div>
+                    </div>
+
+                    <!-- Console Logs -->
+                    <div class="console-container">
+                        <div class="console-header">
+                            <h3>Console Output</h3>
+                            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                                <input type="checkbox" id="auto-scroll-logs" checked> Auto-scroll
+                            </label>
+                        </div>
+                        <div id="console-logs" class="console-body">
+                            <!-- Dynamic logs -->
+                        </div>
+                    </div>
+
+                    <!-- Artifacts -->
+                    <div class="artifacts-container">
+                        <h3>Artifacts</h3>
+                        <div id="det-artifacts" class="artifacts-grid">
+                            <!-- Dynamic artifacts -->
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="no-task-chosen" class="no-task-selected">
+                    <div class="no-task-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                    </div>
+                    <h3>No Task Selected</h3>
+                    <p>Select a task from history to see execution details, steps, and logs.</p>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <!-- Tab 2: Settings & MCP -->
+    <main id="tab-settings" class="tab-content">
+        <div class="settings-grid">
+            <!-- Left Column: Settings Form -->
+            <section class="glass-panel" style="display: flex; flex-direction: column; gap: 1.5rem;">
+                <div class="panel-title">System Settings</div>
+                
+                <!-- Core Settings -->
+                <form id="settings-form" class="form-section" onsubmit="event.preventDefault(); saveSettings();">
+                    <div class="form-section-title">Core Preferences</div>
+                    
+                    <div class="form-group">
+                        <label for="default_engine">Default Coding Engine</label>
+                        <select id="default_engine">
+                            <option value="auto">Auto (heuristic)</option>
+                            <option value="claude">Claude Code (claude -p)</option>
+                            <option value="antigravity">Antigravity (agy -p)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="model">NIM Planner Model</label>
+                        <select id="model">
+                            <option value="deepseek-ai/deepseek-v3">deepseek-ai/deepseek-v3</option>
+                            <option value="qwen/qwen2.5-coder-32b-instruct">qwen/qwen2.5-coder-32b-instruct</option>
+                            <option value="meta/llama3-70b-instruct">meta/llama3-70b-instruct</option>
+                            <option value="nvidia/nemotron-4-340b-instruct">nvidia/nemotron-4-340b-instruct</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="nvidia_base_url">NIM API Base URL</label>
+                        <input type="text" id="nvidia_base_url" placeholder="https://integrate.api.nvidia.com/v1">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="allowed_user_ids">
+                            Allowed Telegram User IDs
+                            <span class="tooltip">ⓘ
+                                <span class="tooltiptext">Comma-separated numeric Telegram User IDs. Non-whitelisted users are rejected.</span>
+                            </span>
+                        </label>
+                        <input type="text" id="allowed_user_ids" placeholder="e.g. 12345678, 98765432">
+                    </div>
+
+                    <div class="form-section-title">Mobile Test Environment</div>
+
+                    <div class="form-group">
+                        <label for="android_sdk_path">Android SDK Path</label>
+                        <input type="text" id="android_sdk_path" placeholder="e.g. C:\Users\YourUser\AppData\Local\Android\Sdk">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="emulator_avd">Emulator AVD Name</label>
+                        <input type="text" id="emulator_avd" placeholder="e.g. Pixel_6_API_33">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="default_test_mode">Default Test Mode</label>
+                        <select id="default_test_mode">
+                            <option value="none">None (Skip tests)</option>
+                            <option value="browser">Web Browser (Playwright)</option>
+                            <option value="emulator">Android Emulator (adb)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-section-title">Execution Timeouts (seconds)</div>
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem;">
+                        <div class="form-group">
+                            <label for="timeout_code_s">Coding</label>
+                            <input type="number" id="timeout_code_s" value="900">
+                        </div>
+                        <div class="form-group">
+                            <label for="timeout_build_s">Build</label>
+                            <input type="number" id="timeout_build_s" value="1200">
+                        </div>
+                        <div class="form-group">
+                            <label for="timeout_test_s">Test</label>
+                            <input type="number" id="timeout_test_s" value="600">
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn" style="margin-top: 1rem;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                        Save Configuration
+                    </button>
+                </form>
+            </section>
+
+            <!-- Right Column: Secrets & MCP Servers -->
+            <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+                <!-- Secrets Panel -->
+                <section class="glass-panel" style="display: flex; flex-direction: column; gap: 1.25rem;">
+                    <div class="panel-title">Credentials & Secrets</div>
+                    
+                    <form id="secrets-form" class="form-section" onsubmit="event.preventDefault(); saveSecrets();">
+                        <div class="form-group">
+                            <label for="nvidia_api_key">NVIDIA NIM API Key</label>
+                            <div class="input-wrapper">
+                                <input type="password" id="nvidia_api_key" placeholder="Enter key (nvapi-...) or *** to keep current">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="telegram_bot_token">Telegram Bot Token</label>
+                            <div class="input-wrapper">
+                                <input type="password" id="telegram_bot_token" placeholder="Enter bot token from BotFather">
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-secondary">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                            Save Credentials
+                        </button>
+                    </form>
+                </section>
+
+                <!-- MCP Servers Manager -->
+                <section class="glass-panel" style="display: flex; flex-direction: column; gap: 1rem;">
+                    <div class="panel-title">
+                        <span>MCP Servers</span>
+                    </div>
+                    <p style="font-size: 0.8rem; color: var(--text-muted);">
+                        Bridge Model Context Protocol (MCP) servers to the NIM brain as tools.
+                    </p>
+
+                    <div id="mcp-list" class="mcp-servers-grid">
+                        <!-- Dynamic MCP cards -->
+                        <div class="mcp-card mcp-add-card" onclick="openMcpModal()">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            <span>Add MCP Server</span>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </main>
+</div>
+
+<!-- Modal: Add/Edit MCP Server -->
+<div id="mcp-modal" class="modal-overlay">
+    <div class="modal-content">
+        <div class="modal-header">
+            <div class="modal-title" id="mcp-modal-title">Add MCP Server</div>
+            <button class="close-modal" onclick="closeMcpModal()">&times;</button>
+        </div>
+        <form id="mcp-form" onsubmit="event.preventDefault(); submitMcpForm();">
+            <input type="hidden" id="mcp-index" value="">
+            
+            <div class="form-group" style="margin-bottom: 1rem;">
+                <label for="mcp_name">Server Name</label>
+                <input type="text" id="mcp_name" required placeholder="e.g. filesystem">
+            </div>
+
+            <div class="form-group" style="margin-bottom: 1rem;">
+                <label for="mcp_type">Connection Type</label>
+                <select id="mcp_type" onchange="toggleMcpTypeInputs()" required>
+                    <option value="stdio">Stdio (Local Process)</option>
+                    <option value="http">SSE/HTTP (Remote Server)</option>
+                </select>
+            </div>
+
+            <!-- Stdio Inputs -->
+            <div id="mcp-stdio-inputs" style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1rem;">
+                <div class="form-group">
+                    <label for="mcp_command">Command</label>
+                    <input type="text" id="mcp_command" placeholder="e.g. node, python, npx">
+                </div>
+                <div class="form-group">
+                    <label for="mcp_args">Arguments (comma-separated or JSON list)</label>
+                    <input type="text" id="mcp_args" placeholder='e.g. ["-y", "@modelcontextprotocol/server-filesystem", "E:\\Hermes\\projects"]'>
+                </div>
+                <div class="form-group">
+                    <label for="mcp_env">Environment Variables (JSON format)</label>
+                    <input type="text" id="mcp_env" placeholder='e.g. {"API_KEY": "secret"}'>
+                </div>
+            </div>
+
+            <!-- HTTP Inputs -->
+            <div id="mcp-http-inputs" style="display: none; flex-direction: column; gap: 1rem; margin-bottom: 1rem;">
+                <div class="form-group">
+                    <label for="mcp_url">Server SSE URL</label>
+                    <input type="text" id="mcp_url" placeholder="e.g. http://localhost:3000/sse">
+                </div>
+            </div>
+
+            <div class="switch-group" style="margin-bottom: 1rem;">
+                <div>
+                    <div>Enabled</div>
+                    <div class="switch-label-desc">Whether this server is active and connected at startup.</div>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="mcp_enabled" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.5rem;">
+                <button type="button" class="btn btn-secondary" onclick="testMcpServer()" id="btn-test-mcp">Test Server</button>
+                <button type="submit" class="btn">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Toast Container -->
+<div id="toast-container" class="toast-container"></div>
+
+<script>
+    // State management
+    let state = {
+        tasks: [],
+        currentTaskId: null,
+        settings: {
+            nvidia_base_url: "",
+            model: "",
+            allowed_user_ids: [],
+            default_engine: "auto",
+            projects_path: "",
+            android_sdk_path: "",
+            emulator_avd: "",
+            default_test_mode: "none",
+            timeout_code_s: 900,
+            timeout_build_s: 1200,
+            timeout_test_s: 600,
+            mcp_servers: []
+        },
+        secretsStatus: {
+            nvidia_api_key_set: false,
+            telegram_bot_token_set: false
+        }
+    };
+
+    // Initialize
+    window.addEventListener('DOMContentLoaded', () => {
+        // Handle routes from hash
+        const hash = window.location.hash.substring(1);
+        if (hash === 'settings') {
+            switchTab('settings');
+        } else {
+            switchTab('dashboard');
+        }
+
+        // Fetch initial data
+        loadSettingsData();
+        loadSecretsStatus();
+        loadTasks();
+
+        // Start polling tasks
+        setInterval(loadTasks, 3000);
+        setInterval(loadSecretsStatus, 10000);
+    });
+
+    // Tab switcher
+    function switchTab(tabId) {
+        document.querySelectorAll('.nav-tab').forEach(btn => btn.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+        if (tabId === 'dashboard') {
+            document.querySelector('.nav-tab:nth-child(1)').classList.add('active');
+            document.getElementById('tab-dashboard').classList.add('active');
+            window.location.hash = 'dashboard';
+        } else {
+            document.querySelector('.nav-tab:nth-child(2)').classList.add('active');
+            document.getElementById('tab-settings').classList.add('active');
+            window.location.hash = 'settings';
+        }
+    }
+
+    // Toast alerts helper
+    function showToast(message, type = 'info') {
+        const container = document.getElementById('toast-container');
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        
+        let icon = '';
+        if (type === 'success') {
+            icon = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+        } else if (type === 'error') {
+            icon = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
+        } else {
+            icon = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>';
+        }
+
+        toast.innerHTML = `${icon}<span>${message}</span>`;
+        container.appendChild(toast);
+
+        setTimeout(() => {
+            toast.classList.add('toast-fade-out');
+            setTimeout(() => toast.remove(), 300);
+        }, 4000);
+    }
+
+    // Load tasks
+    async function loadTasks() {
+        try {
+            const res = await fetch('/api/tasks');
+            if (res.ok) {
+                const data = await res.json();
+                state.tasks = data;
+                renderTaskList();
+                updateTaskCounts();
+                if (state.currentTaskId) {
+                    loadTaskDetail(state.currentTaskId, false);
+                }
+            }
+        } catch (err) {
+            console.error('Failed to load tasks', err);
+        }
+    }
+
+    function updateTaskCounts() {
+        document.getElementById('stat-total').innerText = state.tasks.length;
+    }
+
+    // Render task items list
+    function renderTaskList() {
+        const container = document.getElementById('task-items');
+        if (state.tasks.length === 0) {
+            container.innerHTML = '<div class="no-task-selected">No tasks found.</div>';
+            return;
+        }
+
+        container.innerHTML = state.tasks.map(t => {
+            const activeClass = t.task_id === state.currentTaskId ? 'active' : '';
+            const dateStr = new Date(t.created * 1000).toLocaleString();
+            return `
+                <div class="task-item ${activeClass}" onclick="selectTask('${t.task_id}')">
+                    <div class="task-header-row">
+                        <span class="task-id-badge">${t.task_id.substring(0, 15)}...</span>
+                        <span class="badge ${t.status}">${t.status}</span>
+                    </div>
+                    <div class="task-text-preview">${escapeHtml(t.text)}</div>
+                    <div class="task-footer-row">
+                        <span>${dateStr}</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function selectTask(taskId) {
+        state.currentTaskId = taskId;
+        renderTaskList();
+        loadTaskDetail(taskId, true);
+    }
+
+    // Load specific task details
+    async function loadTaskDetail(taskId, isInitialSelect) {
+        try {
+            const res = await fetch(`/api/tasks/${taskId}`);
+            if (res.ok) {
+                const data = await res.json();
+                const task = data.task;
+                
+                document.getElementById('no-task-chosen').style.display = 'none';
+                document.getElementById('task-detail-content').style.display = 'flex';
+
+                // Basic details
+                document.getElementById('det-id').innerText = `Task ID: ${task.task_id}`;
+                document.getElementById('det-text').innerText = task.text;
+                
+                const statusBadge = document.getElementById('det-status');
+                statusBadge.innerText = task.status;
+                statusBadge.className = `badge ${task.status}`;
+
+                document.getElementById('det-chat-id').innerText = task.chat_id;
+                document.getElementById('det-created').innerText = new Date(task.created * 1000).toLocaleString();
+
+                // Steps
+                const stepsContainer = document.getElementById('det-steps');
+                if (task.steps && task.steps.length > 0) {
+                    stepsContainer.innerHTML = task.steps.map((st, i) => {
+                        let detailObj = {};
+                        try { detailObj = JSON.parse(st.detail); } catch(e){}
+                        const detailStr = detailObj.prompt || detailObj.target || detailObj.mode || st.detail;
+                        return `
+                            <div class="step-row ${st.status}">
+                                <div class="step-num">${st.idx + 1}</div>
+                                <div class="step-info">
+                                    <div class="step-name">${st.kind.toUpperCase()} <span class="badge ${st.status}" style="font-size: 0.65rem;">${st.status}</span></div>
+                                    <div class="step-desc">${escapeHtml(detailStr)}</div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    stepsContainer.innerHTML = '<div style="font-size: 0.85rem; color: var(--text-muted);">No steps generated yet.</div>';
+                }
+
+                // Logs
+                const consoleLogs = document.getElementById('console-logs');
+                const previousHeight = consoleLogs.scrollHeight;
+                
+                if (data.logs && data.logs.length > 0) {
+                    consoleLogs.innerHTML = data.logs.map(line => {
+                        let cls = '';
+                        if (line.toLowerCase().includes('error') || line.toLowerCase().includes('fail')) {
+                            cls = 'error';
+                        } else if (line.startsWith('[')) {
+                            cls = 'system';
+                        }
+                        return `<div class="console-line ${cls}">${escapeHtml(line)}</div>`;
+                    }).join('');
+                } else {
+                    consoleLogs.innerHTML = '<div class="console-line system">Waiting for execution logs...</div>';
+                }
+
+                // Auto-scroll logs
+                const autoScroll = document.getElementById('auto-scroll-logs').checked;
+                if (autoScroll && (isInitialSelect || consoleLogs.scrollHeight > previousHeight)) {
+                    consoleLogs.scrollTop = consoleLogs.scrollHeight;
+                }
+
+                // Artifacts
+                const artifactsContainer = document.getElementById('det-artifacts');
+                if (data.artifacts && data.artifacts.length > 0) {
+                    artifactsContainer.innerHTML = data.artifacts.map(art => {
+                        const isImage = art.path.endsWith('.png') || art.path.endsWith('.jpg') || art.path.endsWith('.jpeg');
+                        
+                        if (isImage) {
+                            return `
+                                <div style="display: flex; flex-direction: column; gap: 0.5rem; grid-column: span 2;">
+                                    <div class="artifact-card" style="margin-bottom: 0;">
+                                        <div class="artifact-icon">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                                        </div>
+                                        <div class="artifact-details">
+                                            <div class="artifact-name">${art.kind.toUpperCase()} Screenshot</div>
+                                            <div class="artifact-meta">${escapeHtml(art.path)}</div>
+                                        </div>
+                                    </div>
+                                    <img src="/api/artifacts/view?path=${encodeURIComponent(art.path)}" class="screenshot-preview" alt="Test Screenshot">
+                                </div>
+                            `;
+                        }
+                        
+                        return `
+                            <a href="/api/artifacts/download?path=${encodeURIComponent(art.path)}" class="artifact-card" target="_blank">
+                                <div class="artifact-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                                </div>
+                                <div class="artifact-details">
+                                    <div class="artifact-name">${escapeHtml(art.path.split(/[\\/]/).pop())}</div>
+                                    <div class="artifact-meta">${art.kind.toUpperCase()} File</div>
+                                </div>
+                            </a>
+                        `;
+                    }).join('');
+                } else {
+                    artifactsContainer.innerHTML = '<div style="font-size: 0.85rem; color: var(--text-muted); grid-column: 1/-1;">No artifacts produced yet.</div>';
+                }
+
+            }
+        } catch (err) {
+            console.error('Failed to load task details', err);
+        }
+    }
+
+    // Load Settings
+    async function loadSettingsData() {
+        try {
+            const res = await fetch('/api/settings');
+            if (res.ok) {
+                state.settings = await res.json();
+                
+                document.getElementById('default_engine').value = state.settings.default_engine;
+                document.getElementById('model').value = state.settings.model || 'deepseek-ai/deepseek-v3';
+                document.getElementById('nvidia_base_url').value = state.settings.nvidia_base_url;
+                document.getElementById('allowed_user_ids').value = state.settings.allowed_user_ids.join(', ');
+                document.getElementById('android_sdk_path').value = state.settings.android_sdk_path || '';
+                document.getElementById('emulator_avd').value = state.settings.emulator_avd || '';
+                document.getElementById('default_test_mode').value = state.settings.default_test_mode || 'none';
+                
+                document.getElementById('timeout_code_s').value = state.settings.timeout_code_s;
+                document.getElementById('timeout_build_s').value = state.settings.timeout_build_s;
+                document.getElementById('timeout_test_s').value = state.settings.timeout_test_s;
+
+                renderMcpServers();
+            }
+        } catch (err) {
+            showToast('Failed to load settings data', 'error');
+        }
+    }
+
+    // Load Secrets Status
+    async function loadSecretsStatus() {
+        try {
+            const res = await fetch('/api/secrets/status');
+            if (res.ok) {
+                state.secretsStatus = await res.json();
+                
+                const botDot = document.getElementById('bot-status-dot');
+                const botTxt = document.getElementById('bot-status-txt');
+                const nimDot = document.getElementById('nim-status-dot');
+                const nimTxt = document.getElementById('nim-status-txt');
+
+                if (state.secretsStatus.telegram_bot_token_set) {
+                    botDot.className = 'status-dot';
+                    botTxt.innerText = 'Active';
+                } else {
+                    botDot.className = 'status-dot danger pulse';
+                    botTxt.innerText = 'Missing';
+                }
+
+                if (state.secretsStatus.nvidia_api_key_set) {
+                    nimDot.className = 'status-dot';
+                    nimTxt.innerText = 'Ready';
+                } else {
+                    nimDot.className = 'status-dot danger pulse';
+                    nimTxt.innerText = 'Missing';
+                }
+            }
+        } catch (err) {
+            console.error('Failed to load secrets status', err);
+        }
+    }
+
+    // Save Settings
+    async function saveSettings() {
+        const allowedUserIdsStr = document.getElementById('allowed_user_ids').value;
+        const allowedUserIds = allowedUserIdsStr.split(',')
+            .map(id => parseInt(id.trim()))
+            .filter(id => !isNaN(id));
+
+        const updatedSettings = {
+            ...state.settings,
+            default_engine: document.getElementById('default_engine').value,
+            model: document.getElementById('model').value,
+            nvidia_base_url: document.getElementById('nvidia_base_url').value,
+            allowed_user_ids: allowedUserIds,
+            android_sdk_path: document.getElementById('android_sdk_path').value,
+            emulator_avd: document.getElementById('emulator_avd').value,
+            default_test_mode: document.getElementById('default_test_mode').value,
+            timeout_code_s: parseInt(document.getElementById('timeout_code_s').value) || 900,
+            timeout_build_s: parseInt(document.getElementById('timeout_build_s').value) || 1200,
+            timeout_test_s: parseInt(document.getElementById('timeout_test_s').value) || 600
+        };
+
+        try {
+            const res = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updatedSettings)
+            });
+
+            if (res.ok) {
+                showToast('Settings saved successfully', 'success');
+                loadSettingsData();
+            } else {
+                showToast('Failed to save settings', 'error');
+            }
+        } catch (err) {
+            showToast('Network error while saving settings', 'error');
+        }
+    }
+
+    // Save Secrets
+    async function saveSecrets() {
+        const payload = {
+            nvidia_api_key: document.getElementById('nvidia_api_key').value,
+            telegram_bot_token: document.getElementById('telegram_bot_token').value
+        };
+
+        try {
+            const res = await fetch('/api/secrets', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (res.ok) {
+                showToast('Credentials saved successfully. Please restart Hermes to apply.', 'success');
+                document.getElementById('nvidia_api_key').value = '';
+                document.getElementById('telegram_bot_token').value = '';
+                loadSecretsStatus();
+            } else {
+                showToast('Failed to save credentials', 'error');
+            }
+        } catch (err) {
+            showToast('Network error while saving credentials', 'error');
+        }
+    }
+
+    // Render MCP list
+    function renderMcpServers() {
+        const list = document.getElementById('mcp-list');
+        const addCardHtml = `
+            <div class="mcp-card mcp-add-card" onclick="openMcpModal()">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                <span>Add MCP Server</span>
+            </div>
+        `;
+
+        if (!state.settings.mcp_servers || state.settings.mcp_servers.length === 0) {
+            list.innerHTML = addCardHtml;
+            return;
+        }
+
+        const cardsHtml = state.settings.mcp_servers.map((srv, idx) => `
+            <div class="mcp-card">
+                <div class="mcp-card-header">
+                    <span class="mcp-card-title">${escapeHtml(srv.name)}</span>
+                    <span class="badge ${srv.enabled ? 'done' : 'stopped'}">${srv.enabled ? 'Enabled' : 'Disabled'}</span>
+                </div>
+                <div class="mcp-card-body">
+                    <div class="mcp-prop-row">
+                        <span>Type:</span>
+                        <span class="mcp-prop-val">${srv.type}</span>
+                    </div>
+                    ${srv.type === 'stdio' ? `
+                        <div class="mcp-prop-row">
+                            <span>Command:</span>
+                            <span class="mcp-prop-val">${escapeHtml(srv.command)}</span>
+                        </div>
+                    ` : `
+                        <div class="mcp-prop-row">
+                            <span>URL:</span>
+                            <span class="mcp-prop-val">${escapeHtml(srv.url)}</span>
+                        </div>
+                    `}
+                </div>
+                <div class="mcp-card-actions">
+                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.75rem;" onclick="openMcpModal(${idx})">Edit</button>
+                    <button class="btn btn-danger" style="padding: 6px 12px; font-size: 0.75rem; border: none; margin-left: auto;" onclick="deleteMcpServer(${idx})">Delete</button>
+                </div>
+            </div>
+        `).join('');
+
+        list.innerHTML = cardsHtml + addCardHtml;
+    }
+
+    // Modal control
+    function openMcpModal(index = null) {
+        const modal = document.getElementById('mcp-modal');
+        const title = document.getElementById('mcp-modal-title');
+        const form = document.getElementById('mcp-form');
+        
+        form.reset();
+        
+        if (index !== null) {
+            title.innerText = 'Edit MCP Server';
+            document.getElementById('mcp-index').value = index;
+            const srv = state.settings.mcp_servers[index];
+            document.getElementById('mcp_name').value = srv.name;
+            document.getElementById('mcp_type').value = srv.type;
+            document.getElementById('mcp_command').value = srv.command || '';
+            document.getElementById('mcp_args').value = JSON.stringify(srv.args) || '';
+            document.getElementById('mcp_env').value = JSON.stringify(srv.env) || '';
+            document.getElementById('mcp_url').value = srv.url || '';
+            document.getElementById('mcp_enabled').checked = srv.enabled !== false;
+        } else {
+            title.innerText = 'Add MCP Server';
+            document.getElementById('mcp-index').value = '';
+            document.getElementById('mcp_enabled').checked = true;
+        }
+
+        toggleMcpTypeInputs();
+        modal.style.display = 'flex';
+    }
+
+    function closeMcpModal() {
+        document.getElementById('mcp-modal').style.display = 'none';
+    }
+
+    function toggleMcpTypeInputs() {
+        const type = document.getElementById('mcp_type').value;
+        const stdioBlock = document.getElementById('mcp-stdio-inputs');
+        const httpBlock = document.getElementById('mcp-http-inputs');
+
+        if (type === 'stdio') {
+            stdioBlock.style.display = 'flex';
+            httpBlock.style.display = 'none';
+        } else {
+            stdioBlock.style.display = 'none';
+            httpBlock.style.display = 'flex';
+        }
+    }
+
+    // Submit MCP form
+    async function submitMcpForm() {
+        const idxVal = document.getElementById('mcp-index').value;
+        const name = document.getElementById('mcp_name').value;
+        const type = document.getElementById('mcp_type').value;
+        const enabled = document.getElementById('mcp_enabled').checked;
+
+        let serverPayload = { name, type, enabled };
+
+        if (type === 'stdio') {
+            serverPayload.command = document.getElementById('mcp_command').value;
+            
+            const argsRaw = document.getElementById('mcp_args').value.trim();
+            if (argsRaw) {
+                try {
+                    serverPayload.args = JSON.parse(argsRaw);
+                    if (!Array.isArray(serverPayload.args)) throw new Error();
+                } catch(e) {
+                    serverPayload.args = argsRaw.split(',').map(a => a.trim());
+                }
+            } else {
+                serverPayload.args = [];
+            }
+
+            const envRaw = document.getElementById('mcp_env').value.trim();
+            if (envRaw) {
+                try {
+                    serverPayload.env = JSON.parse(envRaw);
+                } catch(e) {
+                    showToast('Invalid environment JSON format', 'error');
+                    return;
+                }
+            } else {
+                serverPayload.env = {};
+            }
+        } else {
+            serverPayload.url = document.getElementById('mcp_url').value;
+        }
+
+        let updatedMcpList = [...(state.settings.mcp_servers || [])];
+        if (idxVal !== '') {
+            updatedMcpList[parseInt(idxVal)] = serverPayload;
+        } else {
+            // Check name duplicates
+            if (updatedMcpList.some(s => s.name === name)) {
+                showToast('An MCP server with that name already exists', 'error');
+                return;
+            }
+            updatedMcpList.push(serverPayload);
+        }
+
+        // Post to API
+        try {
+            const res = await fetch('/api/mcp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updatedMcpList)
+            });
+
+            if (res.ok) {
+                showToast('MCP server configuration saved', 'success');
+                closeMcpModal();
+                loadSettingsData();
+            } else {
+                showToast('Failed to save MCP configuration', 'error');
+            }
+        } catch(err) {
+            showToast('Network error while saving MCP config', 'error');
+        }
+    }
+
+    // Delete MCP Server
+    async function deleteMcpServer(idx) {
+        if (!confirm('Are you sure you want to delete this MCP server configuration?')) return;
+        
+        let updatedMcpList = [...(state.settings.mcp_servers || [])];
+        updatedMcpList.splice(idx, 1);
+
+        try {
+            const res = await fetch('/api/mcp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updatedMcpList)
+            });
+
+            if (res.ok) {
+                showToast('MCP server deleted', 'success');
+                loadSettingsData();
+            } else {
+                showToast('Failed to delete MCP server', 'error');
+            }
+        } catch (err) {
+            showToast('Network error while deleting MCP server', 'error');
+        }
+    }
+
+    // Test MCP Server
+    async function testMcpServer() {
+        const name = document.getElementById('mcp_name').value || 'test';
+        const type = document.getElementById('mcp_type').value;
+        const btnTest = document.getElementById('btn-test-mcp');
+        
+        let serverPayload = { name, type, enabled: true };
+        if (type === 'stdio') {
+            serverPayload.command = document.getElementById('mcp_command').value;
+            const argsRaw = document.getElementById('mcp_args').value.trim();
+            if (argsRaw) {
+                try {
+                    serverPayload.args = JSON.parse(argsRaw);
+                } catch(e) {
+                    serverPayload.args = argsRaw.split(',').map(a => a.trim());
+                }
+            } else {
+                serverPayload.args = [];
+            }
+            const envRaw = document.getElementById('mcp_env').value.trim();
+            if (envRaw) {
+                try { serverPayload.env = JSON.parse(envRaw); } catch(e){}
+            }
+        } else {
+            serverPayload.url = document.getElementById('mcp_url').value;
+        }
+
+        btnTest.disabled = true;
+        btnTest.innerText = 'Testing...';
+        showToast('Connecting to MCP server...', 'info');
+
+        try {
+            const res = await fetch('/api/mcp/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(serverPayload)
+            });
+
+            if (res.ok) {
+                const data = await res.json();
+                if (data.ok) {
+                    const toolsCount = data.tools ? data.tools.length : 0;
+                    showToast(`Success! Found ${toolsCount} tools: ${data.tools.join(', ')}`, 'success');
+                } else {
+                    showToast(`Connection failed: ${data.error}`, 'error');
+                }
+            } else {
+                showToast('Failed to contact test endpoint', 'error');
+            }
+        } catch (err) {
+            showToast('Network error during test', 'error');
+        } finally {
+            btnTest.disabled = false;
+            btnTest.innerText = 'Test Server';
+        }
+    }
+
+    // Helpers
+    function escapeHtml(text) {
+        if (!text) return '';
+        return text
+            .toString()
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+</script>
+</body>
+</html>

@@ -43,3 +43,37 @@ def test_tasks_api(hermes_home):
     store.create_task("t1", 5, "hello")
     client = TestClient(create_app(store))
     assert client.get("/api/tasks").json()[0]["task_id"] == "t1"
+
+def test_artifacts_endpoints(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+
+    # Create dummy artifact inside hermes home
+    artifact_dir = paths.artifacts_dir() / "t1"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    art_file = artifact_dir / "test.png"
+    art_file.write_bytes(b"PNG_DATA")
+
+    # Success cases
+    r = client.get(f"/api/artifacts/download?path={art_file}")
+    assert r.status_code == 200
+    assert r.content == b"PNG_DATA"
+
+    r = client.get(f"/api/artifacts/view?path={art_file}")
+    assert r.status_code == 200
+    assert r.content == b"PNG_DATA"
+
+    # Security check: attempt path traversal outside HERMES_HOME
+    outside_file = hermes_home.parent / "outside.txt"
+    outside_file.write_text("secrets")
+
+    r = client.get(f"/api/artifacts/download?path={outside_file}")
+    assert r.status_code == 403
+
+    r = client.get(f"/api/artifacts/view?path={outside_file}")
+    assert r.status_code == 403
+
+    # Not found case
+    r = client.get(f"/api/artifacts/view?path={artifact_dir}/nonexistent.png")
+    assert r.status_code == 404

@@ -1,22 +1,49 @@
 from __future__ import annotations
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
-from . import config
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse, FileResponse
+from pathlib import Path
+from . import config, paths
 from .session_store import Store
 
-_DASH = "<h1>Hermes</h1><ul id=t></ul><script>fetch('/api/tasks').then(r=>r.json())" \
-        ".then(x=>t.innerHTML=x.map(k=>`<li>${k.task_id} ${k.status}</li>`).join(''))</script>" \
-        "<a href=/settings>settings</a>"
-_SET = "<h1>Settings</h1><p>Edit via /api/settings, /api/secrets, /api/mcp.</p>"
+def load_spa_html() -> str:
+    path = Path(__file__).parent / "spa.html"
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return "<h1>Hermes: spa.html not found!</h1>"
 
 def create_app(store: Store) -> FastAPI:
     app = FastAPI()
 
     @app.get("/", response_class=HTMLResponse)
-    def dashboard(): return _DASH
+    def dashboard():
+        return HTMLResponse(content=load_spa_html())
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(): return _SET
+    def settings_page():
+        return HTMLResponse(content=load_spa_html())
+
+    @app.get("/api/artifacts/download")
+    def download_artifact(path: str):
+        resolved = Path(path).resolve()
+        if not resolved.exists() or not resolved.is_file():
+            raise HTTPException(status_code=404, detail="Artifact file not found")
+        try:
+            resolved.relative_to(paths.home().resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied")
+        return FileResponse(str(resolved), filename=resolved.name)
+
+    @app.get("/api/artifacts/view")
+    def view_artifact(path: str):
+        resolved = Path(path).resolve()
+        if not resolved.exists() or not resolved.is_file():
+            raise HTTPException(status_code=404, detail="Artifact file not found")
+        try:
+            resolved.relative_to(paths.home().resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied")
+        media_type = "image/png" if resolved.suffix.lower() in (".png", ".jpg", ".jpeg") else "application/octet-stream"
+        return FileResponse(str(resolved), media_type=media_type)
 
     @app.get("/api/tasks")
     def tasks(): return store.list_tasks()
