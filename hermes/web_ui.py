@@ -1,14 +1,38 @@
 from __future__ import annotations
+import re
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from . import config, paths
 from .session_store import Store
 
 class SecretsUpdate(BaseModel):
     nvidia_api_key: str | None = None
     telegram_bot_token: str | None = None
+
+    @field_validator("telegram_bot_token")
+    @classmethod
+    def _token_shape(cls, v):
+        # "" and "***" mean keep-current; a real BotFather token is <digits>:<secret>
+        if v in ("", "***", None):
+            return v
+        if not re.fullmatch(r"\d{8,12}:[A-Za-z0-9_-]{30,}", v):
+            raise ValueError(
+                "not a Telegram bot token — expected '<digits>:<secret>' from @BotFather")
+        return v
+
+    @field_validator("nvidia_api_key")
+    @classmethod
+    def _key_shape(cls, v):
+        # API keys travel in an HTTP header: ASCII only, no whitespace/smart quotes
+        if v in ("", "***", None):
+            return v
+        if not v.isascii() or any(c.isspace() for c in v):
+            raise ValueError(
+                "not a valid API key — contains whitespace or non-ASCII characters "
+                "(check for smart quotes from copy-paste); NVIDIA keys look like 'nvapi-...'")
+        return v
 
 def load_spa_html() -> str:
     path = Path(__file__).parent / "spa.html"

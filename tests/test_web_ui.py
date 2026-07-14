@@ -35,6 +35,29 @@ def test_mcp_post_malformed_returns_422(hermes_home):
     r = client.post("/api/mcp", json={"not": "a list"})
     assert r.status_code == 422
 
+def test_secrets_post_invalid_token_returns_422(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+    r = client.post("/api/secrets", json={
+        "telegram_bot_token": "This is not a token at all, just a sentence"})
+    assert r.status_code == 422
+    # valid-shaped token accepted
+    r = client.post("/api/secrets", json={
+        "telegram_bot_token": "1234567890:" + "A" * 35})
+    assert r.status_code == 200
+
+def test_secrets_post_invalid_api_key_returns_422(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+    r = client.post("/api/secrets", json={"nvidia_api_key": "nvapi-abc’def"})
+    assert r.status_code == 422
+    r = client.post("/api/secrets", json={"nvidia_api_key": "nvapi-has space"})
+    assert r.status_code == 422
+    r = client.post("/api/secrets", json={"nvidia_api_key": "nvapi-validkey123"})
+    assert r.status_code == 200
+
 def test_secrets_masked(hermes_home):
     paths.ensure_dirs()
     config.save_secrets(config.Secrets(nvidia_api_key="real", telegram_bot_token=""))
@@ -50,10 +73,11 @@ def test_secrets_preserved_on_mask(hermes_home):
     config.save_secrets(config.Secrets(nvidia_api_key="real", telegram_bot_token="tok"))
     store = Store(paths.db_path()); store.init_schema()
     client = TestClient(create_app(store))
-    client.post("/api/secrets", json={"nvidia_api_key": "***", "telegram_bot_token": "newtok"})
+    newtok = "1234567890:" + "B" * 35
+    client.post("/api/secrets", json={"nvidia_api_key": "***", "telegram_bot_token": newtok})
     sec = config.load_secrets()
-    assert sec.nvidia_api_key == "real"        # unchanged
-    assert sec.telegram_bot_token == "newtok"  # updated
+    assert sec.nvidia_api_key == "real"       # unchanged
+    assert sec.telegram_bot_token == newtok   # updated
 
 def test_tasks_api(hermes_home):
     paths.ensure_dirs()
