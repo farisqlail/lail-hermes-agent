@@ -3,10 +3,15 @@
 # optional [browser] extra that may lack wheels on very new Python — installed
 # best-effort, never hard-fails the install.
 $ErrorActionPreference = "Stop"
-$HermesHome = "E:\Hermes"
-$AppDir = "$HermesHome\app"
+
+# HERMES_HOME: data root (config/projects/artifacts). Override via env var; default C:\Hermes.
+$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "C:\Hermes" }
+# App dir: the repo checkout this script lives in (deploy\.. = repo root).
+$AppDir = (Resolve-Path "$PSScriptRoot\..").Path
 
 Write-Host "== Hermes install ==" -ForegroundColor Cyan
+Write-Host "  HERMES_HOME: $HermesHome"
+Write-Host "  App dir:     $AppDir"
 
 # 1. Prerequisite check (report-only; missing runtime tools don't block install)
 Write-Host "Checking prerequisites on PATH..."
@@ -22,9 +27,11 @@ foreach ($bin in $req.Keys) {
 }
 if ($missing -contains "python") { throw "python not found on PATH; install Python 3.11+ first." }
 
-# 2. Directory tree
+# 2. Directory tree + persistent HERMES_HOME so hermes.paths resolves the same root everywhere
 New-Item -ItemType Directory -Force -Path "$HermesHome\config","$HermesHome\projects","$HermesHome\artifacts" | Out-Null
-Write-Host "Directories ready under $HermesHome"
+[Environment]::SetEnvironmentVariable("HERMES_HOME", $HermesHome, "User")
+$env:HERMES_HOME = $HermesHome
+Write-Host "Directories ready under $HermesHome (HERMES_HOME set for current user)"
 
 # 3. venv + deps
 Set-Location $AppDir
@@ -53,7 +60,20 @@ if (-not (Test-Path "$HermesHome\config\config.yaml")) {
   Write-Host "Seeded empty config.yaml + .env"
 }
 
-# 5. Auto-start at logon
+# 5. Generate start.bat into HERMES_HOME with the real paths on this machine
+$startBat = @"
+@echo off
+REM Launch Hermes bot + web UI (http://127.0.0.1:8799)
+set HERMES_HOME=$HermesHome
+cd /d $AppDir
+call .venv\Scripts\activate.bat
+python -m hermes.main
+pause
+"@
+Set-Content -Path "$HermesHome\start.bat" -Value $startBat -Encoding ASCII
+Write-Host "Wrote $HermesHome\start.bat"
+
+# 6. Auto-start at logon
 try {
   $action  = New-ScheduledTaskAction -Execute "$HermesHome\start.bat"
   $trigger = New-ScheduledTaskTrigger -AtLogOn
