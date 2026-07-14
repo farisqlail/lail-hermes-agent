@@ -72,5 +72,17 @@ class Orchestrator:
             return (res.ok, f"apk: {res.apk_path}" if res.ok else f"build failed: {res.stderr[:200]}")
         if t == "test":
             mode = step.get("mode", self.settings.default_test_mode)
-            return (True, f"test mode {mode} scheduled")  # wired in main with real adb/browser
+            out = Path(str(proj)) / "test-out"
+            if mode == "emulator" and self.deps.get("test_emulator"):
+                apks = [a["path"] for a in self.store.get_artifacts(task_id) if a["kind"] == "apk"]
+                if not apks:
+                    return (False, "no apk artifact to test")
+                res = await self.deps["test_emulator"](apks[-1], out)
+            elif mode == "browser" and self.deps.get("test_browser"):
+                res = await self.deps["test_browser"](step.get("url", "http://localhost:3000"), out)
+            else:
+                return (True, "no test mode")
+            if getattr(res, "screenshot_path", None):
+                self.store.add_artifact(task_id, "screenshot", res.screenshot_path)
+            return (res.ok, res.detail)
         return (False, f"unknown step type: {t}")

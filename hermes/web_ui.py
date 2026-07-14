@@ -60,4 +60,21 @@ def create_app(store: Store) -> FastAPI:
         config.save_settings(s)
         return {"ok": True}
 
+    @app.post("/api/mcp/test")
+    async def mcp_test(body: dict):
+        from .mcp_hub import McpHub
+        from .config import McpServer
+        srv = McpServer.model_validate(body)
+        factory = getattr(app.state, "mcp_factory", None)
+        if factory is None:
+            return {"ok": False, "error": "no mcp factory configured"}
+        hub = McpHub([srv], session_factory=factory)
+        try:
+            await hub.connect()
+            tools = await hub.list_tools()
+            await hub.close()
+            return {"ok": True, "tools": [t["name"] for t in tools]}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     return app
