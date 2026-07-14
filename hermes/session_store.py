@@ -1,15 +1,21 @@
 from __future__ import annotations
 import sqlite3, time
 from pathlib import Path
+from contextlib import contextmanager
 
 class Store:
     def __init__(self, db: Path):
         self.db = str(db)
 
+    @contextmanager
     def _conn(self):
         c = sqlite3.connect(self.db)
         c.row_factory = sqlite3.Row
-        return c
+        try:
+            with c:
+                yield c
+        finally:
+            c.close()
 
     def init_schema(self):
         with self._conn() as c:
