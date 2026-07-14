@@ -44,7 +44,7 @@ try {
   & $py -m playwright install chromium
   Write-Host "  playwright + chromium installed (browser testing enabled)" -ForegroundColor Green
 } catch {
-  Write-Host "  playwright install failed on this Python — browser testing disabled until fixed. Emulator testing still works." -ForegroundColor Yellow
+  Write-Host "  playwright install failed on this Python - browser testing disabled until fixed. Emulator testing still works." -ForegroundColor Yellow
 }
 
 # 4. Seed empty config + secrets (filled via web UI)
