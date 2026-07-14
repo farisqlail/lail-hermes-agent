@@ -9,8 +9,8 @@ def test_is_allowed():
 def test_task_id_unique():
     assert new_task_id() != new_task_id()
 
-async def test_reject_unlisted(tmp_path):
-    store = Store(tmp_path / "t.db"); store.init_schema()
+async def test_reject_unlisted(hermes_home):
+    store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(allowed_user_ids=[1])
     sent = []
     async def sender(chat, text): sent.append((chat, text))
@@ -21,8 +21,8 @@ async def test_reject_unlisted(tmp_path):
     assert tid is None
     assert "not authorized" in sent[0][1].lower()
 
-async def test_accept_listed(tmp_path):
-    store = Store(tmp_path / "t.db"); store.init_schema()
+async def test_accept_listed(hermes_home):
+    store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(allowed_user_ids=[1])
     ran = []
     async def sender(chat, text): pass

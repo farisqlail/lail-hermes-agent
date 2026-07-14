@@ -14,9 +14,9 @@ def test_choose_engine_default():
     assert choose_engine({"type": "code"}, s) == "claude"
     assert choose_engine({"type": "code", "engine": "antigravity"}, s) == "antigravity"
 
-async def test_run_task_executes_steps(tmp_path, monkeypatch):
-    store = Store(tmp_path / "t.db"); store.init_schema()
-    settings = Settings(default_engine="claude", projects_path=str(tmp_path / "proj"))
+async def test_run_task_executes_steps(hermes_home):
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude", projects_path=str(hermes_home / "proj"))
 
     async def planner(text, tools):
         return json.dumps({"steps": [
