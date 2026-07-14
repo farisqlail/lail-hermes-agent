@@ -38,6 +38,7 @@ async def test_run_task_executes_steps(tmp_path, monkeypatch):
 
     reports = []
     async def report(tid, msg): reports.append(msg)
+    store.create_task("t1", 5, "build a flutter app")
     await orch.run_task("t1", 5, "build a flutter app", report)
 
     assert ("code", "claude") in events

@@ -29,7 +29,6 @@ class Orchestrator:
         self.deps = deps                # run_engine, build_apk, detect, test_*
 
     async def run_task(self, task_id: str, chat_id: int, text: str, report) -> None:
-        self.store.create_task(task_id, chat_id, text)
         self.store.set_task_status(task_id, "running")
         proj = Path(self.settings.projects_path) / task_id
         proj.mkdir(parents=True, exist_ok=True)
