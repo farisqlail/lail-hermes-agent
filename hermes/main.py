@@ -4,7 +4,7 @@ from pathlib import Path
 from openai import AsyncOpenAI
 import uvicorn
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters
+from telegram.ext import Application, MessageHandler, CommandHandler, filters
 from . import config, paths
 from .session_store import Store
 from .mcp_hub import McpHub, to_openai_tools
@@ -109,12 +109,40 @@ async def run():
 
             bridge = Bridge(settings, store, orch, sender)
 
-            async def on_msg(update: Update, ctx):
+            async def check_auth_and_respond(update: Update) -> bool:
                 u = update.effective_user.id
                 c = update.effective_chat.id
-                asyncio.create_task(bridge.handle_task(u, c, update.message.text or ""))
+                from .telegram_bridge import is_allowed
+                settings = bridge.get_settings()
+                if not is_allowed(u, settings):
+                    await sender(c, f"You are not authorized to use this bot. Your Telegram User ID is: {u}\n\nPlease add this ID to the allowed user list in the settings UI at http://127.0.0.1:8799")
+                    return False
+                return True
 
-            app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_msg))
+            async def on_task(update: Update, ctx):
+                if not await check_auth_and_respond(update):
+                    return
+                c = update.effective_chat.id
+                text = update.message.text or ""
+                prompt = text[5:].strip() if text.lower().startswith("/task") else ""
+                if not prompt:
+                    await sender(c, "Harap sertakan deskripsi tugas. Contoh: /task buat app counter Flutter")
+                    return
+                asyncio.create_task(bridge.handle_task(update.effective_user.id, c, prompt))
+
+            async def on_chat(update: Update, ctx):
+                if not await check_auth_and_respond(update):
+                    return
+                c = update.effective_chat.id
+                await sender(c, "Halo! Saya adalah Hermes, asisten orkestrasi Anda.\n\n"
+                                "Untuk memberikan tugas coding, build APK, atau testing, silakan gunakan perintah:\n"
+                                "`/task <deskripsi tugas>`\n\n"
+                                "Contoh:\n"
+                                "`/task buat app counter Flutter, build APK, test di emulator`")
+
+            app.add_handler(CommandHandler("task", on_task))
+            app.add_handler(CommandHandler("start", on_chat))
+            app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_chat))
             print("Telegram bot initialized successfully.")
         except Exception as e:
             print(f"Error initializing Telegram bot: {e}. Bot features will be disabled.")
