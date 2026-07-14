@@ -7,3 +7,4 @@ __pycache__/
 hermes.db
 .superpowers/
 tests/fake_engine.py
+*.egg-info/
