@@ -18,7 +18,7 @@ class Bridge:
 
     async def handle_task(self, user_id: int, chat_id: int, text: str):
         if not is_allowed(user_id, self.settings):
-            await self.sender(chat_id, "You are not authorized to use this bot.")
+            await self.sender(chat_id, f"You are not authorized to use this bot. Your Telegram User ID is: {user_id}\n\nPlease add this ID to the allowed user list in the settings UI at http://127.0.0.1:8799")
             return None
         task_id = new_task_id()
         self.store.create_task(task_id, chat_id, text)
