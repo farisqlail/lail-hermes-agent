@@ -60,15 +60,12 @@ if (-not (Test-Path "$HermesHome\config\config.yaml")) {
   Write-Host "Seeded empty config.yaml + .env"
 }
 
-# 5. Generate start.bat into HERMES_HOME with the real paths on this machine
+# 5. Generate a stub start.bat into HERMES_HOME: sets env, delegates to the repo
+# copy (single source of truth for the banner + auto-restart loop).
 $startBat = @"
 @echo off
-REM Launch Hermes bot + web UI (http://127.0.0.1:8799)
 set HERMES_HOME=$HermesHome
-cd /d $AppDir
-call .venv\Scripts\activate.bat
-python -m hermes.main
-pause
+call "$AppDir\deploy\start.bat"
 "@
 Set-Content -Path "$HermesHome\start.bat" -Value $startBat -Encoding ASCII
 Write-Host "Wrote $HermesHome\start.bat"
