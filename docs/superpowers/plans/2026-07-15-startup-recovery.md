@@ -402,28 +402,50 @@ The sweep is unconditional and runs before the bot exists. If `TELEGRAM_BOT_TOKE
 Append to `tests/test_main_smoke.py`:
 
 ```python
-def test_sweep_runs_before_and_independent_of_the_bot():
-    """The sweep must not sit inside the `if bot_token:` branch — a token-less
-    install still needs a dashboard that tells the truth."""
-    src = inspect.getsource(main.run)
-    assert "sweep_interrupted()" in src, "main.run never sweeps"
-    sweep_at = src.index("sweep_interrupted()")
-    bot_at = src.index("bot_token = ")
-    assert sweep_at < bot_at, "sweep must run before the bot is set up"
+async def test_notify_restart_sends_one_digest_per_chat():
+    sent = []
+    async def sender(chat, text): sent.append((chat, text))
+    swept = [
+        {"task_id": "t1", "chat_id": 5, "text": "refactor auth", "status": "running"},
+        {"task_id": "t2", "chat_id": 7, "text": "build apk", "status": "queued"},
+    ]
+    assert await main._notify_restart(swept, sender) == 2
+    assert {c for c, _ in sent} == {5, 7}
 
 
-def test_digests_are_sent_after_start():
-    src = inspect.getsource(main.run)
-    assert "group_digests(" in src, "swept rows are never turned into digests"
-    assert src.index("await app.start()") < src.index("group_digests(") \
-        < src.index("start_polling()"), \
-        "digests must be sent after app.start() and before polling"
+async def test_notify_restart_with_nothing_swept():
+    async def sender(chat, text): raise AssertionError("nothing to say")
+    assert await main._notify_restart([], sender) == 0
+
+
+async def test_notify_restart_survives_one_bad_chat():
+    """A chat that blocked the bot must not silence the others, nor take
+    startup down with it."""
+    sent = []
+    async def sender(chat, text):
+        if chat == 5:
+            raise RuntimeError("Forbidden: bot was blocked by the user")
+        sent.append(chat)
+    swept = [
+        {"task_id": "t1", "chat_id": 5, "text": "x", "status": "running"},
+        {"task_id": "t2", "chat_id": 7, "text": "y", "status": "running"},
+    ]
+    assert await main._notify_restart(swept, sender) == 1
+    assert sent == [7]
 ```
+
+The send loop carries real logic — one chat that blocked the bot must not
+silence the others, nor take startup down — so it is extracted into
+`_notify_restart` where a test can drive it. Where the sweep call *sits* inside
+`run()` is structural placement, not logic: that is covered by the manual
+Verification section at the end of this plan, rather than by asserting on the
+text of `inspect.getsource(run)`, which would go red on any rename that changed
+no behaviour.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_main_smoke.py -v`
-Expected: FAIL with `AssertionError: main.run never sweeps`.
+Run: `.venv/Scripts/python.exe -m pytest tests/test_main_smoke.py -k notify_restart -v`
+Expected: FAIL with `AttributeError: module 'hermes.main' has no attribute '_notify_restart'`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -451,6 +473,26 @@ with:
         print(f"Startup recovery: retired {len(swept)} interrupted task(s).")
 ```
 
+Add this helper at module level, above `async def run(`:
+
+```python
+async def _notify_restart(swept: list[dict], sender) -> int:
+    """Tell each affected chat once that its tasks did not survive the restart.
+
+    Returns the number of chats successfully notified. Each send is guarded on
+    its own: a chat that blocked the bot must not silence the others, and must
+    not take startup down with it.
+    """
+    sent = 0
+    for chat_id, msg in group_digests(swept):
+        try:
+            await sender(chat_id, msg)
+            sent += 1
+        except Exception as e:
+            print(f"Could not notify chat {chat_id} of restart: {e}")
+    return sent
+```
+
 Replace lines 210-212:
 
 ```python
@@ -466,20 +508,14 @@ with:
                 await app.start()
                 # Before polling, so the restart notice lands ahead of any
                 # newly submitted task's output.
-                for chat_id, msg in group_digests(swept):
-                    try:
-                        await sender(chat_id, msg)
-                    except Exception as e:
-                        print(f"Could not notify chat {chat_id} of restart: {e}")
+                await _notify_restart(swept, sender)
                 await app.updater.start_polling()
 ```
-
-The per-chat `try` matters: one chat that has blocked the bot must not stop the other chats being told, and must not take startup down with it.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_main_smoke.py -v`
-Expected: PASS, 4 tests.
+Expected: PASS, 5 tests.
 
 - [ ] **Step 5: Run the full suite**
 
@@ -496,8 +532,9 @@ The sweep runs right after init_schema, before and independent of the bot,
 so a token-less install still gets an honest dashboard.
 
 Digests go out after app.start() but before polling, so the restart notice
-lands ahead of any new task's output. Each send is guarded individually: a
-chat that blocked the bot must not stop the others being told, nor take
+lands ahead of any new task's output. The send loop lives in _notify_restart
+rather than inline in run(), because its per-chat guard is real logic worth
+testing: a chat that blocked the bot must not silence the others, nor take
 startup down with it."
 ```
 

@@ -173,7 +173,7 @@ Expected: PASS.
 - [ ] **Step 5: Run the full suite**
 
 Run: `.venv/Scripts/python.exe -m pytest -q`
-Expected: PASS, 78 tests (68 baseline + 10 new).
+Expected: PASS, all green — 68 baseline tests plus the new ones, nothing regressed.
 
 - [ ] **Step 6: Commit**
 
@@ -931,16 +931,26 @@ approval."
 - Consumes: `git_dirty` (Task 4), `Bridge(..., git_dirty=)` (Task 5).
 - Produces: nothing downstream.
 
+Bridge treats `git_dirty=None` as "skip the check", so a missing injection makes the dirty-tree gate fail **open and silently** — no test would go red. That failure mode is worth a real test, so the construction is pulled out of `main.run()` into a small factory that a test can actually call. Asserting on `inspect.getsource(main.run)` text would also catch it, but would break on any rename without a behaviour change.
+
 - [ ] **Step 1: Write the failing test**
 
 Append to `tests/test_main_smoke.py`:
 
 ```python
-def test_bridge_is_wired_with_git_dirty():
-    """main must inject the real git_dirty, or the dirty-tree gate silently
-    never fires — Bridge treats git_dirty=None as 'skip the check'."""
-    src = inspect.getsource(main.run)
-    assert "git_dirty=git_dirty" in src, "Bridge constructed without git_dirty"
+def test_build_bridge_injects_git_dirty(tmp_path):
+    """A missing git_dirty makes the dirty-tree gate fail open in silence —
+    Bridge reads None as 'skip the check'. Assert the wiring, not the source."""
+    from hermes.config import Settings
+    from hermes.session_store import Store
+    store = Store(tmp_path / "t.db"); store.init_schema()
+
+    async def sender(chat, text): pass
+
+    b = main._build_bridge(Settings(), store, orchestrator=None, sender=sender,
+                           ask_confirm=None)
+    assert b.git_dirty is not None
+    assert inspect.iscoroutinefunction(b.git_dirty)
 ```
 
 `inspect` and `main` are already imported at the top of this file; do not
@@ -948,8 +958,8 @@ re-import them.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_main_smoke.py -k git_dirty -v`
-Expected: FAIL with `AssertionError: Bridge constructed without git_dirty`.
+Run: `.venv/Scripts/python.exe -m pytest tests/test_main_smoke.py -k build_bridge -v`
+Expected: FAIL with `AttributeError: module 'hermes.main' has no attribute '_build_bridge'`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -957,6 +967,20 @@ In `hermes/main.py`, add to the imports near the other `hermes` imports:
 
 ```python
 from .git_status import git_dirty
+```
+
+Add this factory at module level, above `async def run(`:
+
+```python
+def _build_bridge(settings, store, orchestrator, sender, ask_confirm):
+    """Construct the Bridge with its real collaborators.
+
+    Extracted from run() so the wiring is testable: Bridge treats a missing
+    git_dirty as "skip the dirty-tree check", so a dropped injection would
+    disable the gate with every test still green.
+    """
+    return Bridge(settings, store, orchestrator, sender,
+                  ask_confirm=ask_confirm, git_dirty=git_dirty)
 ```
 
 Replace line 141:
@@ -968,8 +992,7 @@ Replace line 141:
 with:
 
 ```python
-            bridge = Bridge(settings, store, orch, sender,
-                            ask_confirm=ask_confirm, git_dirty=git_dirty)
+            bridge = _build_bridge(settings, store, orch, sender, ask_confirm)
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -989,7 +1012,12 @@ git add hermes/main.py tests/test_main_smoke.py
 git commit -m "feat(main): inject the real git_dirty into the bridge
 
 Without this the dirty-tree gate is dead code: Bridge treats git_dirty=None
-as 'skip the check', so it would fail open and silently."
+as 'skip the check', so it would fail open with every test still green.
+
+Bridge construction moves into a _build_bridge factory so that exact
+failure is testable by calling it, rather than by matching the text of
+inspect.getsource(run) — which would catch the same bug but go red on any
+rename that changed no behaviour."
 ```
 
 ---
