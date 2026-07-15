@@ -57,6 +57,62 @@ async def test_notify_restart_survives_one_bad_chat():
     assert sent == [7]
 
 
+def _nim_status_error(code):
+    import httpx, openai
+    req = httpx.Request("POST", "http://nim.test/v1/chat/completions")
+    resp = httpx.Response(code, request=req)
+    return openai.APIStatusError("boom", response=resp, body=None)
+
+
+def test_is_transient_nim_error_classification():
+    for code in (429, 500, 502, 503, 504):
+        assert main._is_transient_nim_error(_nim_status_error(code))
+    for code in (400, 401, 403, 404, 422):
+        assert not main._is_transient_nim_error(_nim_status_error(code))
+    assert not main._is_transient_nim_error(ValueError("no api key"))
+
+
+async def test_completion_retry_outlasts_a_busy_spell():
+    """Two 503s then success: the caller sees the result, and the waits are
+    the configured backoff, not tight-loop hammering."""
+    calls, slept = [], []
+    async def create():
+        calls.append(1)
+        if len(calls) < 3:
+            raise _nim_status_error(503)
+        return "plan"
+    async def sleep(s): slept.append(s)
+
+    assert await main._completion_with_retry(create, sleep=sleep) == "plan"
+    assert slept == [5, 15]
+
+
+async def test_completion_retry_exhausted_says_resubmit():
+    """A NIM that stays saturated must surface as an actionable message, not
+    the raw 503 JSON."""
+    import pytest
+    slept = []
+    async def create(): raise _nim_status_error(503)
+    async def sleep(s): slept.append(s)
+
+    with pytest.raises(ValueError) as e:
+        await main._completion_with_retry(create, sleep=sleep)
+    assert "overloaded" in str(e.value)
+    assert "resubmit" in str(e.value)
+    assert slept == [5, 15, 30]
+
+
+async def test_completion_retry_passes_real_errors_through():
+    """401/400 are not capacity problems; retrying hides a broken config."""
+    import pytest
+    async def create(): raise _nim_status_error(401)
+    async def sleep(s): raise AssertionError("must not retry an auth error")
+
+    with pytest.raises(Exception) as e:
+        await main._completion_with_retry(create, sleep=sleep)
+    assert getattr(e.value, "status_code", None) == 401
+
+
 def test_clip_for_telegram_passes_short_messages_unchanged():
     assert main._clip_for_telegram("task complete") == "task complete"
     exactly_at_limit = "x" * main._TELEGRAM_CLIP_AT

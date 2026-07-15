@@ -51,6 +51,51 @@ MAX_TOOL_ROUNDS = 8  # bound NIM tool round-trips so a misbehaving model/tool ca
 PLANNER_REQUEST_TIMEOUT_S = 120   # single NIM completion call
 MCP_DISCOVERY_TIMEOUT_S = 20      # tool discovery must never stall planning
 
+# The shared NIM endpoint saturates for whole minutes at a time
+# ("ResourceExhausted: Worker local total request limit reached"). The OpenAI
+# SDK's built-in retries (2, near-instant) don't outlast that, so we add our
+# own, spaced widely enough to.
+_PLANNER_RETRY_DELAYS_S = (5, 15, 30)
+
+def _is_transient_nim_error(e: BaseException) -> bool:
+    """Worth retrying: capacity/rate limits, gateway blips, connection drops.
+
+    Auth errors (401), bad requests (400), and anything non-HTTP are real
+    failures and must surface immediately.
+    """
+    import openai
+    if isinstance(e, (openai.APIConnectionError, openai.RateLimitError)):
+        return True
+    return (isinstance(e, openai.APIStatusError)
+            and e.status_code in (429, 500, 502, 503, 504))
+
+async def _completion_with_retry(create, sleep=asyncio.sleep):
+    """Run `create()` (an async completion call), retrying transient errors.
+
+    Exhausting the retries turns the raw HTTP error into a message the person
+    on Telegram can act on — the raw 503 JSON reads like a Hermes bug when it
+    is really "the shared model endpoint is full, resubmit later".
+    """
+    for delay in _PLANNER_RETRY_DELAYS_S:
+        try:
+            return await create()
+        except Exception as e:
+            if not _is_transient_nim_error(e):
+                raise
+            print(f"Model endpoint busy ({_console_safe(e)}); retrying in {delay}s")
+            await sleep(delay)
+    try:
+        return await create()
+    except Exception as e:
+        if not _is_transient_nim_error(e):
+            raise
+        raise ValueError(
+            "The model endpoint is overloaded right now (shared NVIDIA NIM "
+            f"capacity limit). Hermes retried {len(_PLANNER_RETRY_DELAYS_S) + 1} "
+            f"times over ~{sum(_PLANNER_RETRY_DELAYS_S)}s without getting "
+            "through. Nothing is wrong with your task — please resubmit it in "
+            "a few minutes.") from e
+
 def build_nim_planner(settings, secrets, hub):
     system = ("You are Hermes' planner. Output ONLY JSON: "
               '{"steps":[{"type":"code|build|test","engine":"claude|antigravity",'
@@ -69,9 +114,10 @@ def build_nim_planner(settings, secrets, hub):
         msgs = [{"role": "system", "content": system},
                 {"role": "user", "content": text}]
         for _ in range(MAX_TOOL_ROUNDS):
-            resp = await client.chat.completions.create(
-                model=settings.model, messages=msgs,
-                tools=oa_tools or None)
+            resp = await _completion_with_retry(
+                lambda: client.chat.completions.create(
+                    model=settings.model, messages=msgs,
+                    tools=oa_tools or None))
             m = resp.choices[0].message
             if m.tool_calls:
                 msgs.append(m.model_dump())
