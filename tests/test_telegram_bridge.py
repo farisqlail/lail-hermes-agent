@@ -41,6 +41,34 @@ def test_detect_risky():
     assert any("outside the project" in r for r in detect_risky(r"copy to C:\Windows"))
     assert detect_risky("buat app counter Flutter") == []
 
+
+def test_detect_risky_deletion_needs_a_filesystem_object():
+    """A deletion verb aimed at code constructs is a refactor, not a risk.
+    Only verb + filesystem object (same clause) gates."""
+    for benign in ("hapus warning di console",
+                   "remove unused imports",
+                   "delete the deprecated login function",
+                   "hapus duplikasi logika di auth",
+                   "drop the extra whitespace"):
+        assert detect_risky(benign) == []
+    for risky in ("hapus file config lama",
+                  "delete old files",
+                  "remove the build directory",
+                  "wipe the database",
+                  "drop table users",
+                  "hapus semuanya"):
+        assert detect_risky(risky) == ["deletes files"]
+
+
+def test_detect_risky_explicit_commands_gate_on_their_own():
+    for cmd in ("rm -rf build", "rm -r temp", "rmdir out", "git clean -fd"):
+        assert detect_risky(cmd) == ["deletes files"]
+
+
+def test_detect_risky_reports_deletion_once():
+    """Both delete patterns can match the same text; one reason, not two."""
+    assert detect_risky("rm -rf build and delete old files") == ["deletes files"]
+
 async def test_risky_task_awaits_confirmation(hermes_home):
     store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(allowed_user_ids=[1])
