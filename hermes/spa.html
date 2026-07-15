@@ -359,7 +359,12 @@
         .badge.running { background-color: hsla(217, 100%, 61%, 0.15); color: var(--primary); }
         .badge.done { background-color: hsla(142, 70%, 50%, 0.15); color: var(--success); }
         .badge.failed { background-color: hsla(346, 80%, 55%, 0.15); color: var(--danger); }
-        .badge.stopped { background-color: hsla(215, 20%, 65%, 0.15); color: var(--text-muted); }
+        .badge.awaiting_confirm { background-color: hsla(38, 92%, 50%, 0.15); color: var(--warning); }
+        /* stopped is not a task status, but the MCP card renders its Disabled
+           badge with it (class="badge ${srv.enabled ? 'done' : 'stopped'}"),
+           so the rule must stay. interrupted and cancelled share its muted
+           grey: all three mean "not running, nothing in flight". */
+        .badge.stopped, .badge.interrupted, .badge.cancelled { background-color: hsla(215, 20%, 65%, 0.15); color: var(--text-muted); }
 
         .task-text-preview {
             font-size: 0.85rem;

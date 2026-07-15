@@ -3,6 +3,12 @@ import sqlite3, time
 from pathlib import Path
 from contextlib import contextmanager
 
+# Statuses that only a live in-process task can advance. Nothing else ever
+# moves them, so after a restart they are lies. "interrupted" is deliberately
+# absent: it is terminal, which is what makes the sweep idempotent and keeps
+# start.bat's auto-restart loop from re-notifying on every pass.
+INTERRUPTIBLE = ("running", "awaiting_confirm", "queued")
+
 class Store:
     def __init__(self, db: Path):
         self.db = str(db)
@@ -44,6 +50,24 @@ class Store:
     def set_task_status(self, task_id, status):
         with self._conn() as c:
             c.execute("UPDATE tasks SET status=? WHERE task_id=?", (status, task_id))
+
+    def sweep_interrupted(self) -> list[dict]:
+        """Retire tasks that only look alive. Returns the swept rows, each
+        carrying the status it held before the sweep."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT task_id, chat_id, text, status FROM tasks "
+                "WHERE status IN (?,?,?)", INTERRUPTIBLE).fetchall()
+            swept = [dict(r) for r in rows]
+            # Steps first: this subquery reads the pre-sweep task status.
+            c.execute(
+                "UPDATE steps SET status='interrupted' "
+                "WHERE status IN ('running','queued') "
+                "AND task_id IN (SELECT task_id FROM tasks WHERE status IN (?,?,?))",
+                INTERRUPTIBLE)
+            c.execute("UPDATE tasks SET status='interrupted' "
+                      "WHERE status IN (?,?,?)", INTERRUPTIBLE)
+            return swept
 
     def add_step(self, task_id, index, kind, detail) -> int:
         with self._conn() as c:

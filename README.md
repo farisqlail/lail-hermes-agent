@@ -90,10 +90,48 @@ flowchart LR
   live task dashboard.
 - **MCP bridge** exposing MCP tools to the NIM brain as OpenAI function calls (stdio + HTTP/SSE
   transports, lazily connected, every remote call time-bounded).
-- **Confirmation gate** — tasks that `git push`, delete files, or touch paths outside the project
-  dir wait for an inline-keyboard ✅/❌ in Telegram before running.
+- **Existing projects** — register a name-to-path map in settings, then aim a task at it with
+  `/task @myprofit fix login`. Without `@`, a fresh workspace is created as before.
+- **Confirmation gate** — tasks that `git push`, delete files, touch paths outside the project
+  dir, or target a registered project with no usable git undo (dirty tree, not a repo,
+  git-ignored, or git unavailable) wait for an inline-keyboard ✅/❌ in Telegram before running.
 - **SQLite session store** — tasks, steps, logs, and artifacts persist and survive restarts.
 - **Self-healing launcher** — `start.bat` auto-restarts Hermes 5s after any crash/exit.
+
+## Working on an existing project
+
+Register the project once, in the settings UI at http://127.0.0.1:8799
+(`projects` is a name-to-absolute-path map):
+
+```json
+"projects": {
+  "myprofit": "C:\\Users\\USER\\myprofit",
+  "hermes":   "E:\\Hermes\\app"
+}
+```
+
+Then aim a task at it with the `@name` sigil:
+
+```
+/task @myprofit fix the login bug
+```
+
+Without `@`, Hermes creates a fresh workspace under `projects_path` as before.
+`@name` is deliberately the *only* trigger — a bare "project myprofit" in prose
+starts a new workspace, so that a folder named `app` or `test` can never be
+matched out of ordinary task text.
+
+An unregistered `@name` is rejected with the list of registered names; it does
+not silently fall back to a new workspace. When no projects are registered at
+all, the rejection instead says so and points at the settings UI. If the name
+*is* registered but its directory has since been moved or deleted, Hermes
+rejects the task with a different message pointing at the settings UI, instead
+of the name list.
+
+If the target has no usable git undo — uncommitted changes, not a git repo, git-ignored by
+an enclosing repo, or git itself unavailable (missing binary, no subprocess support, or a
+timeout) — Hermes asks for confirmation first (when the confirmation gate is enabled;
+`confirm_risky` is on by default).
 
 ## Layout
 
@@ -132,7 +170,7 @@ token, your allowed Telegram user ID, Android SDK path, and emulator AVD.
 ```bash
 python -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
-.venv\Scripts\python -m pytest -q          # 68 passing
+.venv\Scripts\python -m pytest -q
 ```
 
 Tests are hermetic — no real network, NIM, emulator, or `claude`/`agy` binaries. Engines, build,
@@ -142,8 +180,6 @@ test, MCP transport, and the NIM planner are all injected as fakes.
 
 - **HTML forms** for the settings / MCP pages (currently JSON API + minimal dashboard).
 - **Resume-after-crash** — task state persists, but interrupted tasks are not re-driven on restart.
-- **Targeting an existing project by name** — each task currently gets a fresh
-  `projects\<task-id>` workspace.
 
 See [`docs/TODO.md`](docs/TODO.md) for the full backlog history.
 
