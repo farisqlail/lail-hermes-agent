@@ -257,6 +257,42 @@ async def test_named_project_recorded_in_log(hermes_home):
     assert any(f"project: {proj}" in line for line in store.get_logs(tid))
 
 
+async def test_send_file_is_bound_to_the_chat(hermes_home):
+    """Bridge hands the orchestrator a chat-bound wrapper: the orchestrator
+    knows kinds and paths, never chat ids."""
+    store = _store(hermes_home)
+    settings = Settings(allowed_user_ids=[1])
+    sent, got = [], []
+    async def sender(chat, text): pass
+    async def send_file(chat_id, kind, path): sent.append((chat_id, kind, path))
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None,
+                           send_file=None):
+            got.append(send_file)
+            await send_file("apk", "app.apk")
+    b = Bridge(settings, store, FakeOrch(), sender, send_file=send_file)
+
+    await b.handle_task(user_id=1, chat_id=5, text="build app")
+    assert got and got[0] is not None
+    assert sent == [(5, "apk", "app.apk")]
+
+
+async def test_without_send_file_orchestrator_keeps_narrow_signature(hermes_home):
+    """No send_file configured -> the kwarg is not passed at all, so existing
+    orchestrator fakes (and doubles) without it keep working."""
+    store = _store(hermes_home)
+    settings = Settings(allowed_user_ids=[1])
+    ran = []
+    async def sender(chat, text): pass
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            ran.append(task_id)   # would TypeError if send_file were passed
+    b = Bridge(settings, store, FakeOrch(), sender)
+
+    tid = await b.handle_task(user_id=1, chat_id=5, text="build app")
+    assert ran == [tid]
+
+
 async def test_clean_project_runs_when_git_dirty_not_configured(hermes_home):
     """Production wiring: Bridge() with no git_dirty means the gate is
     skipped entirely and the task runs against the resolved project."""

@@ -87,7 +87,8 @@ def build_nim_planner(settings, secrets, hub):
 def real_mcp_session_factory(srv):
     return RealMcpSession(srv)
 
-def _build_bridge(settings, store, orchestrator, sender, ask_confirm):
+def _build_bridge(settings, store, orchestrator, sender, ask_confirm,
+                  send_file=None):
     """Construct the Bridge with its real collaborators.
 
     Extracted from run() so the wiring is testable: Bridge treats a missing
@@ -95,7 +96,8 @@ def _build_bridge(settings, store, orchestrator, sender, ask_confirm):
     disable the gate with every test still green.
     """
     return Bridge(settings, store, orchestrator, sender,
-                  ask_confirm=ask_confirm, git_dirty=git_dirty)
+                  ask_confirm=ask_confirm, git_dirty=git_dirty,
+                  send_file=send_file)
 
 def _console_safe(e: object) -> str:
     """Render an exception (or anything) so print() can never itself raise.
@@ -164,6 +166,18 @@ async def run():
             async def sender(chat_id, text):
                 await app.bot.send_message(chat_id=chat_id, text=text)
 
+            async def send_file(chat_id, kind, path):
+                # Screenshots land inline as photos; anything else (apk,
+                # logs) as a document. Callers guard failures — Telegram's
+                # 50 MB bot upload cap can reject a big APK.
+                with open(path, "rb") as f:
+                    if kind == "screenshot":
+                        await app.bot.send_photo(chat_id=chat_id, photo=f)
+                    else:
+                        await app.bot.send_document(
+                            chat_id=chat_id, document=f,
+                            filename=Path(path).name)
+
             def crash_reporter(chat_id):
                 # done-callback for fire-and-forget tasks: without it, a crash
                 # outside run_task's try/except is silently dropped.
@@ -188,7 +202,8 @@ async def run():
                           + "\n- ".join(reasons)),
                     reply_markup=kb)
 
-            bridge = _build_bridge(settings, store, orch, sender, ask_confirm)
+            bridge = _build_bridge(settings, store, orch, sender, ask_confirm,
+                                   send_file=send_file)
 
             async def check_auth_and_respond(update: Update) -> bool:
                 u = update.effective_user.id

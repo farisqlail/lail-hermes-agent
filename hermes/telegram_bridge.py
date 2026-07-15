@@ -27,13 +27,14 @@ def detect_risky(text: str) -> list[str]:
 
 class Bridge:
     def __init__(self, settings: Settings, store: Store, orchestrator, sender,
-                 ask_confirm=None, git_dirty=None):
+                 ask_confirm=None, git_dirty=None, send_file=None):
         self.settings = settings
         self.store = store
         self.orchestrator = orchestrator
         self.sender = sender            # async (chat_id, text)
         self.ask_confirm = ask_confirm  # async (chat_id, task_id, reasons)
         self.git_dirty = git_dirty      # async (path) -> bool | None
+        self.send_file = send_file      # async (chat_id, kind, path)
         # task_id -> (user, chat, text, proj)
         self.pending: dict[str, tuple[int, int, str, Path | None]] = {}
 
@@ -110,4 +111,12 @@ class Bridge:
                    proj: Path | None = None):
         async def report(tid, msg):
             await self.sender(chat_id, f"[{tid}] {msg}")
-        await self.orchestrator.run_task(task_id, chat_id, text, report, proj=proj)
+        # Only thread send_file through when configured, so orchestrator fakes
+        # (and a Bridge wired without Telegram) keep their narrower signature.
+        kwargs = {}
+        if self.send_file is not None:
+            async def file_out(kind, path):
+                await self.send_file(chat_id, kind, path)
+            kwargs["send_file"] = file_out
+        await self.orchestrator.run_task(task_id, chat_id, text, report,
+                                         proj=proj, **kwargs)
