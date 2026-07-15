@@ -89,9 +89,6 @@ async def test_confirm_gate_disabled_runs_directly(hermes_home):
     assert ran == [tid]
 
 
-from pathlib import Path
-
-
 def _store(home):
     from hermes.session_store import Store
     s = Store(home / "t.db"); s.init_schema()
@@ -126,6 +123,7 @@ async def test_registered_but_missing_path_rejected(hermes_home):
     tid = await b.handle_task(user_id=1, chat_id=5, text="@myprofit fix login")
     assert tid is None
     assert "gone" in sent[0]
+    assert store.list_tasks() == []          # no task row created
 
 
 async def test_clean_project_runs_without_gate(hermes_home):
@@ -171,7 +169,7 @@ async def test_dirty_project_gates(hermes_home):
     assert ran == [proj]
 
 
-async def test_non_git_project_gates(hermes_home):
+async def test_no_undo_available_gates(hermes_home):
     store = _store(hermes_home)
     proj = hermes_home / "myprofit"; proj.mkdir()
     settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
@@ -185,7 +183,7 @@ async def test_non_git_project_gates(hermes_home):
                ask_confirm=ask_confirm, git_dirty=git_dirty)
 
     await b.handle_task(user_id=1, chat_id=5, text="@myprofit refactor auth")
-    assert any("not a git repo" in r for r in asked[0])
+    assert any("no usable git undo" in r for r in asked[0])
 
 
 async def test_risky_text_and_dirty_tree_both_reported(hermes_home):
@@ -220,3 +218,59 @@ async def test_no_sigil_still_creates_fresh_workspace(hermes_home):
 
     await b.handle_task(user_id=1, chat_id=5, text="buat app counter Flutter")
     assert got == [None]
+
+
+async def test_git_dirty_raising_still_gates(hermes_home):
+    """An injected git_dirty that raises must be treated like None (can't
+    tell -> gate), not crash handle_task and strand the task at 'queued'."""
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
+    asked = []
+    async def sender(chat, text): pass
+    async def ask_confirm(chat, task_id, reasons): asked.append(reasons)
+    async def git_dirty(path): raise RuntimeError("git blew up")
+    class FakeOrch:
+        async def run_task(self, *a, **k): raise AssertionError("must not run before confirm")
+    b = Bridge(settings, store, FakeOrch(), sender,
+               ask_confirm=ask_confirm, git_dirty=git_dirty)
+
+    tid = await b.handle_task(user_id=1, chat_id=5, text="@myprofit refactor auth")
+    assert tid is not None
+    assert any("no usable git undo" in r for r in asked[0])
+    assert store.get_task(tid)["status"] != "queued"
+    assert store.get_task(tid)["status"] == "awaiting_confirm"
+
+
+async def test_named_project_recorded_in_log(hermes_home):
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
+    async def sender(chat, text): pass
+    async def git_dirty(path): return False
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None): pass
+    b = Bridge(settings, store, FakeOrch(), sender, git_dirty=git_dirty)
+
+    tid = await b.handle_task(user_id=1, chat_id=5, text="@myprofit fix login")
+    assert tid is not None
+    assert any(f"project: {proj}" in line for line in store.get_logs(tid))
+
+
+async def test_clean_project_runs_when_git_dirty_not_configured(hermes_home):
+    """Production wiring: Bridge() with no git_dirty means the gate is
+    skipped entirely and the task runs against the resolved project."""
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
+    got = []
+    async def sender(chat, text): pass
+    async def ask_confirm(chat, task_id, reasons): raise AssertionError("no git_dirty means no gate")
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            got.append((text, proj))
+    b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm)
+
+    tid = await b.handle_task(user_id=1, chat_id=5, text="@myprofit refactor auth")
+    assert tid is not None
+    assert got == [("refactor auth", proj)]

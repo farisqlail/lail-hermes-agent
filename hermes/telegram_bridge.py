@@ -62,18 +62,25 @@ class Bridge:
 
         task_id = new_task_id()
         self.store.create_task(task_id, chat_id, text)
+        if proj is not None:
+            self.store.append_log(task_id, f"project: {proj}")
 
         reasons = detect_risky(text)
-        if proj is not None and self.git_dirty is not None:
-            dirty = await self.git_dirty(proj)
+        gate_live = bool(settings.confirm_risky and self.ask_confirm)
+        if proj is not None and self.git_dirty is not None and gate_live:
+            try:
+                dirty = await self.git_dirty(proj)
+            except Exception:
+                dirty = None   # can't tell -> gate, per git_dirty's own contract
             if dirty is None:
                 reasons.append(
-                    f"@{name} is not a git repo — there is no undo if this goes wrong")
+                    f"@{name} has no usable git undo (not a repo, git-ignored, or git unavailable) "
+                    f"— a bad run here can't be rolled back")
             elif dirty:
                 reasons.append(
                     f"@{name} has uncommitted changes that could be lost")
 
-        if reasons and settings.confirm_risky and self.ask_confirm:
+        if reasons and gate_live:
             self.store.set_task_status(task_id, "awaiting_confirm")
             self.pending[task_id] = (user_id, chat_id, text, proj)
             await self.ask_confirm(chat_id, task_id, reasons)
