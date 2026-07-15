@@ -23,3 +23,35 @@ def test_build_bridge_injects_git_dirty(tmp_path):
                            ask_confirm=None)
     assert b.git_dirty is not None
     assert inspect.iscoroutinefunction(b.git_dirty)
+
+
+async def test_notify_restart_sends_one_digest_per_chat():
+    sent = []
+    async def sender(chat, text): sent.append((chat, text))
+    swept = [
+        {"task_id": "t1", "chat_id": 5, "text": "refactor auth", "status": "running"},
+        {"task_id": "t2", "chat_id": 7, "text": "build apk", "status": "queued"},
+    ]
+    assert await main._notify_restart(swept, sender) == 2
+    assert {c for c, _ in sent} == {5, 7}
+
+
+async def test_notify_restart_with_nothing_swept():
+    async def sender(chat, text): raise AssertionError("nothing to say")
+    assert await main._notify_restart([], sender) == 0
+
+
+async def test_notify_restart_survives_one_bad_chat():
+    """A chat that blocked the bot must not silence the others, nor take
+    startup down with it."""
+    sent = []
+    async def sender(chat, text):
+        if chat == 5:
+            raise RuntimeError("Forbidden: bot was blocked by the user")
+        sent.append(chat)
+    swept = [
+        {"task_id": "t1", "chat_id": 5, "text": "x", "status": "running"},
+        {"task_id": "t2", "chat_id": 7, "text": "y", "status": "running"},
+    ]
+    assert await main._notify_restart(swept, sender) == 1
+    assert sent == [7]

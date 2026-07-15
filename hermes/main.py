@@ -13,6 +13,7 @@ from .telegram_bridge import Bridge
 from .web_ui import create_app
 from . import build_runner, engine_runner, test_runner, project_detect
 from .git_status import git_dirty
+from .recovery import group_digests
 
 class Adb:
     def __init__(self, settings: config.Settings):
@@ -96,11 +97,33 @@ def _build_bridge(settings, store, orchestrator, sender, ask_confirm):
     return Bridge(settings, store, orchestrator, sender,
                   ask_confirm=ask_confirm, git_dirty=git_dirty)
 
+async def _notify_restart(swept: list[dict], sender) -> int:
+    """Tell each affected chat once that its tasks did not survive the restart.
+
+    Returns the number of chats successfully notified. Each send is guarded on
+    its own: a chat that blocked the bot must not silence the others, and must
+    not take startup down with it.
+    """
+    sent = 0
+    for chat_id, msg in group_digests(swept):
+        try:
+            await sender(chat_id, msg)
+            sent += 1
+        except Exception as e:
+            print(f"Could not notify chat {chat_id} of restart: {e}")
+    return sent
+
 async def run():
     settings = config.load_settings()
     secrets = config.load_secrets()
     paths.ensure_dirs()
     store = Store(paths.db_path()); store.init_schema()
+    # Unconditional, and before the bot: anything still marked live is a lie
+    # left by the last exit, and the dashboard must be honest even when no
+    # token is configured. Notifying is a bonus, not a precondition.
+    swept = store.sweep_interrupted()
+    if swept:
+        print(f"Startup recovery: retired {len(swept)} interrupted task(s).")
 
     hub = McpHub(settings.mcp_servers, session_factory=real_mcp_session_factory)
     await hub.connect()
@@ -220,6 +243,9 @@ async def run():
         try:
             async with app:
                 await app.start()
+                # Before polling, so the restart notice lands ahead of any
+                # newly submitted task's output.
+                await _notify_restart(swept, sender)
                 await app.updater.start_polling()
                 await server.serve()
                 await app.updater.stop()
