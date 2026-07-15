@@ -27,7 +27,7 @@ async def test_accept_listed(hermes_home):
     ran = []
     async def sender(chat, text): pass
     class FakeOrch:
-        async def run_task(self, task_id, chat_id, text, report):
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
             ran.append(task_id); await report(task_id, "hello")
     b = Bridge(settings, store, FakeOrch(), sender)
     tid = await b.handle_task(user_id=1, chat_id=5, text="build app")
@@ -48,7 +48,7 @@ async def test_risky_task_awaits_confirmation(hermes_home):
     async def sender(chat, text): pass
     async def ask_confirm(chat, task_id, reasons): asked.append((task_id, reasons))
     class FakeOrch:
-        async def run_task(self, task_id, chat_id, text, report): ran.append(task_id)
+        async def run_task(self, task_id, chat_id, text, report, proj=None): ran.append(task_id)
     b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm)
 
     tid = await b.handle_task(user_id=1, chat_id=5, text="build app then git push")
@@ -83,7 +83,140 @@ async def test_confirm_gate_disabled_runs_directly(hermes_home):
     async def sender(chat, text): pass
     async def ask_confirm(chat, task_id, reasons): raise AssertionError("gate disabled")
     class FakeOrch:
-        async def run_task(self, task_id, chat_id, text, report): ran.append(task_id)
+        async def run_task(self, task_id, chat_id, text, report, proj=None): ran.append(task_id)
     b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm)
     tid = await b.handle_task(user_id=1, chat_id=5, text="git push it")
     assert ran == [tid]
+
+
+from pathlib import Path
+
+
+def _store(home):
+    from hermes.session_store import Store
+    s = Store(home / "t.db"); s.init_schema()
+    return s
+
+
+async def test_unregistered_project_rejected_before_planning(hermes_home):
+    store = _store(hermes_home)
+    settings = Settings(allowed_user_ids=[1], projects={})
+    sent = []
+    async def sender(chat, text): sent.append(text)
+    class FakeOrch:
+        async def run_task(self, *a, **k): raise AssertionError("planner must not run")
+    b = Bridge(settings, store, FakeOrch(), sender)
+
+    tid = await b.handle_task(user_id=1, chat_id=5, text="@nope fix login")
+    assert tid is None
+    assert "not registered" in sent[0]
+    assert store.list_tasks() == []          # no task row created
+
+
+async def test_registered_but_missing_path_rejected(hermes_home):
+    store = _store(hermes_home)
+    gone = hermes_home / "moved-away"
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(gone)})
+    sent = []
+    async def sender(chat, text): sent.append(text)
+    class FakeOrch:
+        async def run_task(self, *a, **k): raise AssertionError("planner must not run")
+    b = Bridge(settings, store, FakeOrch(), sender)
+
+    tid = await b.handle_task(user_id=1, chat_id=5, text="@myprofit fix login")
+    assert tid is None
+    assert "gone" in sent[0]
+
+
+async def test_clean_project_runs_without_gate(hermes_home):
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
+    got = []
+    async def sender(chat, text): pass
+    async def ask_confirm(chat, task_id, reasons): raise AssertionError("clean tree must not gate")
+    async def git_dirty(path): return False
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            got.append((text, proj))
+    b = Bridge(settings, store, FakeOrch(), sender,
+               ask_confirm=ask_confirm, git_dirty=git_dirty)
+
+    tid = await b.handle_task(user_id=1, chat_id=5, text="@myprofit refactor auth")
+    assert tid is not None
+    assert got == [("refactor auth", proj)]      # sigil stripped, proj threaded
+
+
+async def test_dirty_project_gates(hermes_home):
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
+    ran, asked = [], []
+    async def sender(chat, text): pass
+    async def ask_confirm(chat, task_id, reasons): asked.append(reasons)
+    async def git_dirty(path): return True
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            ran.append(proj)
+    b = Bridge(settings, store, FakeOrch(), sender,
+               ask_confirm=ask_confirm, git_dirty=git_dirty)
+
+    tid = await b.handle_task(user_id=1, chat_id=5, text="@myprofit refactor auth")
+    assert store.get_task(tid)["status"] == "awaiting_confirm"
+    assert ran == []
+    assert any("uncommitted" in r for r in asked[0])
+
+    # approving must still reach the resolved project, not a fresh workspace
+    assert await b.resolve_confirm(user_id=1, task_id=tid, approved=True)
+    assert ran == [proj]
+
+
+async def test_non_git_project_gates(hermes_home):
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
+    asked = []
+    async def sender(chat, text): pass
+    async def ask_confirm(chat, task_id, reasons): asked.append(reasons)
+    async def git_dirty(path): return None
+    class FakeOrch:
+        async def run_task(self, *a, **k): pass
+    b = Bridge(settings, store, FakeOrch(), sender,
+               ask_confirm=ask_confirm, git_dirty=git_dirty)
+
+    await b.handle_task(user_id=1, chat_id=5, text="@myprofit refactor auth")
+    assert any("not a git repo" in r for r in asked[0])
+
+
+async def test_risky_text_and_dirty_tree_both_reported(hermes_home):
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
+    asked = []
+    async def sender(chat, text): pass
+    async def ask_confirm(chat, task_id, reasons): asked.append(reasons)
+    async def git_dirty(path): return True
+    class FakeOrch:
+        async def run_task(self, *a, **k): pass
+    b = Bridge(settings, store, FakeOrch(), sender,
+               ask_confirm=ask_confirm, git_dirty=git_dirty)
+
+    await b.handle_task(user_id=1, chat_id=5, text="@myprofit fix then git push")
+    assert any("git push" in r for r in asked[0])
+    assert any("uncommitted" in r for r in asked[0])
+
+
+async def test_no_sigil_still_creates_fresh_workspace(hermes_home):
+    """No @ means proj=None — the orchestrator makes projects/<task-id>."""
+    store = _store(hermes_home)
+    settings = Settings(allowed_user_ids=[1])
+    got = []
+    async def sender(chat, text): pass
+    async def git_dirty(path): raise AssertionError("no project, nothing to check")
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            got.append(proj)
+    b = Bridge(settings, store, FakeOrch(), sender, git_dirty=git_dirty)
+
+    await b.handle_task(user_id=1, chat_id=5, text="buat app counter Flutter")
+    assert got == [None]
