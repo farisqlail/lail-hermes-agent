@@ -1,3 +1,5 @@
+import pytest
+from pydantic import ValidationError
 from hermes import config, paths
 
 def test_defaults_when_missing(hermes_home):
@@ -25,3 +27,39 @@ def test_secrets_roundtrip(hermes_home):
     sec = config.load_secrets()
     assert sec.nvidia_api_key == "nv-k"
     assert sec.telegram_bot_token == "tg-t"
+
+def test_projects_defaults_empty():
+    assert config.Settings().projects == {}
+
+
+def test_projects_accepts_absolute_paths(tmp_path):
+    s = config.Settings(projects={"myprofit": str(tmp_path)})
+    assert s.projects["myprofit"] == str(tmp_path)
+
+
+def test_projects_rejects_relative_path():
+    with pytest.raises(ValidationError, match="absolute"):
+        config.Settings(projects={"myprofit": "relative/path"})
+
+
+@pytest.mark.parametrize("name", ["..", ".ssh", "-flag", "has space", "a/b", ""])
+def test_projects_rejects_bad_names(name, tmp_path):
+    with pytest.raises(ValidationError, match="project name"):
+        config.Settings(projects={name: str(tmp_path)})
+
+
+def test_projects_missing_path_still_loads(tmp_path):
+    """A registered folder that no longer exists must NOT break Settings
+    construction — load_settings() runs this validator at startup, and a
+    dead path must fail one task, not the whole daemon."""
+    gone = tmp_path / "was-here"
+    s = config.Settings(projects={"gone": str(gone)})
+    assert s.projects["gone"] == str(gone)
+
+
+def test_projects_roundtrip(hermes_home, tmp_path):
+    paths.ensure_dirs()
+    s = config.load_settings()
+    s.projects = {"myprofit": str(tmp_path)}
+    config.save_settings(s)
+    assert config.load_settings().projects == {"myprofit": str(tmp_path)}

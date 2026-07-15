@@ -119,3 +119,24 @@ def test_artifacts_endpoints(hermes_home):
     # Not found case
     r = client.get(f"/api/artifacts/view?path={artifact_dir}/nonexistent.png")
     assert r.status_code == 404
+
+def test_settings_post_accepts_projects_registry(hermes_home, tmp_path):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+
+    body = config.Settings(projects={"myprofit": str(tmp_path)}).model_dump()
+    r = client.post("/api/settings", json=body)
+    assert r.status_code == 200
+    assert config.load_settings().projects == {"myprofit": str(tmp_path)}
+
+
+def test_settings_post_rejects_bad_project_registry(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+
+    r = client.post("/api/settings", json={"projects": {"myprofit": "relative/path"}})
+    assert r.status_code == 422
+    r = client.post("/api/settings", json={"projects": {"..": "C:\\Windows"}})
+    assert r.status_code == 422
