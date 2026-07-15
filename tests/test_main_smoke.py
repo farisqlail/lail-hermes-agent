@@ -55,3 +55,36 @@ async def test_notify_restart_survives_one_bad_chat():
     ]
     assert await main._notify_restart(swept, sender) == 1
     assert sent == [7]
+
+
+async def test_notify_restart_survives_unprintable_error(monkeypatch):
+    """A chat error whose message can't be rendered by the console must not
+    escape _notify_restart either.
+
+    Hermes runs on a Windows console whose stdout is cp1252 (deploy/start.bat
+    sets no PYTHONUTF8, PYTHONIOENCODING, or chcp 65001). Under pytest, stdout
+    is captured with a UTF-8-capable encoding, so simply calling
+    _notify_restart with a non-ASCII exception message would pass here for
+    the wrong reason even against unguarded code. To actually exercise the
+    hazard, stand in for that cp1252 console: monkeypatch the builtin print
+    that _notify_restart's except handler calls with a fake that raises
+    UnicodeEncodeError for any text a real cp1252 console couldn't encode,
+    exactly like the real console would.
+    """
+    def cp1252_console_print(*args, **kwargs):
+        text = " ".join(str(a) for a in args)
+        text.encode("cp1252")  # raises UnicodeEncodeError, like the real console
+
+    monkeypatch.setattr("builtins.print", cp1252_console_print)
+
+    sent = []
+    async def sender(chat, text):
+        if chat == 5:
+            raise RuntimeError("❌ Forbidden: bot заблокирован")
+        sent.append(chat)
+    swept = [
+        {"task_id": "t1", "chat_id": 5, "text": "x", "status": "running"},
+        {"task_id": "t2", "chat_id": 7, "text": "y", "status": "running"},
+    ]
+    assert await main._notify_restart(swept, sender) == 1
+    assert sent == [7]

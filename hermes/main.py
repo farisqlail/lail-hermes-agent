@@ -110,7 +110,21 @@ async def _notify_restart(swept: list[dict], sender) -> int:
             await sender(chat_id, msg)
             sent += 1
         except Exception as e:
-            print(f"Could not notify chat {chat_id} of restart: {e}")
+            # Coerce to cp1252 before printing: Hermes's Windows console (see
+            # deploy/start.bat, which sets none of PYTHONUTF8,
+            # PYTHONIOENCODING, or chcp 65001) renders stdout as cp1252. If
+            # str(e) contains a character outside cp1252 -- plausible in
+            # Telegram/httpx error text -- a bare print() here would raise
+            # UnicodeEncodeError *from this except block itself*, which is
+            # not caught by the try above and escapes _notify_restart
+            # entirely (in run(), that gets swallowed by the outer
+            # `async with app` handler, which then never reaches
+            # app.updater.start_polling() for the rest of the process).
+            # backslashreplace guarantees an encodable string -- and thus
+            # that this print can never itself raise -- while still telling
+            # the operator which chat failed and roughly why.
+            detail = str(e).encode("cp1252", errors="backslashreplace").decode("cp1252")
+            print(f"Could not notify chat {chat_id} of restart: {detail}")
     return sent
 
 async def run():
