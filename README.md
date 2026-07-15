@@ -93,8 +93,8 @@ flowchart LR
 - **Existing projects** — register a name-to-path map in settings, then aim a task at it with
   `/task @myprofit fix login`. Without `@`, a fresh workspace is created as before.
 - **Confirmation gate** — tasks that `git push`, delete files, touch paths outside the project
-  dir, or target a registered project with an unclean git tree wait for an inline-keyboard
-  ✅/❌ in Telegram before running.
+  dir, or target a registered project with no usable git undo (dirty tree, not a repo,
+  git-ignored, or git unavailable) wait for an inline-keyboard ✅/❌ in Telegram before running.
 - **SQLite session store** — tasks, steps, logs, and artifacts persist and survive restarts.
 - **Self-healing launcher** — `start.bat` auto-restarts Hermes 5s after any crash/exit.
 
@@ -122,10 +122,13 @@ starts a new workspace, so that a folder named `app` or `test` can never be
 matched out of ordinary task text.
 
 An unregistered `@name` is rejected with the list of registered names; it does
-not silently fall back to a new workspace.
+not silently fall back to a new workspace. If the name *is* registered but its
+directory has since been moved or deleted, Hermes rejects the task with a
+different message pointing at the settings UI, instead of the name list.
 
-If the target has uncommitted git changes — or is not a git repo at all —
-Hermes asks for confirmation first, since there is no clean undo.
+If the target has no usable git undo — uncommitted changes, not a git repo, git-ignored by
+an enclosing repo, or git itself unavailable (missing binary, no subprocess support, or a
+timeout) — Hermes asks for confirmation first.
 
 ## Layout
 
@@ -164,7 +167,7 @@ token, your allowed Telegram user ID, Android SDK path, and emulator AVD.
 ```bash
 python -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
-.venv\Scripts\python -m pytest -q          # 68 passing
+.venv\Scripts\python -m pytest -q
 ```
 
 Tests are hermetic — no real network, NIM, emulator, or `claude`/`agy` binaries. Engines, build,
@@ -174,8 +177,6 @@ test, MCP transport, and the NIM planner are all injected as fakes.
 
 - **HTML forms** for the settings / MCP pages (currently JSON API + minimal dashboard).
 - **Resume-after-crash** — task state persists, but interrupted tasks are not re-driven on restart.
-- **Targeting an existing project by name** — each task currently gets a fresh
-  `projects\<task-id>` workspace.
 
 See [`docs/TODO.md`](docs/TODO.md) for the full backlog history.
 

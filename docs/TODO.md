@@ -1,7 +1,7 @@
 # Hermes — Unfinished Tasks / Backlog
 
-Status: all 14 build-plan tasks done, plus the P1–P4 backlog below (**63 tests pass**,
-warning-free output). Remaining work is the "not started" section at the bottom.
+Status: all 14 build-plan tasks done, plus the P1–P4 backlog below (**full test suite
+passes**, warning-free output). Remaining work is the "not started" section at the bottom.
 
 ## P1 — Correctness (do before trusting results)
 
@@ -45,12 +45,15 @@ warning-free output). Remaining work is the "not started" section at the bottom.
 - [x] Orchestrator `test`-step real branch (emulator with app id threading, browser via injected deps).
 - [x] Starlette `TestClient` deprecation warning silenced via pytest `filterwarnings`.
 
-## Not started at all (potential future scope)
+## P5 — Existing-project targeting
 
 - [x] **Run tasks against an existing project** — `Settings.projects` maps a name to
   an absolute path; `/task @myprofit ...` resolves through it (`project_resolve`),
-  and the confirmation gate additionally fires when the target's git tree is dirty
-  or the target is not a repo.
+  and the confirmation gate additionally fires when the target has no usable git undo
+  (dirty tree, not a repo, git-ignored, or git unavailable).
+
+## Not started at all (potential future scope)
+
 - [ ] Real end-to-end smoke run (needs your NVIDIA key, Telegram token, an AVD) — see `docs/SMOKE.md`.
 - [ ] HTML forms for the settings / MCP pages (currently JSON API only; dashboard is minimal HTML).
 - [ ] Resume-after-crash logic actually re-driving an interrupted task (state persists, but nothing
