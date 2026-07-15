@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
-from hermes.orchestrator import Orchestrator, parse_plan, choose_engine
+from hermes.orchestrator import (
+    Orchestrator, parse_plan, choose_engine, _project_summary,
+    _compose_engine_prompt)
 from hermes.config import Settings
 from hermes.session_store import Store
 
@@ -179,6 +181,74 @@ async def test_browser_step_via_injected_dep(hermes_home):
 
     assert seen == ["http://localhost:9"]
     assert store.get_task("t1")["status"] == "done"
+
+
+def test_project_summary_lists_two_levels_and_omits_noise(tmp_path):
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "main.dart").write_text("x")
+    (tmp_path / "pubspec.yaml").write_text("x")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("x")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "left-pad").mkdir()
+
+    s = _project_summary(tmp_path)
+    assert "lib/" in s
+    assert "  main.dart" in s
+    assert "pubspec.yaml" in s
+    assert ".git/ (contents omitted)" in s      # named, but not walked
+    assert "HEAD" not in s
+    assert "left-pad" not in s
+
+
+def test_project_summary_empty_dir_says_new_project(tmp_path):
+    assert "brand-new project" in _project_summary(tmp_path)
+
+
+def test_project_summary_is_capped(tmp_path):
+    for i in range(80):
+        (tmp_path / f"file{i:03}.txt").write_text("x")
+    s = _project_summary(tmp_path)
+    assert len(s.splitlines()) == 51            # 50 entries + the "more" line
+    assert "…and 30 more entries" in s
+
+
+def test_compose_engine_prompt_orders_task_tree_step(tmp_path):
+    (tmp_path / "app.py").write_text("x")
+    p = _compose_engine_prompt("fix the login bug", tmp_path, "patch auth.py")
+    assert p.index("fix the login bug") < p.index("app.py") < p.index("patch auth.py")
+
+
+async def test_code_step_prompt_carries_task_and_project_context(hermes_home):
+    """The engine must see the user's original task and the tree, not just
+    the planner's step line — and the corrected retry must keep both."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude", projects_path=str(hermes_home / "proj"))
+    existing = hermes_home / "myprofit"
+    (existing / "lib").mkdir(parents=True)
+    (existing / "lib" / "login.dart").write_text("x")
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "patch the login flow"}]})
+
+    prompts = []
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+        from hermes.engine_runner import RunResult
+        prompts.append(prompt)
+        return RunResult(len(prompts) > 1, "", "some engine error", False,
+                         0 if len(prompts) > 1 else 1)
+
+    orch = Orchestrator(settings, store, planner, dict(run_engine=fake_run_engine))
+    async def report(tid, msg): pass
+    store.create_task("t1", 5, "fix login on @myprofit")
+    await orch.run_task("t1", 5, "fix login on myprofit", report, proj=existing)
+
+    assert len(prompts) == 2
+    for p in prompts:
+        assert "fix login on myprofit" in p      # original user task
+        assert "login.dart" in p                 # tree summary
+        assert "patch the login flow" in p       # planner's step
+    assert "Previous error:\nsome engine error" in prompts[1]
 
 
 async def test_failed_code_step_saves_full_engine_transcript(hermes_home):
