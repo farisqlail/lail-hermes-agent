@@ -61,7 +61,7 @@ class Orchestrator:
             self.store.set_step_status(sid, "running")
             await report(task_id, f"step {i} [{step.get('type')}] started...")
             try:
-                ok, msg = await self._exec_step(task_id, proj, step)
+                ok, msg = await self._exec_step(task_id, proj, step, i)
             except Exception as e:
                 ok, msg = False, f"step crashed: {e}"
             self.store.set_step_status(sid, "done" if ok else "failed")
@@ -74,17 +74,48 @@ class Orchestrator:
         self.store.append_log(task_id, "task complete")
         await report(task_id, "task complete")
 
-    async def _exec_step(self, task_id, proj: Path, step: dict):
+    def _save_engine_transcript(self, task_id: str, idx: int, engine: str,
+                                attempts: list) -> None:
+        """Persist the full engine output as an artifact.
+
+        The chat report only carries stderr[:200]; without this, the rest of
+        the engine's stdout/stderr is gone and a failed step cannot be
+        debugged. Saving must never take the step down with it — a transcript
+        is a bonus, not a precondition.
+        """
+        from . import paths
+        try:
+            d = paths.artifacts_dir() / task_id
+            d.mkdir(parents=True, exist_ok=True)
+            parts = []
+            for n, r in enumerate(attempts, 1):
+                parts.append(
+                    f"=== attempt {n}/{len(attempts)} — engine: {engine}, "
+                    f"ok: {r.ok}, returncode: {r.returncode}, "
+                    f"timed_out: {r.timed_out} ===\n"
+                    f"--- stdout ---\n{r.stdout}\n"
+                    f"--- stderr ---\n{r.stderr}\n")
+            log = d / f"step-{idx}-engine.log"
+            log.write_text("\n".join(parts), encoding="utf-8")
+            self.store.add_artifact(task_id, "log", str(log))
+        except OSError as e:
+            self.store.append_log(
+                task_id, f"could not save engine transcript for step {idx}: {e}")
+
+    async def _exec_step(self, task_id, proj: Path, step: dict, idx: int):
         t = step.get("type")
         if t == "code":
             engine = choose_engine(step, self.settings)
             res = await self.deps["run_engine"](
                 engine, step.get("prompt", ""), proj, self.settings.timeout_code_s)
+            attempts = [res]
             if not res.ok and not res.timed_out:
                 # one corrected retry
                 res = await self.deps["run_engine"](
                     engine, step.get("prompt", "") + f"\n\nPrevious error:\n{res.stderr[:800]}",
                     proj, self.settings.timeout_code_s)
+                attempts.append(res)
+            self._save_engine_transcript(task_id, idx, engine, attempts)
             if res.timed_out:
                 return (False, "engine timed out")
             return (res.ok, "coded" if res.ok else f"engine failed: {res.stderr[:200]}")
