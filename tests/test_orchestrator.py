@@ -331,6 +331,70 @@ async def test_timed_out_code_step_still_saves_transcript(hermes_home):
     assert store.get_task("t1")["status"] == "failed"
 
 
+def _artifact_task_deps(events):
+    """deps for a build+test plan whose artifacts should reach send_file."""
+    from hermes.build_runner import BuildResult
+    from hermes.test_runner import TestResult
+
+    async def fake_build(project_dir, ptype, timeout_s, run=None):
+        return BuildResult(True, "app.apk", "", "")
+
+    async def fake_test_browser(url, out):
+        shot = Path(out) / "browser.png"
+        shot.parent.mkdir(parents=True, exist_ok=True)
+        shot.write_bytes(b"PNG")
+        return TestResult(True, str(shot), "ok")
+
+    return dict(build_apk=fake_build, detect=lambda d: "flutter",
+                test_browser=fake_test_browser)
+
+
+async def test_artifacts_are_sent_to_the_chat(hermes_home):
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(projects_path=str(hermes_home / "proj"))
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [
+            {"type": "build", "target": "apk"},
+            {"type": "test", "mode": "browser"},
+        ]})
+
+    sent = []
+    async def send_file(kind, path): sent.append((kind, path))
+
+    orch = Orchestrator(settings, store, planner, _artifact_task_deps([]))
+    async def report(tid, msg): pass
+    store.create_task("t1", 5, "build and test")
+    await orch.run_task("t1", 5, "build and test", report, send_file=send_file)
+
+    assert store.get_task("t1")["status"] == "done"
+    assert [k for k, _ in sent] == ["apk", "screenshot"]
+    assert sent[0][1] == "app.apk"
+    assert sent[1][1].endswith("browser.png")
+
+
+async def test_failed_artifact_send_does_not_fail_the_step(hermes_home):
+    """The step's real work succeeded; a Telegram hiccup (50 MB cap, chat
+    gone) is logged, not escalated."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(projects_path=str(hermes_home / "proj"))
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "build", "target": "apk"}]})
+
+    async def send_file(kind, path):
+        raise RuntimeError("Request Entity Too Large")
+
+    orch = Orchestrator(settings, store, planner, _artifact_task_deps([]))
+    async def report(tid, msg): pass
+    store.create_task("t1", 5, "build it")
+    await orch.run_task("t1", 5, "build it", report, send_file=send_file)
+
+    assert store.get_task("t1")["status"] == "done"
+    assert [a["kind"] for a in store.get_artifacts("t1")] == ["apk"]
+    assert any("could not send apk" in l for l in store.get_logs("t1"))
+
+
 async def test_run_task_uses_supplied_proj(hermes_home):
     """A resolved existing project is used verbatim, not nested under task_id."""
     store = Store(hermes_home / "t.db"); store.init_schema()

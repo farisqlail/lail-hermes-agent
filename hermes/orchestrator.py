@@ -90,7 +90,7 @@ class Orchestrator:
         return config.load_settings()
 
     async def run_task(self, task_id: str, chat_id: int, text: str, report,
-                       proj: Path | None = None) -> None:
+                       proj: Path | None = None, send_file=None) -> None:
         from . import paths
         self.settings = self.get_settings()
         self.store.set_task_status(task_id, "running")
@@ -116,7 +116,8 @@ class Orchestrator:
             self.store.set_step_status(sid, "running")
             await report(task_id, f"step {i} [{step.get('type')}] started...")
             try:
-                ok, msg = await self._exec_step(task_id, proj, step, i, text)
+                ok, msg = await self._exec_step(task_id, proj, step, i, text,
+                                                send_file)
             except Exception as e:
                 ok, msg = False, f"step crashed: {e}"
             self.store.set_step_status(sid, "done" if ok else "failed")
@@ -157,8 +158,25 @@ class Orchestrator:
             self.store.append_log(
                 task_id, f"could not save engine transcript for step {idx}: {e}")
 
+    async def _send_artifact(self, task_id: str, send_file, kind: str,
+                             path) -> None:
+        """Push a produced artifact straight to the chat, if a channel exists.
+
+        Guarded like the transcript save: a Telegram hiccup (file too big,
+        chat gone, network) must not fail a step whose real work succeeded.
+        The artifact row is already in the store either way, so the dashboard
+        keeps working.
+        """
+        if send_file is None or not path:
+            return
+        try:
+            await send_file(kind, path)
+        except Exception as e:
+            self.store.append_log(
+                task_id, f"could not send {kind} to chat: {e}")
+
     async def _exec_step(self, task_id, proj: Path, step: dict, idx: int,
-                         text: str = ""):
+                         text: str = "", send_file=None):
         t = step.get("type")
         if t == "code":
             engine = choose_engine(step, self.settings)
@@ -181,6 +199,7 @@ class Orchestrator:
             res = await self.deps["build_apk"](proj, ptype, self.settings.timeout_build_s)
             if res.ok:
                 self.store.add_artifact(task_id, "apk", res.apk_path)
+                await self._send_artifact(task_id, send_file, "apk", res.apk_path)
             return (res.ok, f"apk: {res.apk_path}" if res.ok else f"build failed: {res.stderr[:200]}")
         if t == "test":
             mode = step.get("mode", self.settings.default_test_mode)
@@ -200,5 +219,7 @@ class Orchestrator:
                 return (True, "no test mode")
             if getattr(res, "screenshot_path", None):
                 self.store.add_artifact(task_id, "screenshot", res.screenshot_path)
+                await self._send_artifact(task_id, send_file, "screenshot",
+                                          res.screenshot_path)
             return (res.ok, res.detail)
         return (False, f"unknown step type: {t}")
