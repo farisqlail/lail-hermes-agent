@@ -34,13 +34,16 @@ class Orchestrator:
             return self.settings
         return config.load_settings()
 
-    async def run_task(self, task_id: str, chat_id: int, text: str, report) -> None:
+    async def run_task(self, task_id: str, chat_id: int, text: str, report,
+                       proj: Path | None = None) -> None:
         from . import paths
         self.settings = self.get_settings()
         self.store.set_task_status(task_id, "running")
-        projects_path = self.settings.projects_path or str(paths.projects_dir())
-        proj = Path(projects_path) / task_id
-        proj.mkdir(parents=True, exist_ok=True)
+        if proj is None:
+            # No registered project: fresh throwaway workspace, named for the task.
+            projects_path = self.settings.projects_path or str(paths.projects_dir())
+            proj = Path(projects_path) / task_id
+            proj.mkdir(parents=True, exist_ok=True)
         await report(task_id, "planning...")
         try:
             raw = await self.planner(text, [])

@@ -179,3 +179,61 @@ async def test_browser_step_via_injected_dep(hermes_home):
 
     assert seen == ["http://localhost:9"]
     assert store.get_task("t1")["status"] == "done"
+
+
+async def test_run_task_uses_supplied_proj(hermes_home):
+    """A resolved existing project is used verbatim, not nested under task_id."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude",
+                        projects_path=str(hermes_home / "proj"))
+    existing = hermes_home / "myprofit"
+    existing.mkdir()
+    (existing / "marker.txt").write_text("pre-existing work")
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "fix it"}]})
+
+    seen = []
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+        from hermes.engine_runner import RunResult
+        seen.append(Path(cwd))
+        return RunResult(True, "done", "", False, 0)
+
+    deps = dict(run_engine=fake_run_engine, build_apk=None,
+                detect=lambda d: "flutter", test_emulator=None, test_browser=None)
+    orch = Orchestrator(settings, store, planner, deps)
+
+    async def report(tid, msg): pass
+    store.create_task("t1", 5, "fix it")
+    await orch.run_task("t1", 5, "fix it", report, proj=existing)
+
+    assert seen == [existing]                       # exact dir, not proj/t1
+    assert (existing / "marker.txt").exists()       # untouched
+    assert not (existing / "t1").exists()           # nothing nested
+
+
+async def test_run_task_without_proj_creates_workspace(hermes_home):
+    """proj=None keeps today's behaviour: a fresh dir named for the task."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    root = hermes_home / "proj"
+    settings = Settings(default_engine="claude", projects_path=str(root))
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
+
+    seen = []
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+        from hermes.engine_runner import RunResult
+        seen.append(Path(cwd))
+        return RunResult(True, "done", "", False, 0)
+
+    deps = dict(run_engine=fake_run_engine, build_apk=None,
+                detect=lambda d: "flutter", test_emulator=None, test_browser=None)
+    orch = Orchestrator(settings, store, planner, deps)
+
+    async def report(tid, msg): pass
+    store.create_task("t1", 5, "make it")
+    await orch.run_task("t1", 5, "make it", report)
+
+    assert seen == [root / "t1"]
+    assert (root / "t1").is_dir()
