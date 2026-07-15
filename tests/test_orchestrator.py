@@ -181,6 +181,86 @@ async def test_browser_step_via_injected_dep(hermes_home):
     assert store.get_task("t1")["status"] == "done"
 
 
+async def test_failed_code_step_saves_full_engine_transcript(hermes_home):
+    """The chat report truncates stderr to 200 chars; the transcript artifact
+    must carry the whole of both attempts (initial + corrected retry)."""
+    from hermes import paths
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude", projects_path=str(hermes_home / "proj"))
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
+
+    calls = []
+    async def failing_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+        from hermes.engine_runner import RunResult
+        calls.append(prompt)
+        return RunResult(False, f"long stdout attempt {len(calls)} " + "x" * 500,
+                         f"long stderr attempt {len(calls)} " + "y" * 500, False, 1)
+
+    orch = Orchestrator(settings, store, planner, dict(run_engine=failing_engine))
+    async def report(tid, msg): pass
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report)
+
+    assert len(calls) == 2                          # initial + corrected retry
+    log = paths.artifacts_dir() / "t1" / "step-0-engine.log"
+    assert log.is_file()
+    body = log.read_text(encoding="utf-8")
+    assert "long stdout attempt 1 " + "x" * 500 in body   # nothing truncated
+    assert "long stderr attempt 1 " + "y" * 500 in body
+    assert "long stderr attempt 2 " + "y" * 500 in body   # retry captured too
+    assert {(a["kind"], a["path"]) for a in store.get_artifacts("t1")} == {
+        ("log", str(log))}
+
+
+async def test_successful_code_step_saves_transcript_too(hermes_home):
+    """The transcript is for debugging either way — a success whose output
+    looks wrong is debugged from the same file."""
+    from hermes import paths
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude", projects_path=str(hermes_home / "proj"))
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
+
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+        from hermes.engine_runner import RunResult
+        return RunResult(True, "all good", "", False, 0)
+
+    orch = Orchestrator(settings, store, planner, dict(run_engine=fake_run_engine))
+    async def report(tid, msg): pass
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report)
+
+    log = paths.artifacts_dir() / "t1" / "step-0-engine.log"
+    assert log.is_file()
+    assert "all good" in log.read_text(encoding="utf-8")
+    assert store.get_task("t1")["status"] == "done"
+
+
+async def test_timed_out_code_step_still_saves_transcript(hermes_home):
+    from hermes import paths
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude", projects_path=str(hermes_home / "proj"))
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
+
+    async def timing_out_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+        from hermes.engine_runner import RunResult
+        return RunResult(False, "", "", True, None)
+
+    orch = Orchestrator(settings, store, planner, dict(run_engine=timing_out_engine))
+    async def report(tid, msg): pass
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report)
+
+    log = paths.artifacts_dir() / "t1" / "step-0-engine.log"
+    assert "timed_out: True" in log.read_text(encoding="utf-8")
+    assert store.get_task("t1")["status"] == "failed"
+
+
 async def test_run_task_uses_supplied_proj(hermes_home):
     """A resolved existing project is used verbatim, not nested under task_id."""
     store = Store(hermes_home / "t.db"); store.init_schema()
