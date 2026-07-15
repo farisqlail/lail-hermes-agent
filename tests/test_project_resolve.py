@@ -19,6 +19,25 @@ def test_parse_project_ref(text, name, cleaned):
     assert parse_project_ref(text) == (name, cleaned)
 
 
+@pytest.mark.parametrize("text,name", [
+    ("@myprofit, fix login", "myprofit"),
+    ("@myprofit: do x",      "myprofit"),
+    ("@myprofit! now",       "myprofit"),
+    ("(@myprofit) fix",      None),         # left anchor still requires space/start
+])
+def test_trailing_punctuation_does_not_hide_the_sigil(text, name):
+    """An explicit sigil is explicit intent. "@myprofit," must resolve (or
+    reject loudly), never silently fall back to a fresh workspace with the
+    sigil left in the planner text."""
+    assert parse_project_ref(text)[0] == name
+
+
+def test_trailing_dot_stays_in_the_name_and_rejects_loudly():
+    """Dot is a legal name char ("app.v2"), so "@myprofit." parses as the
+    name "myprofit." — a lookup miss that rejects loudly, same as any typo."""
+    assert parse_project_ref("@myprofit. fix")[0] == "myprofit."
+
+
 def test_parse_only_first_sigil_is_the_ref():
     """A task targets one project. A later @word is prose and must survive."""
     name, cleaned = parse_project_ref("@myprofit reply to @budi in changelog")

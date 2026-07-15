@@ -1,12 +1,17 @@
 from __future__ import annotations
 import re
 from pathlib import Path
-from .config import Settings
+from .config import Settings, _NAME_CHAR, _PROJECT_NAME
 
 # The first @name in the text is the project reference. Anchored to a word
-# boundary on the left so "budi@example.com" is not a reference, and to
-# whitespace/end on the right so trailing punctuation is not swallowed.
-_REF = re.compile(r"(?:^|(?<=\s))@([A-Za-z0-9][A-Za-z0-9._-]*)(?=\s|$)")
+# boundary on the left so "budi@example.com" is not a reference. The right
+# anchor is "next char is not a name char", not "whitespace/end": with the
+# latter, "@myprofit, fix" matched nothing and fell back *silently* to a
+# fresh workspace with the sigil still in the planner text — while
+# "@myprofit. fix" (dot is in the name charset) rejected *loudly*. An
+# explicit sigil is explicit intent; its typos must always be loud. The name
+# charset itself is _PROJECT_NAME from config, so the two cannot drift.
+_REF = re.compile(rf"(?:^|(?<=\s))@({_PROJECT_NAME.pattern})(?!{_NAME_CHAR})")
 
 
 class ProjectNotFound(Exception):

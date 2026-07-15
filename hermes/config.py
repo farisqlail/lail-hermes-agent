@@ -9,7 +9,10 @@ from . import paths
 # Registry keys are dict keys, never path components — this pattern is about
 # keeping names readable and unambiguous, not about containment. Requiring a
 # leading alphanumeric is what rejects ".." and ".ssh".
-_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# _NAME_CHAR is shared with project_resolve._REF (capture group and right
+# anchor), so the sigil parser and this validator cannot drift apart.
+_NAME_CHAR = r"[A-Za-z0-9._-]"
+_PROJECT_NAME = re.compile(rf"[A-Za-z0-9]{_NAME_CHAR}*")
 
 class McpServer(BaseModel):
     name: str
