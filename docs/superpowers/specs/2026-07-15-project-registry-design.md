@@ -66,15 +66,25 @@ class Settings(BaseModel):
     projects_path: str = ""         # unchanged: parent for new workspaces
 ```
 
-A `field_validator` on `projects` rejects, at save time:
+A `field_validator` on `projects` rejects:
 
+- names not matching `[A-Za-z0-9][A-Za-z0-9._-]*`
 - relative paths — the registry is unambiguous or it is not a registry
-- paths that do not exist or are not directories
-- names not matching `^[A-Za-z0-9][A-Za-z0-9._-]*$`
 
-Validating on save rather than at task time follows the `SecretsUpdate` pattern
-from `a772a34`: a bad value is rejected while the user is looking at the form,
-not hours later inside a task.
+Both checks are pure: their answer does not depend on the state of the disk.
+This is deliberate and load-bearing. A pydantic validator runs on *every*
+`Settings` construction, which includes `load_settings()` on startup — not just
+`save_settings()`. A validator that touched the filesystem (`is_dir()`) would
+turn a project folder going missing — unplugged drive, dead network path, moved
+directory — into a `ValidationError` out of `load_settings()`, which kills
+`main.run()` at startup, which `start.bat` then restarts into the same failure.
+A cosmetic check would become a crash loop.
+
+Existence is checked at resolve time instead, where `ProjectPathMissing` already
+handles it: one task fails with an actionable message, and the daemon lives.
+Rejecting a bad *shape* early still follows the `SecretsUpdate` pattern from
+`a772a34` — the difference is that shape is a property of the value, while
+existence is a property of the world.
 
 ### `hermes/project_resolve.py` (new)
 
@@ -233,7 +243,7 @@ when there is uncommitted work that would actually be lost.
 |---|---|
 | `parse_project_ref` | table-driven; sigil at start/middle/end, absent, bare `@`, multiple sigils (first wins), text cleaning |
 | `resolve_project` | registry fixture; hit, unregistered miss, registered-but-missing path |
-| `Settings.projects` validator | relative path, nonexistent path, bad name -> `ValidationError` |
+| `Settings.projects` validator | relative path, bad name -> `ValidationError`; **a registered path that does not exist must still load** |
 | `git_dirty` reasons | fake dep returning `True` / `False` / `None`; assert gate reasons |
 | `handle_task` rejection | assert planner never invoked, no task row created |
 | `run_task(proj=...)` | asserts supplied dir used verbatim, not `mkdir`-ed |
