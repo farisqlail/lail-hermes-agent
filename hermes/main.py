@@ -97,6 +97,19 @@ def _build_bridge(settings, store, orchestrator, sender, ask_confirm):
     return Bridge(settings, store, orchestrator, sender,
                   ask_confirm=ask_confirm, git_dirty=git_dirty)
 
+def _console_safe(e: object) -> str:
+    """Render an exception (or anything) so print() can never itself raise.
+
+    Hermes's Windows console (see deploy/start.bat, which sets none of
+    PYTHONUTF8, PYTHONIOENCODING, or chcp 65001) renders stdout as cp1252. If
+    str(e) contains a character outside cp1252 -- plausible in Telegram/httpx
+    error text -- printing it raises UnicodeEncodeError *from the except block
+    doing the reporting*, escaping that handler entirely (the f3499e0 /
+    193e532 bug class). backslashreplace guarantees an encodable string while
+    still telling the operator roughly what happened.
+    """
+    return str(e).encode("cp1252", errors="backslashreplace").decode("cp1252")
+
 async def _notify_restart(swept: list[dict], sender) -> int:
     """Tell each affected chat once that its tasks did not survive the restart.
 
@@ -110,21 +123,7 @@ async def _notify_restart(swept: list[dict], sender) -> int:
             await sender(chat_id, msg)
             sent += 1
         except Exception as e:
-            # Coerce to cp1252 before printing: Hermes's Windows console (see
-            # deploy/start.bat, which sets none of PYTHONUTF8,
-            # PYTHONIOENCODING, or chcp 65001) renders stdout as cp1252. If
-            # str(e) contains a character outside cp1252 -- plausible in
-            # Telegram/httpx error text -- a bare print() here would raise
-            # UnicodeEncodeError *from this except block itself*, which is
-            # not caught by the try above and escapes _notify_restart
-            # entirely (in run(), that gets swallowed by the outer
-            # `async with app` handler, which then never reaches
-            # app.updater.start_polling() for the rest of the process).
-            # backslashreplace guarantees an encodable string -- and thus
-            # that this print can never itself raise -- while still telling
-            # the operator which chat failed and roughly why.
-            detail = str(e).encode("cp1252", errors="backslashreplace").decode("cp1252")
-            print(f"Could not notify chat {chat_id} of restart: {detail}")
+            print(f"Could not notify chat {chat_id} of restart: {_console_safe(e)}")
     return sent
 
 async def run():
@@ -244,7 +243,9 @@ async def run():
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_chat))
             print("Telegram bot initialized successfully.")
         except Exception as e:
-            print(f"Error initializing Telegram bot: {e}. Bot features will be disabled.")
+            # _console_safe: a bare {e} could raise UnicodeEncodeError on the
+            # cp1252 console and escape run() entirely -> start.bat crash loop.
+            print(f"Error initializing Telegram bot: {_console_safe(e)}. Bot features will be disabled.")
             app = None
     else:
         print("WARNING: TELEGRAM_BOT_TOKEN is not configured. Telegram bot features will be disabled.")
@@ -264,7 +265,9 @@ async def run():
                 await server.serve()
                 await app.updater.stop()
         except Exception as e:
-            print(f"Error starting Telegram polling: {e}. Bot features will be disabled.")
+            # _console_safe: a bare {e} could raise UnicodeEncodeError on the
+            # cp1252 console and skip the fallback server.serve() below.
+            print(f"Error starting Telegram polling: {_console_safe(e)}. Bot features will be disabled.")
             await server.serve()
     else:
         await server.serve()

@@ -57,6 +57,15 @@ async def test_notify_restart_survives_one_bad_chat():
     assert sent == [7]
 
 
+def test_console_safe_output_always_survives_cp1252():
+    """Every except handler in run() reports through _console_safe, so its
+    output must be encodable by the real cp1252 console no matter what the
+    exception message contains."""
+    for nasty in ("❌ Forbidden: bot заблокирован", "плохой токен", "ok ascii",
+                  "\udcff surrogate", ""):
+        main._console_safe(RuntimeError(nasty)).encode("cp1252")  # must not raise
+
+
 async def test_notify_restart_survives_unprintable_error(monkeypatch):
     """A chat error whose message can't be rendered by the console must not
     escape _notify_restart either.
