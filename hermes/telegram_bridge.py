@@ -14,16 +14,33 @@ def new_task_id() -> str:
 
 # Confirmation gate (design spec §8): tasks that push, delete, or reach outside
 # the project dir need explicit approval before running.
+#
+# Deletion is two patterns because bare verbs over-gated badly: "hapus warning
+# di console" or "remove unused imports" are refactors, not destruction. A
+# natural-language verb only counts when a filesystem-ish object follows in
+# the same clause; explicit shell commands count on their own. This stays a
+# text heuristic on purpose — the gate runs before the planner (a rejected or
+# unconfirmed task must cost zero tokens), and letting the planner self-declare
+# a "risky" flag would hang the gate's fail-closed guarantee on LLM output.
+_DELETE_VERBS = r"(?:delete|remove|hapus(?:kan)?|erase|wipe|drop)"
+_FS_OBJECTS = (r"(?:files?|berkas|folders?|director(?:y|ies)|dir|repo(?:sitory)?|"
+               r"database|db|tab(?:le|el)|workspace|proje[ck]t|semuanya|everything)")
 _RISKY_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bgit\s+push\b", re.I), "runs `git push`"),
-    (re.compile(r"\brm\s+-rf?\b|\bdel\s+/|\b(delete|remove|hapus)\b", re.I),
+    (re.compile(r"\brm\s+-[a-z]*[rf]\b|\bdel\s+/|\brmdir\b|\bgit\s+clean\b", re.I),
+     "deletes files"),
+    (re.compile(rf"\b{_DELETE_VERBS}\b[^.,;\n]{{0,60}}\b{_FS_OBJECTS}\b", re.I),
      "deletes files"),
     (re.compile(r"(?:^|[\s\"'=(])(?:[A-Za-z]:[\\/]|/etc/|~[\\/]|\.\.[\\/])"),
      "touches paths outside the project dir"),
 ]
 
 def detect_risky(text: str) -> list[str]:
-    return [reason for rx, reason in _RISKY_PATTERNS if rx.search(text)]
+    reasons = []
+    for rx, reason in _RISKY_PATTERNS:
+        if rx.search(text) and reason not in reasons:  # both delete patterns share one reason
+            reasons.append(reason)
+    return reasons
 
 class Bridge:
     def __init__(self, settings: Settings, store: Store, orchestrator, sender,
