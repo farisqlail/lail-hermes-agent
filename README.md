@@ -90,10 +90,42 @@ flowchart LR
   live task dashboard.
 - **MCP bridge** exposing MCP tools to the NIM brain as OpenAI function calls (stdio + HTTP/SSE
   transports, lazily connected, every remote call time-bounded).
-- **Confirmation gate** — tasks that `git push`, delete files, or touch paths outside the project
-  dir wait for an inline-keyboard ✅/❌ in Telegram before running.
+- **Existing projects** — register a name-to-path map in settings, then aim a task at it with
+  `/task @myprofit fix login`. Without `@`, a fresh workspace is created as before.
+- **Confirmation gate** — tasks that `git push`, delete files, touch paths outside the project
+  dir, or target a registered project with an unclean git tree wait for an inline-keyboard
+  ✅/❌ in Telegram before running.
 - **SQLite session store** — tasks, steps, logs, and artifacts persist and survive restarts.
 - **Self-healing launcher** — `start.bat` auto-restarts Hermes 5s after any crash/exit.
+
+## Working on an existing project
+
+Register the project once, in the settings UI at http://127.0.0.1:8799
+(`projects` is a name-to-absolute-path map):
+
+```json
+"projects": {
+  "myprofit": "C:\\Users\\USER\\myprofit",
+  "hermes":   "E:\\Hermes\\app"
+}
+```
+
+Then aim a task at it with the `@name` sigil:
+
+```
+/task @myprofit fix the login bug
+```
+
+Without `@`, Hermes creates a fresh workspace under `projects_path` as before.
+`@name` is deliberately the *only* trigger — a bare "project myprofit" in prose
+starts a new workspace, so that a folder named `app` or `test` can never be
+matched out of ordinary task text.
+
+An unregistered `@name` is rejected with the list of registered names; it does
+not silently fall back to a new workspace.
+
+If the target has uncommitted git changes — or is not a git repo at all —
+Hermes asks for confirmation first, since there is no clean undo.
 
 ## Layout
 

@@ -47,6 +47,10 @@ warning-free output). Remaining work is the "not started" section at the bottom.
 
 ## Not started at all (potential future scope)
 
+- [x] **Run tasks against an existing project** — `Settings.projects` maps a name to
+  an absolute path; `/task @myprofit ...` resolves through it (`project_resolve`),
+  and the confirmation gate additionally fires when the target's git tree is dirty
+  or the target is not a repo.
 - [ ] Real end-to-end smoke run (needs your NVIDIA key, Telegram token, an AVD) — see `docs/SMOKE.md`.
 - [ ] HTML forms for the settings / MCP pages (currently JSON API only; dashboard is minimal HTML).
 - [ ] Resume-after-crash logic actually re-driving an interrupted task (state persists, but nothing
