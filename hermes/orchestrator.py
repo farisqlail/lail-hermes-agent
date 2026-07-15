@@ -14,6 +14,61 @@ def parse_plan(raw: str) -> list[dict]:
         raise ValueError("plan has no steps list")
     return steps
 
+# Directories whose contents say nothing about the project's own code. Their
+# names are still listed (with a marker) so the engine knows they exist.
+_SUMMARY_SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__",
+                 ".gradle", ".dart_tool", "build", ".idea", ".vscode"}
+_SUMMARY_MAX_ENTRIES = 50
+
+def _project_summary(proj: Path) -> str:
+    """A two-level, capped listing of the project tree.
+
+    Bounded on purpose: the cap keeps the prompt small even against a big
+    registered project, and antigravity still passes its prompt via argv,
+    where Windows caps the command line at 8191 chars. Never raises — a
+    summary is context, not a precondition.
+    """
+    try:
+        top = sorted(proj.iterdir(), key=lambda p: p.name.lower())
+    except OSError:
+        return "(directory could not be read)"
+    entries: list[str] = []
+    for p in top:
+        if p.is_dir():
+            if p.name in _SUMMARY_SKIP:
+                entries.append(f"{p.name}/ (contents omitted)")
+                continue
+            entries.append(f"{p.name}/")
+            try:
+                children = sorted(p.iterdir(), key=lambda c: c.name.lower())
+            except OSError:
+                children = []
+            entries.extend(
+                f"  {c.name}/" if c.is_dir() else f"  {c.name}" for c in children)
+        else:
+            entries.append(p.name)
+    if not entries:
+        return "(empty directory — this is a brand-new project)"
+    if len(entries) > _SUMMARY_MAX_ENTRIES:
+        extra = len(entries) - _SUMMARY_MAX_ENTRIES
+        entries = entries[:_SUMMARY_MAX_ENTRIES] + [f"…and {extra} more entries"]
+    return "\n".join(entries)
+
+def _compose_engine_prompt(task_text: str, proj: Path, step_prompt: str) -> str:
+    """Give the engine the whole picture, not just the planner's step line.
+
+    A bare step prompt ("implement the login fix") reaches the engine with no
+    idea what the user actually asked for or what already exists on disk. The
+    original task and a tree summary anchor it; the step stays last so it
+    reads as the instruction.
+    """
+    return ("# Original task (from the user)\n"
+            f"{task_text}\n\n"
+            "# Project structure (top two levels)\n"
+            f"{_project_summary(proj)}\n\n"
+            "# Your step (do only this)\n"
+            f"{step_prompt}")
+
 def choose_engine(step: dict, settings: Settings) -> str:
     if step.get("engine") in ("claude", "antigravity"):
         return step["engine"]
@@ -61,7 +116,7 @@ class Orchestrator:
             self.store.set_step_status(sid, "running")
             await report(task_id, f"step {i} [{step.get('type')}] started...")
             try:
-                ok, msg = await self._exec_step(task_id, proj, step, i)
+                ok, msg = await self._exec_step(task_id, proj, step, i, text)
             except Exception as e:
                 ok, msg = False, f"step crashed: {e}"
             self.store.set_step_status(sid, "done" if ok else "failed")
@@ -102,17 +157,19 @@ class Orchestrator:
             self.store.append_log(
                 task_id, f"could not save engine transcript for step {idx}: {e}")
 
-    async def _exec_step(self, task_id, proj: Path, step: dict, idx: int):
+    async def _exec_step(self, task_id, proj: Path, step: dict, idx: int,
+                         text: str = ""):
         t = step.get("type")
         if t == "code":
             engine = choose_engine(step, self.settings)
+            prompt = _compose_engine_prompt(text, proj, step.get("prompt", ""))
             res = await self.deps["run_engine"](
-                engine, step.get("prompt", ""), proj, self.settings.timeout_code_s)
+                engine, prompt, proj, self.settings.timeout_code_s)
             attempts = [res]
             if not res.ok and not res.timed_out:
-                # one corrected retry
+                # one corrected retry, with the same context
                 res = await self.deps["run_engine"](
-                    engine, step.get("prompt", "") + f"\n\nPrevious error:\n{res.stderr[:800]}",
+                    engine, prompt + f"\n\nPrevious error:\n{res.stderr[:800]}",
                     proj, self.settings.timeout_code_s)
                 attempts.append(res)
             self._save_engine_transcript(task_id, idx, engine, attempts)
