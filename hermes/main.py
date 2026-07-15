@@ -97,6 +97,21 @@ def _build_bridge(settings, store, orchestrator, sender, ask_confirm):
     return Bridge(settings, store, orchestrator, sender,
                   ask_confirm=ask_confirm, git_dirty=git_dirty)
 
+_TELEGRAM_CLIP_AT = 3800  # headroom under Telegram's hard 4096-char limit
+_TRUNCATION_SUFFIX = "...(truncated)"
+
+def _clip_for_telegram(text: str) -> str:
+    """Keep a message under Telegram's 4096-char limit.
+
+    An oversized message (e.g. a full Gradle stacktrace in a step report)
+    makes send_message() raise; that error then reaches crash_reporter, which
+    tries to send it — long again — and the failure loops. Clipping at the
+    sender chokepoint breaks the loop for every caller at once.
+    """
+    if len(text) <= _TELEGRAM_CLIP_AT:
+        return text
+    return text[:_TELEGRAM_CLIP_AT] + _TRUNCATION_SUFFIX
+
 def _console_safe(e: object) -> str:
     """Render an exception (or anything) so print() can never itself raise.
 
@@ -162,7 +177,8 @@ async def run():
             app = Application.builder().token(bot_token).build()
 
             async def sender(chat_id, text):
-                await app.bot.send_message(chat_id=chat_id, text=text)
+                await app.bot.send_message(chat_id=chat_id,
+                                           text=_clip_for_telegram(text))
 
             def crash_reporter(chat_id):
                 # done-callback for fire-and-forget tasks: without it, a crash

@@ -57,6 +57,22 @@ async def test_notify_restart_survives_one_bad_chat():
     assert sent == [7]
 
 
+def test_clip_for_telegram_passes_short_messages_unchanged():
+    assert main._clip_for_telegram("task complete") == "task complete"
+    exactly_at_limit = "x" * main._TELEGRAM_CLIP_AT
+    assert main._clip_for_telegram(exactly_at_limit) == exactly_at_limit
+
+
+def test_clip_for_telegram_keeps_long_messages_under_the_hard_limit():
+    """A full Gradle stacktrace must clip below Telegram's 4096-char cap,
+    keep its head (where the actual error usually is), and say it was cut."""
+    long = "gradle error line\n" * 1000
+    clipped = main._clip_for_telegram(long)
+    assert len(clipped) <= 4096
+    assert clipped.endswith("...(truncated)")
+    assert clipped.startswith("gradle error line")
+
+
 def test_console_safe_output_always_survives_cp1252():
     """Every except handler in run() reports through _console_safe, so its
     output must be encodable by the real cp1252 console no matter what the
