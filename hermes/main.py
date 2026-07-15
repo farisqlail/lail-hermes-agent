@@ -12,6 +12,7 @@ from .orchestrator import Orchestrator
 from .telegram_bridge import Bridge
 from .web_ui import create_app
 from . import build_runner, engine_runner, test_runner, project_detect
+from .git_status import git_dirty
 
 class Adb:
     def __init__(self, settings: config.Settings):
@@ -85,6 +86,16 @@ def build_nim_planner(settings, secrets, hub):
 def real_mcp_session_factory(srv):
     return RealMcpSession(srv)
 
+def _build_bridge(settings, store, orchestrator, sender, ask_confirm):
+    """Construct the Bridge with its real collaborators.
+
+    Extracted from run() so the wiring is testable: Bridge treats a missing
+    git_dirty as "skip the dirty-tree check", so a dropped injection would
+    disable the gate with every test still green.
+    """
+    return Bridge(settings, store, orchestrator, sender,
+                  ask_confirm=ask_confirm, git_dirty=git_dirty)
+
 async def run():
     settings = config.load_settings()
     secrets = config.load_secrets()
@@ -141,7 +152,7 @@ async def run():
                           + "\n- ".join(reasons)),
                     reply_markup=kb)
 
-            bridge = Bridge(settings, store, orch, sender, ask_confirm=ask_confirm)
+            bridge = _build_bridge(settings, store, orch, sender, ask_confirm)
 
             async def check_auth_and_respond(update: Update) -> bool:
                 u = update.effective_user.id
