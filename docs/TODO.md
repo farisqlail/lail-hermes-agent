@@ -1,50 +1,43 @@
 # Hermes — Unfinished Tasks / Backlog
 
 Status: **full test suite passes (135), warning-free.** Branch `feat/project-registry`,
-HEAD `193e532`, working tree clean.
+HEAD `225549b`, working tree clean.
 
 Two features were built from specs in `docs/superpowers/specs/` via the plans in
-`docs/superpowers/plans/`. **The @name registry is complete. Startup recovery is 3/5 done
-and is NOT usable yet** — the sweep runs, but the dashboard cannot style the status it writes.
+`docs/superpowers/plans/`. **The @name registry is complete. Startup recovery is
+code-complete** (sweep + digest + notify + dashboard badge); what remains is the
+whole-branch review and merge below, plus the config prerequisites.
 
-Per-task detail, review findings, and rationale live in `.superpowers/sdd/progress.md`.
-Read it before resuming — it is the recovery map, and it names commits that exist in git
-even where nothing else records them.
+Note: `.superpowers/sdd/progress.md` referenced by earlier revisions of this file no
+longer exists on disk. This file and git history are the recovery map now.
 
 ---
 
 ## STOP HERE FIRST — resume points, in order
 
-### 1. Review the last commit — NOT DONE
-`193e532` (`fix(main): make _notify_restart's recovery print itself crash-proof`) was
-committed but **never reviewed**. Every other commit on this branch passed a task review;
-this one is the exception only because the session ended.
+### 1. Review the last commit — DONE (2026-07-15)
+`193e532` reviewed: fix correct (`backslashreplace` roundtrip guarantees an encodable
+string), test genuinely exercises the cp1252 hazard via a monkeypatched `builtins.print`,
+scope correctly excludes the two remaining `print(f"...{e}")` sites in `run()` (carried
+below). No findings.
 
-What it fixes: `print(f"...{e}")` inside `_notify_restart`'s except handler could itself
-raise `UnicodeEncodeError` on this project's cp1252 Windows console (`start.bat` sets no
-`PYTHONUTF8` / `chcp 65001`). That escaped the per-chat `try`, was caught by `run()`'s outer
-handler, and **skipped `start_polling()`** — one bad chat silently disabling Telegram for the
-whole process lifetime. Same class of bug as commit `f3499e0`.
-
-The fix report is appended to `.superpowers/sdd/recovery-task-3-report.md`.
-
-### 2. Startup recovery Task 4 — NOT STARTED (this is what blocks the feature)
-`hermes/spa.html` renders `<span class="badge ${t.status}">`. `sweep_interrupted()` now
-writes `interrupted`, and **no `.badge.interrupted` rule exists** — it renders unstyled.
-Full task text: `docs/superpowers/plans/2026-07-15-startup-recovery.md`, Task 4.
-
-In the same five-line CSS block: `.badge.stopped` is dead (no code writes a `stopped` status)
-and its muted grey is exactly what `interrupted` wants; `.badge.cancelled` and
-`.badge.awaiting_confirm` are unstyled today.
+### 2. Startup recovery Task 4 — DONE (`225549b`)
+`.badge.interrupted`, `.badge.cancelled`, `.badge.awaiting_confirm` now styled.
+**Plan deviation:** the plan said `.badge.stopped` was dead and should be renamed away —
+false. The MCP card renders its Disabled badge with `class="badge ${srv.enabled ? 'done'
+: 'stopped'}"`, so the rule was kept and the new statuses share it. The plan had only
+checked task statuses — a third instance of the stale-planning-text failure mode below.
+Step 2's verify-by-eye against the live dashboard has not been done (needs a running
+Hermes; fold into the smoke run).
 
 ### 3. Startup recovery Task 5 — superseded by this file
 That task was "update the backlog". This rewrite does it. Skip it; do not re-dispatch.
 
 ### 4. Final whole-branch review — NOT DONE
-12 commits (`24a5137..193e532`) have never been reviewed as a whole. The per-task reviews were
-clean, but cross-task drift is the failure mode this branch actually hit, twice (see below) —
-and by construction no single-task review can catch it. Use the carried Minor findings below
-as its triage list.
+13 commits (`24a5137..225549b`) have never been reviewed as a whole. The per-task reviews
+were clean, but cross-task drift is the failure mode this branch actually hit, three times
+(see below) — and by construction no single-task review can catch it. Use the carried
+Minor findings below as its triage list.
 
 ### 5. Branch not merged
 `feat/project-registry` carries both features, so its name is now wrong. Rename or split
@@ -95,10 +88,10 @@ before merging.
 
 ---
 
-## What went wrong twice — read this before extending the branch
+## What went wrong three times — read this before extending the branch
 
-**Planning-time text goes stale during implementation.** It bit this branch twice, and both
-times a *later* reviewer caught what the *earlier* task's own review had passed:
+**Planning-time text goes stale during implementation.** It bit this branch three times,
+and each time a *later* reviewer caught what the *earlier* task's own review had passed:
 
 1. Registry Task 4 widened `git_dirty`'s `None` from "not a git repo" to also cover
    git-ignored and git-unavailable. Task 5's user-facing gate message — written before that —
@@ -107,9 +100,13 @@ times a *later* reviewer caught what the *earlier* task's own review had passed:
    is broken, and taps through the one message built to stop them.
 2. Task 7's docs then repeated that stale claim *and* left `README.md`'s `## Known follow-ups`
    asserting the feature did not exist — in the same file that announced it shipped.
+3. Recovery Task 4's plan asserted `.badge.stopped` was dead ("no code writes a `stopped`
+   status") after checking only task statuses; the MCP card's Disabled badge uses the class.
+   Executing the plan verbatim would have unstyled it. Caught at execution time (`225549b`).
 
 Generalised: when a contract widens mid-implementation, grep for every place that restates it
-— messages, docs, tests, comments — not just its definition.
+— messages, docs, tests, comments — not just its definition. And re-verify a plan's factual
+claims ("X is dead", "nothing uses Y") against the tree at execution time, not plan time.
 
 ---
 
@@ -160,12 +157,12 @@ None are known bugs. Each was rated Minor by a task reviewer and deliberately de
 
 ## Not started at all (potential future scope)
 
-- [ ] **Startup recovery, remaining** — resume points 1, 2 and 4 above. Spec:
-  `docs/superpowers/specs/2026-07-15-startup-recovery-design.md`. Shipped so far:
+- [ ] **Startup recovery, remaining** — only resume point 4 (whole-branch review) above. Spec:
+  `docs/superpowers/specs/2026-07-15-startup-recovery-design.md`. Shipped:
   `Store.sweep_interrupted()` retires `running` / `awaiting_confirm` / `queued` tasks and their
   live steps to `interrupted` on startup (`f051b26`); `recovery.group_digests` builds one
   digest per chat (`1036594`); `main` sweeps unconditionally before the bot exists and notifies
-  after `app.start()` (`2e8d8cc`, `193e532`).
+  after `app.start()` (`2e8d8cc`, `193e532`); dashboard badges the new statuses (`225549b`).
 - [ ] **Resume an interrupted task.** `interrupted` is terminal; nothing re-runs it. The sweep
   is only the foundation.
 - [ ] **Make a stale confirm-button tap respond.** `bridge.pending` is in-memory, so after a
