@@ -33,11 +33,16 @@ Hermes; fold into the smoke run).
 ### 3. Startup recovery Task 5 — superseded by this file
 That task was "update the backlog". This rewrite does it. Skip it; do not re-dispatch.
 
-### 4. Final whole-branch review — NOT DONE
-13 commits (`24a5137..225549b`) have never been reviewed as a whole. The per-task reviews
-were clean, but cross-task drift is the failure mode this branch actually hit, three times
-(see below) — and by construction no single-task review can catch it. Use the carried
-Minor findings below as its triage list.
+### 4. Final whole-branch review — DONE (2026-07-15)
+All branch commits reviewed as a whole, carried Minor findings triaged. Outcome:
+- **Fixed:** `_REF` right anchor (`@myprofit,` no longer silently falls back; charset now
+  shared as `config._NAME_CHAR`, killing the regex duplication) — `9bbb0b3`. The two
+  remaining cp1252 `print(f"{e}")` sites in `run()` (extracted `_console_safe`, used at all
+  three sites) — `7b5c6e0`. README now covers the zero-projects rejection and notes the
+  git-undo confirmation depends on `confirm_risky`.
+- **No new cross-task drift found** beyond the `.badge.stopped` plan error already caught
+  in `225549b`.
+- **Deliberately left:** the product call and test-quality items below.
 
 ### 5. Branch not merged
 `feat/project-registry` carries both features, so its name is now wrong. Rename or split
@@ -110,25 +115,26 @@ claims ("X is dead", "nothing uses Y") against the tree at execution time, not p
 
 ---
 
-## Carried Minor findings — triage list for the final review
+## Carried Minor findings — post-review disposition
 
-None are known bugs. Each was rated Minor by a task reviewer and deliberately deferred.
+None are known bugs. Triaged during the final whole-branch review (2026-07-15).
 
-**Correctness-adjacent**
-- [ ] `project_resolve._REF`'s right anchor `(?=\s|$)` makes `/task @myprofit, fix login` match
-  **nothing** — it silently falls back to a fresh workspace with the sigil left in the planner
-  text. Yet `@myprofit. fix` *does* match (the dot is in the name charset) and rejects loudly.
-  Inconsistent, and the silent fallback contradicts this design's own principle that an
-  explicit sigil is an explicit intent whose typo must be loud. Candidate: `(?![A-Za-z0-9._-])`.
-- [ ] Two pre-existing `print(f"...{e}")` sites in `run()` (the `Application.builder()` handler
-  and the outer `async with app:` handler) carry the exact cp1252 hazard `193e532` just fixed
-  in `_notify_restart`. Deliberately out of that task's scope.
-- [ ] `confirm_risky=False` now silently means "run against my real dirty repo, no warning" —
+**Fixed during the review**
+- [x] `project_resolve._REF` right anchor — `@myprofit,` resolved silently to a fresh
+  workspace; now `(?!{_NAME_CHAR})`, and the charset is shared with `config._PROJECT_NAME`
+  (also closes the regex-duplication finding below). `9bbb0b3`.
+- [x] The two remaining cp1252 `print(f"...{e}")` sites in `run()` — extracted
+  `main._console_safe`, used at all three report sites. `7b5c6e0`.
+- [x] README rejection text now covers the zero-projects-registered branch, and the git-undo
+  paragraph notes it depends on `confirm_risky`.
+
+**Open — product call**
+- [ ] `confirm_risky=False` silently means "run against my real dirty repo, no warning" —
   the reason is computed, then discarded without ever reaching `sender()`. Consistent with the
   pre-existing semantics for risky *text*, but the stakes changed once tasks could target real
-  projects. Product call, not a bug.
+  projects. Needs an owner decision, not a code fix.
 
-**Test quality**
+**Open — test quality (accepted for merge; fix opportunistically)**
 - [ ] `test_recovery.py::test_caps_listing_at_five_per_group` asserts `msg.count("  t") == 5` —
   an incidental substring, not a structural property. It only equals 5 because the fixture's
   task ids happen to start with `t`.
@@ -145,13 +151,12 @@ None are known bugs. Each was rated Minor by a task reviewer and deliberately de
   configured.
 
 **Cosmetic / duplication**
-- [ ] The name-shape regex is duplicated: `config._PROJECT_NAME` and `project_resolve._REF`'s
-  capture group must be hand-synced.
+- [x] ~~Name-shape regex duplicated~~ — fixed in `9bbb0b3` via shared `config._NAME_CHAR`.
 - [ ] `session_store.sweep_interrupted` hardcodes `(?,?,?)` in three places rather than
   deriving it from `len(INTERRUPTIBLE)`. Fail-loud if it drifts, not silent.
-- [ ] `README.md`'s rejection text is silent on the zero-projects-registered branch, which has
-  a different message and no name list.
-- [ ] `http://127.0.0.1:8799` is hardcoded in four modules. Pre-existing convention.
+- [x] ~~README silent on zero-projects-registered rejection~~ — fixed with the review.
+- [ ] `http://127.0.0.1:8799` is hardcoded in four modules (five with `recovery.py`).
+  Pre-existing convention.
 
 ---
 

@@ -122,13 +122,16 @@ starts a new workspace, so that a folder named `app` or `test` can never be
 matched out of ordinary task text.
 
 An unregistered `@name` is rejected with the list of registered names; it does
-not silently fall back to a new workspace. If the name *is* registered but its
-directory has since been moved or deleted, Hermes rejects the task with a
-different message pointing at the settings UI, instead of the name list.
+not silently fall back to a new workspace. When no projects are registered at
+all, the rejection instead says so and points at the settings UI. If the name
+*is* registered but its directory has since been moved or deleted, Hermes
+rejects the task with a different message pointing at the settings UI, instead
+of the name list.
 
 If the target has no usable git undo — uncommitted changes, not a git repo, git-ignored by
 an enclosing repo, or git itself unavailable (missing binary, no subprocess support, or a
-timeout) — Hermes asks for confirmation first.
+timeout) — Hermes asks for confirmation first (when the confirmation gate is enabled;
+`confirm_risky` is on by default).
 
 ## Layout
 
