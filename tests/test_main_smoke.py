@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 from hermes import main
 
@@ -136,6 +137,38 @@ def test_console_safe_output_always_survives_cp1252():
     for nasty in ("❌ Forbidden: bot заблокирован", "плохой токен", "ok ascii",
                   "\udcff surrogate", ""):
         main._console_safe(RuntimeError(nasty)).encode("cp1252")  # must not raise
+
+
+async def test_crash_reporter_still_notifies_on_an_unprintable_crash(monkeypatch):
+    """A crash whose repr the console cannot encode must still reach the user.
+
+    repr() does not escape non-ASCII, so `{exc!r}` is not safe just because it
+    is a repr. The print sits inside a done-callback: a raise there is
+    swallowed by asyncio's exception handler and the sender() after it never
+    runs, so the user is never told the task died — the exact silent failure
+    the callback exists to prevent.
+    """
+    def cp1252_console_print(*args, **kwargs):
+        " ".join(str(a) for a in args).encode("cp1252")  # raises, like the console
+
+    monkeypatch.setattr("builtins.print", cp1252_console_print)
+
+    sent = []
+    async def sender(chat_id, text):
+        sent.append((chat_id, text))
+
+    async def boom():
+        raise RuntimeError("❌ Forbidden: bot заблокирован")
+
+    t = asyncio.create_task(boom())
+    try:
+        await t
+    except RuntimeError:
+        pass
+
+    main._make_crash_reporter(sender)(5)(t)   # must not raise
+    await asyncio.sleep(0)                    # let the queued sender() run
+    assert [c for c, _ in sent] == [5]
 
 
 async def test_notify_restart_survives_unprintable_error(monkeypatch):

@@ -173,6 +173,30 @@ def _console_safe(e: object) -> str:
     """
     return str(e).encode("cp1252", errors="backslashreplace").decode("cp1252")
 
+def _make_crash_reporter(sender):
+    """Build the done-callback for fire-and-forget tasks.
+
+    Without it, a crash outside run_task's try/except is silently dropped.
+    Module-level (rather than nested in run()) so it is directly testable.
+    """
+    def crash_reporter(chat_id):
+        def _cb(t: asyncio.Task):
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc:
+                # _console_safe, because repr() does NOT escape non-ASCII: a
+                # bare {exc!r} raises UnicodeEncodeError on a redirected
+                # cp1252 stdout. That raise happens inside a done-callback,
+                # so asyncio swallows it into the loop's exception handler and
+                # the sender() below never runs -- losing the crash report
+                # this callback exists to deliver.
+                print(f"Background task crashed: {_console_safe(repr(exc))}")
+                asyncio.create_task(sender(
+                    chat_id, f"Internal error — task crashed: {exc}"))
+        return _cb
+    return crash_reporter
+
 async def _notify_restart(swept: list[dict], sender) -> int:
     """Tell each affected chat once that its tasks did not survive the restart.
 
@@ -240,28 +264,21 @@ async def run():
                             chat_id=chat_id, document=f,
                             filename=Path(path).name)
 
-            def crash_reporter(chat_id):
-                # done-callback for fire-and-forget tasks: without it, a crash
-                # outside run_task's try/except is silently dropped.
-                def _cb(t: asyncio.Task):
-                    if t.cancelled():
-                        return
-                    exc = t.exception()
-                    if exc:
-                        print(f"Background task crashed: {exc!r}")
-                        asyncio.create_task(sender(
-                            chat_id, f"Internal error — task crashed: {exc}"))
-                return _cb
+            crash_reporter = _make_crash_reporter(sender)
 
             async def ask_confirm(chat_id, task_id, reasons):
                 kb = InlineKeyboardMarkup([[
                     InlineKeyboardButton("✅ Run", callback_data=f"confirm:{task_id}:yes"),
                     InlineKeyboardButton("❌ Cancel", callback_data=f"confirm:{task_id}:no"),
                 ]])
+                # Clipped like every other outgoing message: reasons are short
+                # today, but an unclipped send raises, and this one carries the
+                # only buttons that can approve or cancel the task.
                 await app.bot.send_message(
                     chat_id=chat_id,
-                    text=(f"Task {task_id} needs confirmation before running:\n- "
-                          + "\n- ".join(reasons)),
+                    text=_clip_for_telegram(
+                        f"Task {task_id} needs confirmation before running:\n- "
+                        + "\n- ".join(reasons)),
                     reply_markup=kb)
 
             bridge = _build_bridge(settings, store, orch, sender, ask_confirm,
