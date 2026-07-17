@@ -1,12 +1,12 @@
 # Hermes — Unfinished Tasks / Backlog
 
-Status: **full test suite passes (135), warning-free.** Branch `feat/project-registry`,
-HEAD `225549b`, working tree clean.
+Status: **full test suite passes (168), warning-free.** Branch `feat/engine-loop`,
+working tree clean.
 
-Two features were built from specs in `docs/superpowers/specs/` via the plans in
-`docs/superpowers/plans/`. **The @name registry is complete. Startup recovery is
-code-complete** (sweep + digest + notify + dashboard badge); what remains is the
-whole-branch review and merge below, plus the config prerequisites.
+Features built from specs in `docs/superpowers/specs/` via the plans in
+`docs/superpowers/plans/`: **the @name registry and startup recovery are both
+complete and reviewed.** Several smaller features then landed directly on
+`feat/engine-loop` without a spec or plan — see the section below.
 
 Note: `.superpowers/sdd/progress.md` referenced by earlier revisions of this file no
 longer exists on disk. This file and git history are the recovery map now.
@@ -46,7 +46,57 @@ All branch commits reviewed as a whole, carried Minor findings triaged. Outcome:
 
 ### 5. Branch not merged
 `feat/project-registry` carries both features, so its name is now wrong. Rename or split
-before merging.
+before merging. (Superseded in practice: `feat/engine-loop` contains all of it plus the
+work below, and is what gets merged.)
+
+---
+
+## Landed on `feat/engine-loop` without a spec, plan, or review
+
+Everything before `c7abb65` shipped spec → plan → per-task review → whole-branch review.
+The commits after it did not. They are code-complete and green, but no reviewer other than
+their author has read them, and the engine loop — the branch's namesake — has no design doc
+at all. Treat this list as the review backlog:
+
+- `36e0452` save the full engine transcript as a task artifact
+- `fbdcb5c` clip outgoing Telegram messages under the 4096-char limit
+- `280b24a` send the engine the task text, a project tree summary, and the step
+- `f575ec3` gate deletion verbs only when a filesystem object follows
+- `013b1c6` send screenshots and APKs straight to the chat
+- `7621175` retry planner calls through NIM busy spells
+- `8b49969` **the engine loop itself** — committed as `"update"`, no message, no plan
+
+### The engine loop, as built (`8b49969`)
+A code step gets up to `MAX_ENGINE_ROUNDS = 3` engine sessions. Every code prompt carries
+`_COMPLETION_CONTRACT`, which asks the engine to print `HERMES_STEP_DONE` as its final line
+only when the step is done *and verified in that session*. A session that errors, or that
+exits 0 without the sentinel, gets a continuation prompt carrying the previous session's
+stdout/stderr tails. Exhausting all rounds without the sentinel still reports success, with
+"completion not confirmed — check the step transcript".
+
+Fixed before merge (`f0ed344`, `0a4574d`):
+- [x] **The sentinel was spoofable.** The check was `_DONE_SENTINEL in res.stdout`, but the
+  literal ships inside `_COMPLETION_CONTRACT` — i.e. inside every prompt — and
+  `_continuation_prompt` feeds prior stdout back in. An engine that echoed its prompt and did
+  zero work reported `coded (confirmed done, 1 round(s))`: exactly the failure the sentinel
+  exists to catch. Now `_confirmed_done()` matches the last non-empty line.
+- [x] **Two red tests.** `test_run_task_uses_supplied_proj` and
+  `test_run_task_without_proj_creates_workspace` had fakes returning `stdout="done"`, written
+  before the completion contract existed, so the loop ran all 3 rounds and their
+  `seen == [dir]` assertions collected 3 entries. Fourth instance of the stale-text drift.
+- [x] **`crash_reporter` print was unguarded** despite `7b5c6e0` claiming full `_console_safe`
+  coverage — `repr()` does not escape non-ASCII.
+- [x] **`ask_confirm` bypassed the clip chokepoint** despite `fbdcb5c` claiming it covered
+  every caller.
+
+Open on the engine loop:
+- [ ] **Does the real `claude` CLI actually emit the sentinel?** The whole design rests on it
+  and it has never been tested against a live engine — only fakes. If it does not comply,
+  every code step silently costs `MAX_ENGINE_ROUNDS` sessions and reports "not confirmed".
+  Settle this in the smoke run before trusting the loop.
+- [ ] **Cost.** Worst case per step is now `MAX_ENGINE_ROUNDS * timeout_code_s`, and an
+  unconfirmed-but-successful step burns all 3 rounds and still returns success.
+- [ ] No spec or plan exists. If the loop is kept, write one retroactively.
 
 ---
 
@@ -124,9 +174,25 @@ None are known bugs. Triaged during the final whole-branch review (2026-07-15).
   workspace; now `(?!{_NAME_CHAR})`, and the charset is shared with `config._PROJECT_NAME`
   (also closes the regex-duplication finding below). `9bbb0b3`.
 - [x] The two remaining cp1252 `print(f"...{e}")` sites in `run()` — extracted
-  `main._console_safe`, used at all three report sites. `7b5c6e0`.
+  `main._console_safe`, used at all three report sites. `7b5c6e0`. (It missed a fourth site,
+  `crash_reporter`'s `{exc!r}`; fixed in `0a4574d`.)
 - [x] README rejection text now covers the zero-projects-registered branch, and the git-undo
   paragraph notes it depends on `confirm_risky`.
+
+**Open — `_console_safe` rests on a false premise (measured 2026-07-17)**
+- [ ] Every cp1252 comment on this branch says "Hermes's Windows console renders stdout as
+  cp1252". It does not. Measured on this machine, Python 3.14.3, real attached console:
+  `isatty=True encoding=utf-8 type=_WindowsConsoleIO` — PEP 528 drives the Windows console at
+  UTF-8, and printing `❌ заблокирован` to it does not raise. `deploy/start.bat` runs
+  `python -m hermes.main` with no redirection, so **on the documented launch path the whole
+  UnicodeEncodeError hazard cannot fire.** cp1252 is what a *redirected* stdout gets
+  (`start.bat > log.txt`, a service, a scheduler) — a plausible future, so keep the guard, but
+  the stated reason is wrong and `test_console_safe_output_always_survives_cp1252` pins the
+  wrong invariant.
+- [ ] `_console_safe` hardcodes cp1252, which is narrower than the guarantee it claims:
+  `'café'` survives cp1252 coercion untouched, then raises on a cp932 locale. ASCII coercion
+  (`.encode("ascii", "backslashreplace")`) survives cp1252/cp932/cp1250/cp437/cp850 and loses
+  nothing, since non-ASCII detail is escaped either way. One-word change.
 
 **Open — product call**
 - [ ] `confirm_risky=False` silently means "run against my real dirty repo, no warning" —
