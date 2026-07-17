@@ -158,10 +158,27 @@ function returning `(claude_model, claude_effort)` for `"claude"` and
 `(antigravity_model, "")` for `"antigravity"`. Pure and separately testable;
 it is the one place that knows effort is claude-only.
 
-### The 19 test fakes must be updated in the same task
+### Two test surfaces break, each in the task that breaks it
 
-`run_engine` is injected via `deps["run_engine"]`, and **19 fakes across the
-test suite** implement it with the current signature:
+There are **two independent sets of fakes**, and they break on different
+changes — so they are fixed in different tasks.
+
+**1. Sixteen `COMMANDS` call sites.** `COMMANDS[engine](prompt)` becomes
+`COMMANDS[engine](prompt, model, effort)`. `tests/test_engine_runner.py`
+monkeypatches the table in **3 places** with single-argument lambdas:
+
+```python
+monkeypatch.setitem(engine_runner.COMMANDS, "claude",
+                    lambda p: [sys.executable, str(script), "-p"])
+```
+
+Calling those with three arguments raises `TypeError: <lambda>() takes 1
+positional argument but 3 were given`. They become `lambda p, model, effort:`.
+Fixed in the engine_runner task.
+
+**2. Thirteen `run_engine` dep fakes.** `run_engine` is injected via
+`deps["run_engine"]`, and `tests/test_orchestrator.py` defines **13** fakes on
+the current signature:
 
 ```python
 async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None)
@@ -170,12 +187,11 @@ async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None)
 None accept `model=` / `effort=`. The moment the orchestrator passes those
 keywords, every one raises `TypeError: unexpected keyword argument 'model'`.
 Defaulting the real function's parameters does **not** protect the fakes — the
-caller, not the callee, is what changed.
+caller, not the callee, is what changed. They become
+`(..., extra_env=None, model="", effort="")`. Fixed in the orchestrator task.
 
-The fakes are therefore updated to `(..., extra_env=None, model="", effort="")`
-in the same task as the orchestrator change, never a follow-up: between the two
-the suite is red. Tests that assert on the flags capture the kwargs; the rest
-just accept and ignore them.
+Each set moves in the same task as the change that breaks it, never a
+follow-up: in between, the suite is red.
 
 Rejected alternative: passing the keywords conditionally
 (`if model: kw["model"] = model`) so untouched fakes keep working. That makes
@@ -227,11 +243,14 @@ the model fields are free text, and path existence is the route's job.
 `COMMANDS` signature becomes `(prompt, model, effort) -> argv`. `run_engine`
 grows `model=""`, `effort=""`. Flags are omitted entirely when empty.
 
+### `tests/test_engine_runner.py` — 3 `COMMANDS` monkeypatch lambdas
+`lambda p:` becomes `lambda p, model, effort:`. Same task as engine_runner.
+
 ### `hermes/orchestrator.py`
 New `_engine_options(engine, settings)`. `_exec_step`'s `code` branch resolves
 the pair once, above the `MAX_ENGINE_ROUNDS` loop, and passes it on every round.
 
-### `tests/` — 19 existing `run_engine` fakes
+### `tests/test_orchestrator.py` — 13 `run_engine` dep fakes
 Signatures gain `model=""`, `effort=""`. Same task as the orchestrator change;
 the suite is red in between.
 
