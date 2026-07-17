@@ -92,6 +92,19 @@ _COMPLETION_CONTRACT = (
     "state precisely what remains to be done."
 )
 
+def _confirmed_done(stdout: str) -> bool:
+    """True only when the engine's own last output line is the sentinel.
+
+    Presence anywhere is not enough: _COMPLETION_CONTRACT quotes the sentinel,
+    so it is in every prompt, and _continuation_prompt feeds a previous
+    session's stdout back in. Any engine that echoes its input -- or that just
+    says "I'll print HERMES_STEP_DONE when tests pass" -- would otherwise
+    confirm a step it never did. Matching the final line is exactly what the
+    contract asks the engine for.
+    """
+    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+    return bool(lines) and lines[-1] == _DONE_SENTINEL
+
 def _continuation_prompt(base: str, prev) -> str:
     reason = ("ended with an error" if not prev.ok
               else "ended without confirming completion")
@@ -225,7 +238,7 @@ class Orchestrator:
                 attempts.append(res)
                 if res.timed_out:
                     break
-                if res.ok and _DONE_SENTINEL in res.stdout:
+                if res.ok and _confirmed_done(res.stdout):
                     break                      # confirmed done, stop early
                 # error OR unconfirmed completion: hand the session's output
                 # to a fresh session and let the engine fix/finish it itself
@@ -237,7 +250,7 @@ class Orchestrator:
             if not res.ok:
                 return (False, f"engine failed after {rounds} round(s): "
                                f"{res.stderr[:200]}")
-            if _DONE_SENTINEL in res.stdout:
+            if _confirmed_done(res.stdout):
                 return (True, f"coded (confirmed done, {rounds} round(s))")
             return (True, f"coded ({rounds} round(s), completion not "
                           f"confirmed — check the step transcript)")

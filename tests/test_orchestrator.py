@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from hermes.orchestrator import (
     Orchestrator, parse_plan, choose_engine, _project_summary,
-    _compose_engine_prompt)
+    _compose_engine_prompt, _DONE_SENTINEL)
 from hermes.config import Settings
 from hermes.session_store import Store
 
@@ -308,6 +308,47 @@ async def test_confirmed_done_stops_at_one_round(hermes_home):
     assert store.get_task("t1")["status"] == "done"
 
 
+def test_confirmed_done_requires_the_sentinel_as_the_final_line():
+    """The sentinel literal ships inside _COMPLETION_CONTRACT, i.e. inside every
+    prompt. A substring test would therefore confirm on any engine that echoes
+    its input, or that merely talks about the sentinel."""
+    from hermes.orchestrator import _confirmed_done, _DONE_SENTINEL, _COMPLETION_CONTRACT
+    assert _confirmed_done(f"work\n{_DONE_SENTINEL}")
+    assert _confirmed_done(f"work\n{_DONE_SENTINEL}\n")          # trailing newline
+    assert _confirmed_done(f"work\n{_DONE_SENTINEL}  \n\n")      # trailing blanks
+    assert not _confirmed_done("")
+    assert not _confirmed_done("work, no sentinel")
+    assert not _confirmed_done(f"I will print {_DONE_SENTINEL} once tests pass")
+    assert not _confirmed_done(f"{_DONE_SENTINEL}\nactually, the tests fail")
+    assert not _confirmed_done(_COMPLETION_CONTRACT)             # the contract is not a claim
+
+
+async def test_echoed_prompt_does_not_confirm_completion(hermes_home):
+    """An engine that echoes its prompt and does nothing must not self-confirm.
+
+    This is the failure the sentinel exists to catch, so it must not be the
+    failure the sentinel *causes*: the contract text quotes the sentinel, so
+    echoed output contains it.
+    """
+    from hermes.orchestrator import MAX_ENGINE_ROUNDS
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    calls = []
+    async def echoing_engine(engine_name, prompt, cwd, timeout_s, extra_env=None):
+        from hermes.engine_runner import RunResult
+        calls.append(1)
+        return RunResult(True, f"[echo] {prompt}\n[end of echo]", "", False, 0)
+
+    orch = _code_plan_orch(hermes_home, store, echoing_engine)
+    reports = []
+    async def report(tid, msg): reports.append(msg)
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report)
+
+    assert len(calls) == MAX_ENGINE_ROUNDS               # never confirmed
+    assert not any("confirmed done" in m for m in reports)
+    assert any("completion not confirmed" in m for m in reports)
+
+
 async def test_rounds_exhausted_without_sentinel_still_succeeds_with_a_note(hermes_home):
     """An engine that works but never says DONE must not have its ok work
     thrown away — the step passes, flagged as unconfirmed."""
@@ -491,7 +532,9 @@ async def test_run_task_uses_supplied_proj(hermes_home):
     async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
         from hermes.engine_runner import RunResult
         seen.append(Path(cwd))
-        return RunResult(True, "done", "", False, 0)
+        # Confirms completion, so the engine loop stops at one round and this
+        # test keeps asserting on cwd rather than on retry behaviour.
+        return RunResult(True, f"done\n{_DONE_SENTINEL}", "", False, 0)
 
     deps = dict(run_engine=fake_run_engine, build_apk=None,
                 detect=lambda d: "flutter", test_emulator=None, test_browser=None)
@@ -519,7 +562,8 @@ async def test_run_task_without_proj_creates_workspace(hermes_home):
     async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
         from hermes.engine_runner import RunResult
         seen.append(Path(cwd))
-        return RunResult(True, "done", "", False, 0)
+        # Confirms completion: see test_run_task_uses_supplied_proj.
+        return RunResult(True, f"done\n{_DONE_SENTINEL}", "", False, 0)
 
     deps = dict(run_engine=fake_run_engine, build_apk=None,
                 detect=lambda d: "flutter", test_emulator=None, test_browser=None)
