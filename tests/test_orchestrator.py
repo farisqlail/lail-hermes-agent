@@ -235,8 +235,9 @@ async def test_code_step_prompt_carries_task_and_project_context(hermes_home):
     async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
         from hermes.engine_runner import RunResult
         prompts.append(prompt)
-        return RunResult(len(prompts) > 1, "", "some engine error", False,
-                         0 if len(prompts) > 1 else 1)
+        if len(prompts) == 1:
+            return RunResult(False, "", "some engine error", False, 1)
+        return RunResult(True, "fixed\nHERMES_STEP_DONE", "", False, 0)
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=fake_run_engine))
     async def report(tid, msg): pass
@@ -248,13 +249,92 @@ async def test_code_step_prompt_carries_task_and_project_context(hermes_home):
         assert "fix login on myprofit" in p      # original user task
         assert "login.dart" in p                 # tree summary
         assert "patch the login flow" in p       # planner's step
-    assert "Previous error:\nsome engine error" in prompts[1]
+    assert "ended with an error" in prompts[1]
+    assert "some engine error" in prompts[1]     # previous stderr fed back
+
+
+def _code_plan_orch(hermes_home, store, engine):
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
+    settings = Settings(default_engine="claude",
+                        projects_path=str(hermes_home / "proj"))
+    return Orchestrator(settings, store, planner, dict(run_engine=engine))
+
+
+async def test_unconfirmed_completion_gets_a_fixup_round(hermes_home):
+    """exit 0 while 'waiting on npm install' is not done. Without the DONE
+    sentinel the engine gets a continuation session, which sees the previous
+    output and can actually finish and verify."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    prompts = []
+    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None):
+        from hermes.engine_runner import RunResult
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return RunResult(True, "Waiting on npm install. Will run tests "
+                                   "once install lands.", "", False, 0)
+        return RunResult(True, "17 tests pass\nHERMES_STEP_DONE", "", False, 0)
+
+    orch = _code_plan_orch(hermes_home, store, engine)
+    reports = []
+    async def report(tid, msg): reports.append(msg)
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report)
+
+    assert len(prompts) == 2
+    assert "ended without confirming completion" in prompts[1]
+    assert "Waiting on npm install" in prompts[1]   # previous output fed back
+    assert store.get_task("t1")["status"] == "done"
+    assert any("confirmed done, 2 round(s)" in m for m in reports)
+
+
+async def test_confirmed_done_stops_at_one_round(hermes_home):
+    """The sentinel is the early exit — a session that finishes and says so
+    must not burn two more engine invocations."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    calls = []
+    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None):
+        from hermes.engine_runner import RunResult
+        calls.append(1)
+        assert "Completion contract" in prompt      # contract always present
+        return RunResult(True, "done\nHERMES_STEP_DONE", "", False, 0)
+
+    orch = _code_plan_orch(hermes_home, store, engine)
+    async def report(tid, msg): pass
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report)
+
+    assert calls == [1]
+    assert store.get_task("t1")["status"] == "done"
+
+
+async def test_rounds_exhausted_without_sentinel_still_succeeds_with_a_note(hermes_home):
+    """An engine that works but never says DONE must not have its ok work
+    thrown away — the step passes, flagged as unconfirmed."""
+    from hermes.orchestrator import MAX_ENGINE_ROUNDS
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    calls = []
+    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None):
+        from hermes.engine_runner import RunResult
+        calls.append(1)
+        return RunResult(True, "did things, never said the magic word", "", False, 0)
+
+    orch = _code_plan_orch(hermes_home, store, engine)
+    reports = []
+    async def report(tid, msg): reports.append(msg)
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report)
+
+    assert len(calls) == MAX_ENGINE_ROUNDS
+    assert store.get_task("t1")["status"] == "done"
+    assert any("completion not confirmed" in m for m in reports)
 
 
 async def test_failed_code_step_saves_full_engine_transcript(hermes_home):
     """The chat report truncates stderr to 200 chars; the transcript artifact
-    must carry the whole of both attempts (initial + corrected retry)."""
+    must carry the whole of every round."""
     from hermes import paths
+    from hermes.orchestrator import MAX_ENGINE_ROUNDS
     store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(default_engine="claude", projects_path=str(hermes_home / "proj"))
 
@@ -273,13 +353,13 @@ async def test_failed_code_step_saves_full_engine_transcript(hermes_home):
     store.create_task("t1", 5, "x")
     await orch.run_task("t1", 5, "x", report)
 
-    assert len(calls) == 2                          # initial + corrected retry
+    assert len(calls) == MAX_ENGINE_ROUNDS          # every fix-up round ran
     log = paths.artifacts_dir() / "t1" / "step-0-engine.log"
     assert log.is_file()
     body = log.read_text(encoding="utf-8")
     assert "long stdout attempt 1 " + "x" * 500 in body   # nothing truncated
     assert "long stderr attempt 1 " + "y" * 500 in body
-    assert "long stderr attempt 2 " + "y" * 500 in body   # retry captured too
+    assert f"long stderr attempt {MAX_ENGINE_ROUNDS} " + "y" * 500 in body
     assert {(a["kind"], a["path"]) for a in store.get_artifacts("t1")} == {
         ("log", str(log))}
 
@@ -296,7 +376,7 @@ async def test_successful_code_step_saves_transcript_too(hermes_home):
 
     async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
         from hermes.engine_runner import RunResult
-        return RunResult(True, "all good", "", False, 0)
+        return RunResult(True, "all good\nHERMES_STEP_DONE", "", False, 0)
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=fake_run_engine))
     async def report(tid, msg): pass

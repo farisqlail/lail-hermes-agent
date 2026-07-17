@@ -69,6 +69,40 @@ def _compose_engine_prompt(task_text: str, proj: Path, step_prompt: str) -> str:
             "# Your step (do only this)\n"
             f"{step_prompt}")
 
+# A code step gets up to this many engine sessions: the first, plus fix-up
+# rounds that feed the previous session's output back in. Bounded for the
+# same reason as MAX_TOOL_ROUNDS — "loop until done" without a cap is a
+# runaway-cost bug, not persistence. Worst case per step is
+# MAX_ENGINE_ROUNDS * timeout_code_s.
+MAX_ENGINE_ROUNDS = 3
+
+_DONE_SENTINEL = "HERMES_STEP_DONE"
+
+# Appended to every code-step prompt. Exists because an engine session can
+# exit 0 mid-task ("Waiting on npm install ... will run tests once it lands")
+# — exit code alone cannot distinguish "done and verified" from "gave up
+# politely", so the engine has to say it explicitly.
+_COMPLETION_CONTRACT = (
+    "\n\n# Completion contract\n"
+    f"When — and only when — this step is fully done and verified in THIS "
+    f"session (code written; any build/tests you said you would run actually "
+    f"ran and passed), print {_DONE_SENTINEL} on its own line as the last "
+    "thing you output. Never print it for work you only plan, promise, or "
+    "leave waiting on a background command. If you cannot finish, instead "
+    "state precisely what remains to be done."
+)
+
+def _continuation_prompt(base: str, prev) -> str:
+    reason = ("ended with an error" if not prev.ok
+              else "ended without confirming completion")
+    return (base
+            + f"\n\n# Continuation\nA previous session on this step {reason}. "
+            "Its final output is below. Pick up where it left off: check what "
+            "actually landed on disk, finish the remaining work, run the "
+            "verification for real, and fix anything broken.\n"
+            f"--- previous stdout (tail) ---\n{prev.stdout[-800:]}\n"
+            f"--- previous stderr (tail) ---\n{prev.stderr[-800:]}")
+
 def choose_engine(step: dict, settings: Settings) -> str:
     if step.get("engine") in ("claude", "antigravity"):
         return step["engine"]
@@ -180,20 +214,33 @@ class Orchestrator:
         t = step.get("type")
         if t == "code":
             engine = choose_engine(step, self.settings)
-            prompt = _compose_engine_prompt(text, proj, step.get("prompt", ""))
-            res = await self.deps["run_engine"](
-                engine, prompt, proj, self.settings.timeout_code_s)
-            attempts = [res]
-            if not res.ok and not res.timed_out:
-                # one corrected retry, with the same context
+            base = (_compose_engine_prompt(text, proj, step.get("prompt", ""))
+                    + _COMPLETION_CONTRACT)
+            prompt = base
+            attempts = []
+            res = None
+            for _ in range(MAX_ENGINE_ROUNDS):
                 res = await self.deps["run_engine"](
-                    engine, prompt + f"\n\nPrevious error:\n{res.stderr[:800]}",
-                    proj, self.settings.timeout_code_s)
+                    engine, prompt, proj, self.settings.timeout_code_s)
                 attempts.append(res)
+                if res.timed_out:
+                    break
+                if res.ok and _DONE_SENTINEL in res.stdout:
+                    break                      # confirmed done, stop early
+                # error OR unconfirmed completion: hand the session's output
+                # to a fresh session and let the engine fix/finish it itself
+                prompt = _continuation_prompt(base, res)
             self._save_engine_transcript(task_id, idx, engine, attempts)
+            rounds = len(attempts)
             if res.timed_out:
-                return (False, "engine timed out")
-            return (res.ok, "coded" if res.ok else f"engine failed: {res.stderr[:200]}")
+                return (False, f"engine timed out (round {rounds})")
+            if not res.ok:
+                return (False, f"engine failed after {rounds} round(s): "
+                               f"{res.stderr[:200]}")
+            if _DONE_SENTINEL in res.stdout:
+                return (True, f"coded (confirmed done, {rounds} round(s))")
+            return (True, f"coded ({rounds} round(s), completion not "
+                          f"confirmed — check the step transcript)")
         if t == "build":
             ptype = self.deps["detect"](proj)
             res = await self.deps["build_apk"](proj, ptype, self.settings.timeout_build_s)
