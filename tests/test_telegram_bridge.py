@@ -1,4 +1,6 @@
-from hermes.telegram_bridge import Bridge, detect_risky, is_allowed, new_task_id
+from hermes.telegram_bridge import (
+    Bridge, detect_risky, help_text, is_allowed, new_task_id,
+    projects_overview)
 from hermes.config import Settings
 from hermes.session_store import Store
 
@@ -33,6 +35,32 @@ async def test_accept_listed(hermes_home):
     tid = await b.handle_task(user_id=1, chat_id=5, text="build app")
     assert tid is not None and ran == [tid]
     assert store.get_task(tid)["status"] in ("queued", "running", "done")
+
+def test_help_text_covers_the_command_surface():
+    """Every user-facing command and the @nama mechanism must be
+    rediscoverable from inside Telegram."""
+    h = help_text()
+    for needed in ("/task", "@nama", "/projects", "/help",
+                   "konfirmasi", "http://127.0.0.1:8799"):
+        assert needed.lower() in h.lower(), needed
+    assert len(h) <= 4096                     # must survive the sender clip
+
+
+def test_projects_overview_empty_registry_points_at_the_ui():
+    msg = projects_overview(Settings())
+    assert "Belum ada project" in msg
+    assert "http://127.0.0.1:8799" in msg
+
+
+def test_projects_overview_lists_names_and_flags_missing_paths(tmp_path):
+    here = tmp_path / "here"; here.mkdir()
+    gone = tmp_path / "gone"
+    s = Settings(projects={"sayur": str(here), "hilang": str(gone)})
+    msg = projects_overview(s)
+    assert "@sayur" in msg and str(here) in msg
+    assert "@hilang" in msg and "folder hilang" in msg
+    assert msg.index("@hilang") < msg.index("@sayur")   # sorted by name
+
 
 def test_detect_risky():
     assert detect_risky("build app then git push to origin") == ["runs `git push`"]
@@ -115,6 +143,60 @@ async def test_confirm_gate_disabled_runs_directly(hermes_home):
     b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm)
     tid = await b.handle_task(user_id=1, chat_id=5, text="git push it")
     assert ran == [tid]
+
+
+async def test_gate_disabled_risky_text_still_warns(hermes_home):
+    """confirm_risky=False may skip the confirmation, never the disclosure."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(allowed_user_ids=[1], confirm_risky=False)
+    ran, sent = [], []
+    async def sender(chat, text): sent.append(text)
+    async def ask_confirm(chat, task_id, reasons): raise AssertionError("gate disabled")
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None): ran.append(task_id)
+    b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm)
+
+    tid = await b.handle_task(user_id=1, chat_id=5, text="git push it")
+    assert ran == [tid]                              # ran without confirmation
+    assert any("without confirmation" in t and "git push" in t for t in sent)
+
+
+async def test_gate_disabled_dirty_project_still_probed_and_warned(hermes_home):
+    """With the gate off, the git probe still runs: 'run against my real
+    dirty repo' must reach the user as a warning, not happen silently."""
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], confirm_risky=False,
+                        projects={"myprofit": str(proj)})
+    ran, sent, probed = [], [], []
+    async def sender(chat, text): sent.append(text)
+    async def git_dirty(path): probed.append(path); return True
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            ran.append(proj)
+    b = Bridge(settings, store, FakeOrch(), sender, git_dirty=git_dirty)
+
+    tid = await b.handle_task(user_id=1, chat_id=5, text="@myprofit refactor auth")
+    assert probed == [proj]
+    assert ran == [proj]                             # not gated, still runs
+    assert store.get_task(tid)["status"] != "awaiting_confirm"
+    assert any("without confirmation" in t and "uncommitted" in t for t in sent)
+
+
+async def test_gate_disabled_clean_project_gets_no_warning(hermes_home):
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], confirm_risky=False,
+                        projects={"myprofit": str(proj)})
+    sent = []
+    async def sender(chat, text): sent.append(text)
+    async def git_dirty(path): return False
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None): pass
+    b = Bridge(settings, store, FakeOrch(), sender, git_dirty=git_dirty)
+
+    await b.handle_task(user_id=1, chat_id=5, text="@myprofit refactor auth")
+    assert not any("without confirmation" in t for t in sent)
 
 
 def _store(home):

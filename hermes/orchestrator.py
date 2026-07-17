@@ -232,9 +232,20 @@ class Orchestrator:
             prompt = base
             attempts = []
             res = None
+            # Tuning kwargs only when configured, so fakes and run_engine
+            # doubles keep their narrower signature — the send_file pattern.
+            # Per-engine: the two CLIs accept different model names.
+            tuning = {}
+            if engine == "claude":
+                if self.settings.claude_model:
+                    tuning["model"] = self.settings.claude_model
+                if self.settings.claude_effort:
+                    tuning["effort"] = self.settings.claude_effort
+            elif engine == "antigravity" and self.settings.agy_model:
+                tuning["model"] = self.settings.agy_model
             for _ in range(MAX_ENGINE_ROUNDS):
                 res = await self.deps["run_engine"](
-                    engine, prompt, proj, self.settings.timeout_code_s)
+                    engine, prompt, proj, self.settings.timeout_code_s, **tuning)
                 attempts.append(res)
                 if res.timed_out:
                     break

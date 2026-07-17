@@ -130,13 +130,15 @@ def test_clip_for_telegram_keeps_long_messages_under_the_hard_limit():
     assert clipped.startswith("gradle error line")
 
 
-def test_console_safe_output_always_survives_cp1252():
-    """Every except handler in run() reports through _console_safe, so its
-    output must be encodable by the real cp1252 console no matter what the
-    exception message contains."""
+def test_console_safe_output_is_pure_ascii():
+    """Every except handler in run() reports through _console_safe. An
+    attached Windows console is UTF-8 (PEP 528) and never raises; the hazard
+    is a *redirected* stdout, which gets the locale's legacy codec — cp1252
+    here, cp932 on a Japanese host. ASCII output is the one invariant that
+    survives all of them, so pin that, not any single codec."""
     for nasty in ("❌ Forbidden: bot заблокирован", "плохой токен", "ok ascii",
-                  "\udcff surrogate", ""):
-        main._console_safe(RuntimeError(nasty)).encode("cp1252")  # must not raise
+                  "\udcff surrogate", "café", ""):
+        main._console_safe(RuntimeError(nasty)).encode("ascii")  # must not raise
 
 
 async def test_crash_reporter_still_notifies_on_an_unprintable_crash(monkeypatch):
@@ -175,15 +177,15 @@ async def test_notify_restart_survives_unprintable_error(monkeypatch):
     """A chat error whose message can't be rendered by the console must not
     escape _notify_restart either.
 
-    Hermes runs on a Windows console whose stdout is cp1252 (deploy/start.bat
-    sets no PYTHONUTF8, PYTHONIOENCODING, or chcp 65001). Under pytest, stdout
+    A redirected Hermes stdout (start.bat > log.txt, a service, a scheduler)
+    gets the locale's legacy codec, cp1252 on this host. Under pytest, stdout
     is captured with a UTF-8-capable encoding, so simply calling
     _notify_restart with a non-ASCII exception message would pass here for
     the wrong reason even against unguarded code. To actually exercise the
-    hazard, stand in for that cp1252 console: monkeypatch the builtin print
-    that _notify_restart's except handler calls with a fake that raises
-    UnicodeEncodeError for any text a real cp1252 console couldn't encode,
-    exactly like the real console would.
+    hazard, stand in for that redirected stream: monkeypatch the builtin
+    print that _notify_restart's except handler calls with a fake that raises
+    UnicodeEncodeError for any text cp1252 couldn't encode, exactly like the
+    real redirected stdout would.
     """
     def cp1252_console_print(*args, **kwargs):
         text = " ".join(str(a) for a in args)

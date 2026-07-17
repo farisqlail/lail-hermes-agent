@@ -1,11 +1,51 @@
 from __future__ import annotations
-import re
+import re, subprocess, time
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pathlib import Path
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, field_validator
 from . import config, paths
 from .session_store import Store
+
+# Claude CLI model choices (aliases + full ids, per Anthropic docs 2026-07).
+# Static on purpose: `claude` has no list-models subcommand, and the select
+# keeps a Custom option so a newer id is never blocked by this list.
+CLAUDE_MODELS = [
+    "fable", "opus", "sonnet", "haiku",
+    "claude-fable-5", "claude-opus-4-8", "claude-opus-4-7",
+    "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5",
+]
+
+# Shown when `agy models` is unavailable (agy not installed, not logged in,
+# or slow). Known-good display name observed in agy's own settings.json.
+AGY_FALLBACK_MODELS = ["Gemini 3.5 Flash (High)"]
+
+_AGY_CACHE_TTL_S = 3600       # refresh a good list hourly
+_AGY_NEG_TTL_S = 300          # after a failure, don't re-block requests for 5 min
+_agy_cache: dict = {"at": 0.0, "models": None}
+
+def list_agy_models(timeout_s: float = 10.0) -> list[str] | None:
+    """Ask the agy CLI for its model list. None means \"could not ask\" —
+    the caller falls back rather than caching an empty answer."""
+    import shutil
+    exe = shutil.which("agy") or shutil.which("agy.exe")
+    if exe is None:
+        return None
+    try:
+        res = subprocess.run([exe, "models"], capture_output=True, text=True,
+                             timeout=timeout_s)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if res.returncode != 0:
+        return None
+    models = []
+    for line in res.stdout.splitlines():
+        line = line.strip().lstrip("*-• ").strip()
+        # skip blanks and header-ish lines ("Available models:", "Usage: ...")
+        if not line or line.endswith(":") or line.lower().startswith("usage"):
+            continue
+        models.append(line)
+    return models or None
 
 class SecretsUpdate(BaseModel):
     nvidia_api_key: str | None = None
@@ -104,6 +144,44 @@ def create_app(store: Store) -> FastAPI:
         config.save_secrets(config.Secrets(
             nvidia_api_key=keep(body.nvidia_api_key, cur.nvidia_api_key),
             telegram_bot_token=keep(body.telegram_bot_token, cur.telegram_bot_token)))
+        return {"ok": True}
+
+    @app.get("/api/engine-models")
+    def engine_models():
+        # agy's list comes from its CLI (needs its own auth/network), so it
+        # is cached and degrades to a static fallback instead of erroring.
+        now = time.time()
+        ttl = _AGY_CACHE_TTL_S if _agy_cache["models"] is not None else _AGY_NEG_TTL_S
+        if now - _agy_cache["at"] > ttl:
+            live = list_agy_models()
+            _agy_cache["at"] = now          # negative result also backs off
+            if live is not None:
+                _agy_cache["models"] = live # a failure never clobbers a good list
+        agy = _agy_cache["models"]
+        return {"claude": CLAUDE_MODELS,
+                "agy": agy if agy is not None else AGY_FALLBACK_MODELS,
+                "agy_live": agy is not None}
+
+    @app.get("/api/projects")
+    def get_projects():
+        # `exists` is a UI hint only. The Settings validator deliberately
+        # never stats paths (a dead folder must not crash startup), and
+        # resolve_project() re-checks at task time — this is display state.
+        s = config.load_settings()
+        return [{"name": n, "path": p, "exists": Path(p).is_dir()}
+                for n, p in s.projects.items()]
+
+    @app.post("/api/projects")
+    def post_projects(body: dict[str, str]):
+        s = config.load_settings()
+        try:
+            updated = config.Settings.model_validate(
+                {**s.model_dump(), "projects": body})
+        except ValidationError as e:
+            # Surface the validator's own message ("bad project name ...",
+            # "path must be absolute ...") instead of a generic 500.
+            raise HTTPException(status_code=422, detail=e.errors()[0]["msg"])
+        config.save_settings(updated)
         return {"ok": True}
 
     @app.get("/api/mcp")

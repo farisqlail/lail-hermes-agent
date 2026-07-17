@@ -9,6 +9,60 @@ from .project_resolve import (
 def is_allowed(user_id: int, settings: Settings) -> bool:
     return user_id in settings.allowed_user_ids
 
+# One source of truth for what the bot can do. /help, /start, and any plain
+# chat message all answer with this, so the user can always rediscover the
+# command surface from inside Telegram.
+def help_text() -> str:
+    # Plain text on purpose: sender() sends without parse_mode, so Markdown
+    # markers would render literally.
+    return (
+        "🤖 Hermes — panduan perintah\n"
+        "\n"
+        "Perintah:\n"
+        "/task <deskripsi> — buat tugas baru di workspace baru\n"
+        "/task @nama <deskripsi> — jalankan tugas di project terdaftar\n"
+        "/projects — daftar project yang terdaftar (untuk @nama)\n"
+        "/help — tampilkan panduan ini\n"
+        "\n"
+        "Contoh:\n"
+        "/task buat app counter Flutter, build APK, test di emulator\n"
+        "/task @sayur perbaiki bug login di halaman kasir\n"
+        "\n"
+        "Cara kerja @nama:\n"
+        "Hanya @nama pertama yang dianggap project; harus terdaftar di "
+        "Projects Registry (web UI). @nama yang tidak terdaftar ditolak "
+        "sebelum tugas berjalan.\n"
+        "\n"
+        "Konfirmasi tugas berisiko:\n"
+        "Tugas yang push/hapus file/menyentuh path luar, atau menarget "
+        "project dengan perubahan uncommitted, menunggu tombol konfirmasi "
+        "dulu. Tombol lama mati setelah Hermes restart — kirim ulang "
+        "tugasnya.\n"
+        "\n"
+        "Hasil:\n"
+        "Progres tiap langkah dikirim ke chat ini; APK dan screenshot "
+        "dikirim langsung sebagai file.\n"
+        "\n"
+        "Pengaturan (model, engine, project, timeout): web UI di "
+        "http://127.0.0.1:8799 (hanya dari PC yang menjalankan Hermes)."
+    )
+
+def projects_overview(settings: Settings) -> str:
+    """What /projects answers: the registered names, flagged when the folder
+    is gone, plus how to register more."""
+    if not settings.projects:
+        return ("Belum ada project terdaftar.\n"
+                "Tambahkan lewat panel Projects Registry di web UI "
+                "http://127.0.0.1:8799, lalu pakai `/task @nama <deskripsi>`.")
+    lines = ["Project terdaftar:"]
+    for name in sorted(settings.projects):
+        path = settings.projects[name]
+        missing = "" if Path(path).is_dir() else "  ⚠ folder hilang"
+        lines.append(f"  @{name} — {path}{missing}")
+    lines.append("")
+    lines.append("Pakai: /task @nama <deskripsi>")
+    return "\n".join(lines)
+
 def new_task_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
 
@@ -85,7 +139,9 @@ class Bridge:
 
         reasons = detect_risky(text)
         gate_live = bool(settings.confirm_risky and self.ask_confirm)
-        if proj is not None and self.git_dirty is not None and gate_live:
+        # The git probe runs even when the gate is off: an ungated risky run
+        # against a real project must at least say so, not proceed silently.
+        if proj is not None and self.git_dirty is not None:
             try:
                 dirty = await self.git_dirty(proj)
             except Exception:
@@ -104,7 +160,15 @@ class Bridge:
             await self.ask_confirm(chat_id, task_id, reasons)
             return task_id
 
-        await self.sender(chat_id, f"Task {task_id} queued.")
+        if reasons:
+            # Gate off (confirm_risky=False, or no ask_confirm wired): run,
+            # but never silently — the user still learns what the gate saw.
+            await self.sender(
+                chat_id,
+                f"Task {task_id} queued. Warning — running without confirmation: "
+                + "; ".join(reasons))
+        else:
+            await self.sender(chat_id, f"Task {task_id} queued.")
         await self._run(task_id, chat_id, text, proj)
         return task_id
 

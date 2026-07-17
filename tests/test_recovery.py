@@ -54,11 +54,46 @@ def test_queued_counts_as_running_for_display():
 
 
 def test_caps_listing_at_five_per_group():
-    rows = [_row(f"t{i}", 5, "running") for i in range(9)]
+    rows = [_row(f"task-{i}", 5, "running") for i in range(9)]
     _, msg = group_digests(rows)[0]
-    assert msg.count("  t") == 5            # five indented task lines
+    listed = [r["task_id"] for r in rows if r["task_id"] in msg]
+    assert listed == [f"task-{i}" for i in range(5)]   # first five, in order
     assert "and 4 more" in msg
-    assert "9 task" in msg                  # total is still stated
+    assert "9 tasks were" in msg            # total is still stated
+
+
+def test_single_task_message_is_singular():
+    _, msg = group_digests([_row("t1", 5, "running")])[0]
+    assert "1 task was interrupted" in msg
+    assert "tasks were" not in msg
+
+
+def test_two_tasks_message_is_plural():
+    _, msg = group_digests([_row("t1", 5, "running"), _row("t2", 5, "queued")])[0]
+    assert "2 tasks were interrupted" in msg
+
+
+def test_capped_section_plus_waiting_section_totals_all_rows():
+    """The stated total must count rows the cap hid AND the other section."""
+    rows = [_row(f"task-{i}", 5, "running") for i in range(6)]
+    rows.append(_row("task-w", 5, "awaiting_confirm"))
+    _, msg = group_digests(rows)[0]
+    assert "7 tasks were" in msg            # grand total, not 5 or 6
+    assert "and 1 more" in msg              # running section capped at five
+    assert "task-w" in msg                  # waiting section still listed
+
+
+def test_null_task_text_renders():
+    """tasks.text has no NOT NULL constraint; a None must not crash."""
+    _, msg = group_digests([_row("t1", 5, "running", None)])[0]
+    assert "t1" in msg
+
+
+def test_within_section_order_is_input_order():
+    rows = [_row(t, 5, "running") for t in ("task-c", "task-a", "task-b")]
+    _, msg = group_digests(rows)[0]
+    positions = [msg.index(t) for t in ("task-c", "task-a", "task-b")]
+    assert positions == sorted(positions)
 
 
 def test_long_task_text_is_truncated():

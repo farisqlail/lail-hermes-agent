@@ -8,6 +8,9 @@ from contextlib import contextmanager
 # absent: it is terminal, which is what makes the sweep idempotent and keeps
 # start.bat's auto-restart loop from re-notifying on every pass.
 INTERRUPTIBLE = ("running", "awaiting_confirm", "queued")
+# Derived from INTERRUPTIBLE so the sweep queries can never drift to a stale
+# hardcoded placeholder count when a status is added or removed.
+_IN_INTERRUPTIBLE = f"({','.join('?' * len(INTERRUPTIBLE))})"
 
 class Store:
     def __init__(self, db: Path):
@@ -57,16 +60,17 @@ class Store:
         with self._conn() as c:
             rows = c.execute(
                 "SELECT task_id, chat_id, text, status FROM tasks "
-                "WHERE status IN (?,?,?)", INTERRUPTIBLE).fetchall()
+                f"WHERE status IN {_IN_INTERRUPTIBLE}", INTERRUPTIBLE).fetchall()
             swept = [dict(r) for r in rows]
             # Steps first: this subquery reads the pre-sweep task status.
             c.execute(
                 "UPDATE steps SET status='interrupted' "
                 "WHERE status IN ('running','queued') "
-                "AND task_id IN (SELECT task_id FROM tasks WHERE status IN (?,?,?))",
+                "AND task_id IN (SELECT task_id FROM tasks "
+                f"WHERE status IN {_IN_INTERRUPTIBLE})",
                 INTERRUPTIBLE)
             c.execute("UPDATE tasks SET status='interrupted' "
-                      "WHERE status IN (?,?,?)", INTERRUPTIBLE)
+                      f"WHERE status IN {_IN_INTERRUPTIBLE}", INTERRUPTIBLE)
             return swept
 
     def add_step(self, task_id, index, kind, detail) -> int:

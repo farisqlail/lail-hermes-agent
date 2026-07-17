@@ -28,6 +28,15 @@ class Settings(BaseModel):
     model: str = "deepseek-ai/deepseek-v3"
     allowed_user_ids: list[int] = Field(default_factory=list)
     default_engine: Literal["claude", "antigravity", "auto"] = "auto"
+    # Per-engine tuning ("" = leave that CLI's own default). Model fields are
+    # free text on purpose: the valid sets (claude aliases like "opus", agy
+    # model ids) change faster than this code. Per-engine because the two
+    # CLIs accept different model names — a shared field would send a claude
+    # id to agy whenever default_engine=auto mixed them. Effort is
+    # claude-only: agy's CLI has no --effort flag (verified 2026-07-17).
+    claude_model: str = ""
+    claude_effort: Literal["", "low", "medium", "high", "xhigh", "max"] = ""
+    agy_model: str = ""
     projects_path: str = ""
     projects: dict[str, str] = Field(default_factory=dict)  # name -> absolute path
     android_sdk_path: str = ""
@@ -38,6 +47,30 @@ class Settings(BaseModel):
     timeout_build_s: int = 1200
     timeout_test_s: int = 600
     mcp_servers: list[McpServer] = Field(default_factory=list)
+
+    @field_validator("claude_model")
+    @classmethod
+    def _claude_model_shape(cls, v: str) -> str:
+        # claude ids and aliases ('opus', 'claude-fable-5') never contain
+        # whitespace; ASCII-only catches smart quotes from copy-paste.
+        if v and (not v.isascii() or any(c.isspace() for c in v)):
+            raise ValueError(
+                "claude model must be a single ASCII token, e.g. 'opus' or "
+                "'claude-fable-5' — check for spaces or smart quotes")
+        return v
+
+    @field_validator("agy_model")
+    @classmethod
+    def _agy_model_shape(cls, v: str) -> str:
+        # agy models are display names with spaces — its own settings.json
+        # stores e.g. "Gemini 3.5 Flash (High)" — and argv goes through
+        # create_subprocess_exec (no shell), so spaces are safe. Still ASCII
+        # (smart quotes) and printable (no newlines/control chars) only.
+        if v and (not v.isascii() or not v.isprintable()):
+            raise ValueError(
+                "agy model must be printable ASCII, e.g. 'Gemini 3.5 Flash "
+                "(High)' — check for smart quotes or line breaks")
+        return v
 
     @field_validator("projects")
     @classmethod

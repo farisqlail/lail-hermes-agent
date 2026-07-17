@@ -82,12 +82,21 @@ flowchart LR
 ## Features
 
 - **Telegram control** with a strict numeric user-ID whitelist (non-listed senders are rejected).
+  `/help` shows the full command guide, `/projects` lists the registered `@name`s, and the
+  commands are published to Telegram's `/` autocomplete menu.
 - **Two coding engines** driven headlessly: Claude Code (`claude -p`) and Antigravity (`agy -p`),
-  auto-selected or overridden per task.
+  auto-selected or overridden per task. Model and effort are configurable per engine from the
+  web UI (`--model` for both, `--effort` for claude only — `agy` has no such flag).
+- **Engine completion contract** — every code step asks the engine to print a completion
+  sentinel after verifying its own work; a session that errors or exits without it gets up to
+  two fix-up sessions fed with the previous session's output, and the full transcript is saved
+  as a task artifact.
 - **APK builds** with automatic project-type detection (Flutter / React Native / native Android).
 - **Testing** in a headless browser (Playwright) or an Android emulator (adb), returning screenshots.
-- **Local web UI** (`127.0.0.1:8799`) for settings, secrets (masked), an MCP-server manager, and a
-  live task dashboard.
+- **Local web UI** (`127.0.0.1:8799`) for settings (engine model/effort dropdowns backed by
+  live `agy models` output where reachable), secrets (masked), an MCP-server manager, a
+  Projects Registry panel (add/edit/delete with an OK/Missing badge per path), and a live task
+  dashboard.
 - **MCP bridge** exposing MCP tools to the NIM brain as OpenAI function calls (stdio + HTTP/SSE
   transports, lazily connected, every remote call time-bounded).
 - **Existing projects** — register a name-to-path map in settings, then aim a task at it with
@@ -95,22 +104,20 @@ flowchart LR
 - **Confirmation gate** — tasks that `git push`, delete files, touch paths outside the project
   dir, or target a registered project with no usable git undo (dirty tree, not a repo,
   git-ignored, or git unavailable) wait for an inline-keyboard ✅/❌ in Telegram before running.
+- **Risky-but-ungated disclosure** — with `confirm_risky` off, risky tasks still run, but the
+  queued message says exactly what the gate saw instead of proceeding silently.
 - **SQLite session store** — tasks, steps, logs, and artifacts persist and survive restarts.
+- **Startup recovery** — on start, tasks stranded in `running`/`queued`/`awaiting_confirm` are
+  retired to `interrupted` and each affected chat gets one digest telling them what died and
+  what to resubmit.
 - **Self-healing launcher** — `start.bat` auto-restarts Hermes 5s after any crash/exit.
 
 ## Working on an existing project
 
-Register the project once, in the settings UI at http://127.0.0.1:8799
-(`projects` is a name-to-absolute-path map):
-
-```json
-"projects": {
-  "myprofit": "C:\\Users\\USER\\myprofit",
-  "hermes":   "E:\\Hermes\\app"
-}
-```
-
-Then aim a task at it with the `@name` sigil:
+Register the project once in the **Projects Registry panel** on the settings tab at
+http://127.0.0.1:8799 — a name plus an absolute folder path per project (cards show an
+OK/Missing badge; the folder itself is never touched). Then aim a task at it with the
+`@name` sigil:
 
 ```
 /task @myprofit fix the login bug
@@ -130,8 +137,9 @@ of the name list.
 
 If the target has no usable git undo — uncommitted changes, not a git repo, git-ignored by
 an enclosing repo, or git itself unavailable (missing binary, no subprocess support, or a
-timeout) — Hermes asks for confirmation first (when the confirmation gate is enabled;
-`confirm_risky` is on by default).
+timeout) — Hermes asks for confirmation first (`confirm_risky` is on by default). With the
+gate off, the task runs anyway but the queued message carries a warning listing what the
+gate saw — never silently.
 
 ## Layout
 
@@ -178,16 +186,21 @@ test, MCP transport, and the NIM planner are all injected as fakes.
 
 ## Known follow-ups
 
-- **HTML forms** for the settings / MCP pages (currently JSON API + minimal dashboard).
-- **Resume-after-crash** — task state persists, but interrupted tasks are not re-driven on restart.
+- **Resume-after-crash** — the startup sweep retires interrupted tasks and notifies the chat,
+  but nothing re-drives them yet; resubmitting is manual.
+- **Stale confirm buttons** — after a restart, taps on old ✅/❌ buttons do nothing (pending
+  confirmations are in-memory); the restart digest tells the user to resubmit.
+- **End-to-end smoke run** — the engine completion sentinel has only been proven against
+  fakes, never a live `claude`; see [`docs/SMOKE.md`](docs/SMOKE.md).
 
 See [`docs/TODO.md`](docs/TODO.md) for the full backlog history.
 
 ## Docs
 
 - [`docs/design-spec.md`](docs/design-spec.md) — architecture and decisions
-- [`docs/implementation-plan.md`](docs/implementation-plan.md) — task-by-task build plan
 - [`docs/SMOKE.md`](docs/SMOKE.md) — smoke-test checklist
+- [`docs/superpowers/specs/`](docs/superpowers/specs/) — feature design specs
+  (project registry, startup recovery)
 
 ## Security notes
 

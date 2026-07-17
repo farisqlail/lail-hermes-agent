@@ -16,6 +16,19 @@ COMMANDS: dict[str, Callable[[str], list[str]]] = {
 # engines that read the prompt from stdin instead of argv: sidesteps cmd.exe
 # quoting of newlines/quotes and the 8191-char command-line limit on Windows
 STDIN_PROMPT = {"claude"}
+# which tuning flags each CLI accepts (verified against --help 2026-07-17):
+# both take --model; only claude has --effort. An unknown flag crashes the
+# engine on every step, so unsupported tuning is dropped, not passed through.
+MODEL_FLAG = {"claude", "antigravity"}
+EFFORT_FLAG = {"claude"}
+
+def _argv(engine: str, prompt: str, model: str = "", effort: str = "") -> list[str]:
+    argv = list(COMMANDS[engine](prompt))
+    if model and engine in MODEL_FLAG:
+        argv += ["--model", model]
+    if effort and engine in EFFORT_FLAG:
+        argv += ["--effort", effort]
+    return argv
 
 @dataclass
 class RunResult:
@@ -52,8 +65,9 @@ def _resolve(argv: list[str]) -> list[str]:
 
 async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
                      cwd: Path, timeout_s: int,
-                     extra_env: dict | None = None) -> RunResult:
-    argv = _resolve(COMMANDS[engine](prompt))
+                     extra_env: dict | None = None,
+                     model: str = "", effort: str = "") -> RunResult:
+    argv = _resolve(_argv(engine, prompt, model, effort))
     env = {**os.environ, **(extra_env or {})}
     send = prompt.encode() if engine in STDIN_PROMPT else None
     proc = await asyncio.create_subprocess_exec(

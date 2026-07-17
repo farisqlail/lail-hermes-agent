@@ -549,6 +549,79 @@ async def test_run_task_uses_supplied_proj(hermes_home):
     assert not (existing / "t1").exists()           # nothing nested
 
 
+async def test_run_task_threads_engine_tuning_per_engine(hermes_home):
+    """Each engine gets ITS OWN configured model (the two CLIs accept
+    different model names), effort reaches claude only, and when unset the
+    kwargs are not passed at all (every other test's fake without
+    model/effort params proves the absence side)."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude",
+                        projects_path=str(hermes_home / "proj"),
+                        claude_model="claude-fable-5", claude_effort="high",
+                        agy_model="Gemini 3.5 Flash (High)")
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [
+            {"type": "code", "engine": "claude", "prompt": "fix it"},
+            {"type": "code", "engine": "antigravity", "prompt": "polish it"},
+        ]})
+
+    got = []
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None,
+                              model="", effort=""):
+        from hermes.engine_runner import RunResult
+        got.append((engine, model, effort))
+        return RunResult(True, f"done\n{_DONE_SENTINEL}", "", False, 0)
+
+    deps = dict(run_engine=fake_run_engine, build_apk=None,
+                detect=lambda d: "flutter", test_emulator=None, test_browser=None)
+    orch = Orchestrator(settings, store, planner, deps)
+
+    async def report(tid, msg): pass
+    store.create_task("t1", 5, "fix it")
+    await orch.run_task("t1", 5, "fix it", report)
+
+    assert got == [("claude", "claude-fable-5", "high"),
+                   ("antigravity", "Gemini 3.5 Flash (High)", "")]
+
+
+async def test_run_task_never_mkdirs_a_supplied_proj(hermes_home, monkeypatch):
+    """The verbatim-use guarantee is structural (the `if proj is None:` guard),
+    and mkdir(exist_ok=True) on an existing dir is a no-op — so a buggy
+    implementation that mkdir-ed the supplied proj would pass the other
+    tests. Spy on Path.mkdir to pin it directly."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude",
+                        projects_path=str(hermes_home / "proj"))
+    existing = hermes_home / "myprofit"
+    existing.mkdir()
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "fix it"}]})
+
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+        from hermes.engine_runner import RunResult
+        return RunResult(True, f"done\n{_DONE_SENTINEL}", "", False, 0)
+
+    deps = dict(run_engine=fake_run_engine, build_apk=None,
+                detect=lambda d: "flutter", test_emulator=None, test_browser=None)
+    orch = Orchestrator(settings, store, planner, deps)
+
+    mkdirs = []
+    real_mkdir = Path.mkdir
+    def spy(self, *args, **kwargs):
+        mkdirs.append(Path(self))
+        return real_mkdir(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "mkdir", spy)
+
+    async def report(tid, msg): pass
+    store.create_task("t1", 5, "fix it")
+    await orch.run_task("t1", 5, "fix it", report, proj=existing)
+
+    # The artifacts dir may mkdir; the supplied project must never appear.
+    assert existing not in mkdirs
+
+
 async def test_run_task_without_proj_creates_workspace(hermes_home):
     """proj=None keeps today's behaviour: a fresh dir named for the task."""
     store = Store(hermes_home / "t.db"); store.init_schema()

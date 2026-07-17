@@ -1179,6 +1179,51 @@
                     </div>
 
                     <div class="form-group">
+                        <label for="claude_model">
+                            Claude Model
+                            <span class="tooltip">ⓘ
+                                <span class="tooltiptext">Passed as --model to the claude CLI. Alias (fable, opus, sonnet) or full id. Leave on CLI default to not send the flag.</span>
+                            </span>
+                        </label>
+                        <select id="claude_model" onchange="toggleCustomModel('claude_model')">
+                            <option value="">CLI default</option>
+                            <option value="__custom__">Custom…</option>
+                        </select>
+                        <input type="text" id="claude_model_custom" style="display:none; margin-top: 0.5rem;" placeholder="type a model id, e.g. claude-fable-5">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="claude_effort">
+                            Claude Effort
+                            <span class="tooltip">ⓘ
+                                <span class="tooltiptext">Passed as --effort to the claude CLI. Higher effort = more thorough, slower, costlier sessions. The agy CLI has no effort flag.</span>
+                            </span>
+                        </label>
+                        <select id="claude_effort">
+                            <option value="">CLI default</option>
+                            <option value="low">low</option>
+                            <option value="medium">medium</option>
+                            <option value="high">high</option>
+                            <option value="xhigh">xhigh</option>
+                            <option value="max">max</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="agy_model">
+                            Antigravity Model
+                            <span class="tooltip">ⓘ
+                                <span class="tooltiptext">Passed as --model to the agy CLI. List comes from `agy models` when reachable; agy uses display names, spaces included. Leave on CLI default to not send the flag.</span>
+                            </span>
+                        </label>
+                        <select id="agy_model" onchange="toggleCustomModel('agy_model')">
+                            <option value="">CLI default</option>
+                            <option value="__custom__">Custom…</option>
+                        </select>
+                        <input type="text" id="agy_model_custom" style="display:none; margin-top: 0.5rem;" placeholder="type a display name, e.g. Gemini 3.5 Flash (High)">
+                    </div>
+
+                    <div class="form-group">
                         <label for="model">NIM Planner Model</label>
                         <select id="model">
                             <option value="deepseek-ai/deepseek-v4-flash">deepseek-ai/deepseek-v4-flash</option>
@@ -1293,6 +1338,25 @@
                         </div>
                     </div>
                 </section>
+
+                <!-- Projects Registry -->
+                <section class="glass-panel" style="display: flex; flex-direction: column; gap: 1rem;">
+                    <div class="panel-title">
+                        <span>Projects Registry</span>
+                    </div>
+                    <p style="font-size: 0.8rem; color: var(--text-muted);">
+                        Existing folders the agent may target. In Telegram, prefix a task
+                        with <code>@name</code> to run it inside that project.
+                    </p>
+
+                    <div id="projects-list" class="mcp-servers-grid">
+                        <!-- Dynamic project cards -->
+                        <div class="mcp-card mcp-add-card" onclick="openProjectModal()">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            <span>Add Project</span>
+                        </div>
+                    </div>
+                </section>
             </div>
         </div>
     </main>
@@ -1364,6 +1428,38 @@
     </div>
 </div>
 
+<!-- Modal: Add/Edit Project -->
+<div id="project-modal" class="modal-overlay">
+    <div class="modal-content">
+        <div class="modal-header">
+            <div class="modal-title" id="project-modal-title">Add Project</div>
+            <button class="close-modal" onclick="closeProjectModal()">&times;</button>
+        </div>
+        <form id="project-form" onsubmit="event.preventDefault(); submitProjectForm();">
+            <input type="hidden" id="project-original-name" value="">
+
+            <div class="form-group" style="margin-bottom: 1rem;">
+                <label for="project_name">
+                    Name
+                    <span class="tooltip">ⓘ
+                        <span class="tooltiptext">The @name used in Telegram. Must start with a letter or digit; then letters, digits, dot, dash, underscore.</span>
+                    </span>
+                </label>
+                <input type="text" id="project_name" required placeholder="e.g. myprofit">
+            </div>
+
+            <div class="form-group" style="margin-bottom: 1rem;">
+                <label for="project_path">Absolute Folder Path</label>
+                <input type="text" id="project_path" required placeholder="e.g. C:\Users\YourUser\myprofit">
+            </div>
+
+            <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.5rem;">
+                <button type="submit" class="btn">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <!-- Toast Container -->
 <div id="toast-container" class="toast-container"></div>
 
@@ -1372,6 +1468,7 @@
     let state = {
         tasks: [],
         currentTaskId: null,
+        projects: [],   // [{name, path, exists}] from /api/projects
         settings: {
             nvidia_base_url: "",
             model: "",
@@ -1626,6 +1723,8 @@
                 state.settings = await res.json();
                 
                 document.getElementById('default_engine').value = state.settings.default_engine;
+                document.getElementById('claude_effort').value = state.settings.claude_effort || '';
+                await loadEngineModels();   // populates + selects claude_model / agy_model
                 document.getElementById('model').value = state.settings.model || 'deepseek-ai/deepseek-v3';
                 document.getElementById('nvidia_base_url').value = state.settings.nvidia_base_url;
                 document.getElementById('allowed_user_ids').value = state.settings.allowed_user_ids.join(', ');
@@ -1641,6 +1740,64 @@
             }
         } catch (err) {
             showToast('Failed to load settings data', 'error');
+        }
+        loadProjects();
+    }
+
+    // Engine model dropdowns. Options come from /api/engine-models (claude:
+    // static list, agy: live `agy models` output with a fallback). A saved
+    // value not in the list is kept via the Custom input, never dropped.
+    async function loadEngineModels() {
+        let models = { claude: [], agy: [] };
+        try {
+            const res = await fetch('/api/engine-models');
+            if (res.ok) models = await res.json();
+        } catch (err) {
+            console.error('Failed to load engine model lists', err);
+        }
+        populateModelSelect('claude_model', models.claude || [], state.settings.claude_model || '');
+        populateModelSelect('agy_model', models.agy || [], state.settings.agy_model || '');
+    }
+
+    function populateModelSelect(fieldId, options, savedValue) {
+        const select = document.getElementById(fieldId);
+        const custom = document.getElementById(fieldId + '_custom');
+        select.innerHTML = '';
+        select.appendChild(new Option('CLI default', ''));
+        for (const m of options) select.appendChild(new Option(m, m));
+        select.appendChild(new Option('Custom…', '__custom__'));
+
+        if (savedValue && !options.includes(savedValue)) {
+            select.value = '__custom__';
+            custom.value = savedValue;
+            custom.style.display = 'block';
+        } else {
+            select.value = savedValue;
+            custom.style.display = 'none';
+        }
+    }
+
+    function toggleCustomModel(fieldId) {
+        const isCustom = document.getElementById(fieldId).value === '__custom__';
+        document.getElementById(fieldId + '_custom').style.display = isCustom ? 'block' : 'none';
+    }
+
+    function modelValue(fieldId) {
+        const v = document.getElementById(fieldId).value;
+        if (v !== '__custom__') return v;
+        return document.getElementById(fieldId + '_custom').value.trim();
+    }
+
+    // Load Projects registry (separate endpoint: carries the `exists` hint)
+    async function loadProjects() {
+        try {
+            const res = await fetch('/api/projects');
+            if (res.ok) {
+                state.projects = await res.json();
+                renderProjects();
+            }
+        } catch (err) {
+            console.error('Failed to load projects', err);
         }
     }
 
@@ -1687,6 +1844,9 @@
         const updatedSettings = {
             ...state.settings,
             default_engine: document.getElementById('default_engine').value,
+            claude_model: modelValue('claude_model'),
+            claude_effort: document.getElementById('claude_effort').value,
+            agy_model: modelValue('agy_model'),
             model: document.getElementById('model').value,
             nvidia_base_url: document.getElementById('nvidia_base_url').value,
             allowed_user_ids: allowedUserIds,
@@ -1709,11 +1869,25 @@
                 showToast('Settings saved successfully', 'success');
                 loadSettingsData();
             } else {
-                showToast('Failed to save settings', 'error');
+                showToast(await extractApiError(res, 'Failed to save settings'), 'error');
             }
         } catch (err) {
             showToast('Network error while saving settings', 'error');
         }
+    }
+
+    // FastAPI validation errors arrive as {detail: [{msg, loc, ...}]} (body
+    // model) or {detail: "..."} (explicit HTTPException). Surface the real
+    // message either way instead of a generic failure toast.
+    async function extractApiError(res, fallback) {
+        try {
+            const err = await res.json();
+            if (typeof err.detail === 'string') return err.detail;
+            if (Array.isArray(err.detail) && err.detail.length && err.detail[0].msg) {
+                return err.detail[0].msg.replace(/^Value error, /, '');
+            }
+        } catch (e) {}
+        return fallback;
     }
 
     // Save Secrets
@@ -1932,6 +2106,118 @@
         } catch (err) {
             showToast('Network error while deleting MCP server', 'error');
         }
+    }
+
+    // Render Projects registry
+    function renderProjects() {
+        const list = document.getElementById('projects-list');
+        const addCardHtml = `
+            <div class="mcp-card mcp-add-card" onclick="openProjectModal()">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                <span>Add Project</span>
+            </div>
+        `;
+
+        if (!state.projects || state.projects.length === 0) {
+            list.innerHTML = addCardHtml;
+            return;
+        }
+
+        const cardsHtml = state.projects.map((proj, idx) => `
+            <div class="mcp-card">
+                <div class="mcp-card-header">
+                    <span class="mcp-card-title">@${escapeHtml(proj.name)}</span>
+                    <span class="badge ${proj.exists ? 'done' : 'interrupted'}">${proj.exists ? 'OK' : 'Missing'}</span>
+                </div>
+                <div class="mcp-card-body">
+                    <div class="mcp-prop-row">
+                        <span>Path:</span>
+                        <span class="mcp-prop-val">${escapeHtml(proj.path)}</span>
+                    </div>
+                </div>
+                <div class="mcp-card-actions">
+                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.75rem;" onclick="openProjectModal(${idx})">Edit</button>
+                    <button class="btn btn-danger" style="padding: 6px 12px; font-size: 0.75rem; border: none; margin-left: auto;" onclick="deleteProject(${idx})">Delete</button>
+                </div>
+            </div>
+        `).join('');
+
+        list.innerHTML = cardsHtml + addCardHtml;
+    }
+
+    // Project modal control
+    function openProjectModal(index = null) {
+        const modal = document.getElementById('project-modal');
+        const title = document.getElementById('project-modal-title');
+        document.getElementById('project-form').reset();
+
+        if (index !== null) {
+            const proj = state.projects[index];
+            title.innerText = 'Edit Project';
+            document.getElementById('project-original-name').value = proj.name;
+            document.getElementById('project_name').value = proj.name;
+            document.getElementById('project_path').value = proj.path;
+        } else {
+            title.innerText = 'Add Project';
+            document.getElementById('project-original-name').value = '';
+        }
+        modal.style.display = 'flex';
+    }
+
+    function closeProjectModal() {
+        document.getElementById('project-modal').style.display = 'none';
+    }
+
+    async function postProjects(registry, successMsg) {
+        try {
+            const res = await fetch('/api/projects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(registry)
+            });
+            if (res.ok) {
+                showToast(successMsg, 'success');
+                closeProjectModal();
+                loadProjects();
+                return true;
+            }
+            // 422 carries the validator's specific message — surface it.
+            showToast(await extractApiError(res, 'Failed to save projects'), 'error');
+        } catch (err) {
+            showToast('Network error while saving projects', 'error');
+        }
+        return false;
+    }
+
+    async function submitProjectForm() {
+        const originalName = document.getElementById('project-original-name').value;
+        const name = document.getElementById('project_name').value.trim();
+        const path = document.getElementById('project_path').value.trim();
+
+        const registry = {};
+        for (const p of state.projects) registry[p.name] = p.path;
+
+        if (originalName === '' && registry[name] !== undefined) {
+            showToast('A project with that name already exists', 'error');
+            return;
+        }
+        if (originalName !== '' && originalName !== name) {
+            delete registry[originalName];   // rename: drop the old key
+        }
+        registry[name] = path;
+
+        await postProjects(registry, `Project @${name} saved`);
+    }
+
+    async function deleteProject(idx) {
+        const proj = state.projects[idx];
+        if (!confirm(`Remove project @${proj.name} from the registry? The folder itself is not touched.`)) return;
+
+        const registry = {};
+        for (const p of state.projects) registry[p.name] = p.path;
+        delete registry[proj.name];
+
+        await postProjects(registry, `Project @${proj.name} removed`);
     }
 
     // Test MCP Server

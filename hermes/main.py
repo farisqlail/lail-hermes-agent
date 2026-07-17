@@ -163,15 +163,19 @@ def _clip_for_telegram(text: str) -> str:
 def _console_safe(e: object) -> str:
     """Render an exception (or anything) so print() can never itself raise.
 
-    Hermes's Windows console (see deploy/start.bat, which sets none of
-    PYTHONUTF8, PYTHONIOENCODING, or chcp 65001) renders stdout as cp1252. If
-    str(e) contains a character outside cp1252 -- plausible in Telegram/httpx
-    error text -- printing it raises UnicodeEncodeError *from the except block
-    doing the reporting*, escaping that handler entirely (the f3499e0 /
-    193e532 bug class). backslashreplace guarantees an encodable string while
-    still telling the operator roughly what happened.
+    An *attached* Windows console is UTF-8 regardless of codepage (PEP 528),
+    so the documented deploy/start.bat launch path cannot raise here. The
+    hazard is a *redirected* stdout — `start.bat > log.txt`, a service, a
+    scheduler — which gets the locale's legacy codec (cp1252 here, cp932 on a
+    Japanese host, ...). If str(e) contains a character outside that codec —
+    plausible in Telegram/httpx error text — printing it raises
+    UnicodeEncodeError *from the except block doing the reporting*, escaping
+    that handler entirely (the f3499e0 / 193e532 bug class). Coercing to
+    ASCII with backslashreplace survives every legacy codec, and loses
+    nothing a narrower codec would have kept: non-ASCII detail is escaped
+    either way.
     """
-    return str(e).encode("cp1252", errors="backslashreplace").decode("cp1252")
+    return str(e).encode("ascii", errors="backslashreplace").decode("ascii")
 
 def _make_crash_reporter(sender):
     """Build the done-callback for fire-and-forget tasks.
@@ -187,7 +191,7 @@ def _make_crash_reporter(sender):
             if exc:
                 # _console_safe, because repr() does NOT escape non-ASCII: a
                 # bare {exc!r} raises UnicodeEncodeError on a redirected
-                # cp1252 stdout. That raise happens inside a done-callback,
+                # legacy-codepage stdout. That raise happens inside a done-callback,
                 # so asyncio swallows it into the loop's exception handler and
                 # the sender() below never runs -- losing the crash report
                 # this callback exists to deliver.
@@ -321,24 +325,37 @@ async def run():
                     bridge.resolve_confirm(q.from_user.id, task_id, ans == "yes"))
                 t.add_done_callback(crash_reporter(c))
 
+            async def on_help(update: Update, ctx):
+                if not await check_auth_and_respond(update):
+                    return
+                from .telegram_bridge import help_text
+                await sender(update.effective_chat.id, help_text())
+
+            async def on_projects(update: Update, ctx):
+                if not await check_auth_and_respond(update):
+                    return
+                from .telegram_bridge import projects_overview
+                await sender(update.effective_chat.id,
+                             projects_overview(bridge.get_settings()))
+
             async def on_chat(update: Update, ctx):
                 if not await check_auth_and_respond(update):
                     return
+                from .telegram_bridge import help_text
                 c = update.effective_chat.id
-                await sender(c, "Halo! Saya adalah Hermes, asisten orkestrasi Anda.\n\n"
-                                "Untuk memberikan tugas coding, build APK, atau testing, silakan gunakan perintah:\n"
-                                "`/task <deskripsi tugas>`\n\n"
-                                "Contoh:\n"
-                                "`/task buat app counter Flutter, build APK, test di emulator`")
+                await sender(c, "Halo! Saya Hermes, asisten orkestrasi Anda.\n\n"
+                                + help_text())
 
             app.add_handler(CommandHandler("task", on_task))
             app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^confirm:"))
             app.add_handler(CommandHandler("start", on_chat))
+            app.add_handler(CommandHandler("help", on_help))
+            app.add_handler(CommandHandler("projects", on_projects))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_chat))
             print("Telegram bot initialized successfully.")
         except Exception as e:
-            # _console_safe: a bare {e} could raise UnicodeEncodeError on the
-            # cp1252 console and escape run() entirely -> start.bat crash loop.
+            # _console_safe: a bare {e} could raise UnicodeEncodeError on a
+            # redirected stdout and escape run() entirely -> start.bat crash loop.
             print(f"Error initializing Telegram bot: {_console_safe(e)}. Bot features will be disabled.")
             app = None
     else:
@@ -352,6 +369,17 @@ async def run():
         try:
             async with app:
                 await app.start()
+                # Publish the command menu so "/" in Telegram autocompletes.
+                # Best-effort: a failure here must not take the bot down.
+                try:
+                    from telegram import BotCommand
+                    await app.bot.set_my_commands([
+                        BotCommand("task", "Buat tugas: /task [@nama] <deskripsi>"),
+                        BotCommand("projects", "Daftar project terdaftar"),
+                        BotCommand("help", "Panduan perintah"),
+                    ])
+                except Exception as e:
+                    print(f"Could not publish the command menu: {_console_safe(e)}")
                 # Before polling, so the restart notice lands ahead of any
                 # newly submitted task's output.
                 await _notify_restart(swept, sender)
@@ -359,8 +387,8 @@ async def run():
                 await server.serve()
                 await app.updater.stop()
         except Exception as e:
-            # _console_safe: a bare {e} could raise UnicodeEncodeError on the
-            # cp1252 console and skip the fallback server.serve() below.
+            # _console_safe: a bare {e} could raise UnicodeEncodeError on a
+            # redirected stdout and skip the fallback server.serve() below.
             print(f"Error starting Telegram polling: {_console_safe(e)}. Bot features will be disabled.")
             await server.serve()
     else:

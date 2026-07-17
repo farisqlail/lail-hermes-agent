@@ -28,11 +28,60 @@ def test_secrets_roundtrip(hermes_home):
     assert sec.nvidia_api_key == "nv-k"
     assert sec.telegram_bot_token == "tg-t"
 
+def test_engine_tuning_defaults_off():
+    s = config.Settings()
+    assert s.claude_model == ""
+    assert s.claude_effort == ""
+    assert s.agy_model == ""
+
+
+def test_claude_effort_rejects_unknown_level():
+    with pytest.raises(ValidationError):
+        config.Settings(claude_effort="turbo")
+
+
+def test_claude_model_rejects_whitespace_and_non_ascii():
+    with pytest.raises(ValidationError, match="single ASCII token"):
+        config.Settings(claude_model="opus 4")
+    with pytest.raises(ValidationError, match="single ASCII token"):
+        config.Settings(claude_model="opus’")   # smart quote from copy-paste
+
+
+def test_agy_model_accepts_display_names():
+    """agy models ARE display names — agy's own settings.json stores
+    "Gemini 3.5 Flash (High)". Spaces must not be rejected here."""
+    s = config.Settings(agy_model="Gemini 3.5 Flash (High)")
+    assert s.agy_model == "Gemini 3.5 Flash (High)"
+
+
+def test_agy_model_rejects_non_ascii_and_control_chars():
+    with pytest.raises(ValidationError, match="printable ASCII"):
+        config.Settings(agy_model="Gemini’s Best")   # smart quote
+    with pytest.raises(ValidationError, match="printable ASCII"):
+        config.Settings(agy_model="Gemini\nFlash")   # line break
+
+
+def test_engine_tuning_roundtrip(hermes_home):
+    paths.ensure_dirs()
+    s = config.load_settings()
+    s.claude_model = "claude-fable-5"
+    s.claude_effort = "high"
+    s.agy_model = "Gemini 3.5 Flash (High)"
+    config.save_settings(s)
+    s2 = config.load_settings()
+    assert s2.claude_model == "claude-fable-5"
+    assert s2.claude_effort == "high"
+    assert s2.agy_model == "Gemini 3.5 Flash (High)"
+
+
 def test_projects_defaults_empty():
     assert config.Settings().projects == {}
 
 
 def test_projects_accepts_absolute_paths(tmp_path):
+    """Positive path only: pins that the validator does NOT over-reject a
+    legitimate entry (it would also pass with no validator at all — the
+    rejection behaviour itself is pinned by the tests below)."""
     s = config.Settings(projects={"myprofit": str(tmp_path)})
     assert s.projects["myprofit"] == str(tmp_path)
 
@@ -58,6 +107,8 @@ def test_projects_missing_path_still_loads(tmp_path):
 
 
 def test_projects_roundtrip(hermes_home, tmp_path):
+    """Persistence positive path: a valid registry survives save + load
+    (load_settings re-runs the validator on what came back from YAML)."""
     paths.ensure_dirs()
     s = config.load_settings()
     s.projects = {"myprofit": str(tmp_path)}

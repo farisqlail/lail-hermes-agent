@@ -1,12 +1,12 @@
 # Hermes — Unfinished Tasks / Backlog
 
-Status: **full test suite passes (168), warning-free.** Branch `feat/engine-loop`,
-working tree clean.
+Status: **full test suite passes (177), warning-free.** Branch `master`.
 
-Features built from specs in `docs/superpowers/specs/` via the plans in
-`docs/superpowers/plans/`: **the @name registry and startup recovery are both
-complete and reviewed.** Several smaller features then landed directly on
-`feat/engine-loop` without a spec or plan — see the section below.
+Features built from specs in `docs/superpowers/specs/`: **the @name registry and
+startup recovery are both complete and reviewed.** (Their execution plans in
+`docs/superpowers/plans/` were deleted 2026-07-17 after completion; the specs
+remain.) Several smaller features then landed directly on `feat/engine-loop`
+without a spec or plan — see the section below.
 
 Note: `.superpowers/sdd/progress.md` referenced by earlier revisions of this file no
 longer exists on disk. This file and git history are the recovery map now.
@@ -102,15 +102,11 @@ Open on the engine loop:
 
 ## Config that must be set before any of this is usable
 
-- [ ] **`Settings.projects` is empty, so every `@name` rejects.** Set it in the settings UI at
-  http://127.0.0.1:8799. It is a name-to-absolute-path map — projects stay where they are,
-  there is no directory scan:
-  ```json
-  "projects": {
-    "myprofit": "C:\\Users\\USER\\myprofit",
-    "hermes":   "E:\\Hermes\\app"
-  }
-  ```
+- [ ] **`Settings.projects` is empty, so every `@name` rejects.** Fill it via the new
+  **Projects Registry panel** on the settings tab at http://127.0.0.1:8799 (added 2026-07-17:
+  card list with an OK/Missing badge per path, add/edit/delete modal, backed by
+  `GET/POST /api/projects`). It is a name-to-absolute-path map — projects stay where they are,
+  there is no directory scan.
   Do **not** point `projects_path` at `C:\Users\USER` as a shortcut. The real projects sit
   there beside `AppData`, `Documents`, and `OneDrive`, and the registry exists precisely so
   those can never become agent-writable targets.
@@ -179,47 +175,41 @@ None are known bugs. Triaged during the final whole-branch review (2026-07-15).
 - [x] README rejection text now covers the zero-projects-registered branch, and the git-undo
   paragraph notes it depends on `confirm_risky`.
 
-**Open — `_console_safe` rests on a false premise (measured 2026-07-17)**
-- [ ] Every cp1252 comment on this branch says "Hermes's Windows console renders stdout as
-  cp1252". It does not. Measured on this machine, Python 3.14.3, real attached console:
-  `isatty=True encoding=utf-8 type=_WindowsConsoleIO` — PEP 528 drives the Windows console at
-  UTF-8, and printing `❌ заблокирован` to it does not raise. `deploy/start.bat` runs
-  `python -m hermes.main` with no redirection, so **on the documented launch path the whole
-  UnicodeEncodeError hazard cannot fire.** cp1252 is what a *redirected* stdout gets
-  (`start.bat > log.txt`, a service, a scheduler) — a plausible future, so keep the guard, but
-  the stated reason is wrong and `test_console_safe_output_always_survives_cp1252` pins the
-  wrong invariant.
-- [ ] `_console_safe` hardcodes cp1252, which is narrower than the guarantee it claims:
-  `'café'` survives cp1252 coercion untouched, then raises on a cp932 locale. ASCII coercion
-  (`.encode("ascii", "backslashreplace")`) survives cp1252/cp932/cp1250/cp437/cp850 and loses
-  nothing, since non-ASCII detail is escaped either way. One-word change.
+**`_console_safe` false premise — FIXED (2026-07-17)**
+- [x] Docstring and call-site comments no longer claim the attached console is cp1252; they
+  now name the real hazard (a *redirected* stdout gets the locale's legacy codec — PEP 528
+  makes the attached console UTF-8).
+- [x] Coercion switched from cp1252 to `.encode("ascii", "backslashreplace")`, which survives
+  every legacy codec. `test_console_safe_output_is_pure_ascii` (renamed from
+  `..._survives_cp1252`) now pins the ASCII invariant, with `'café'` added as the case that
+  distinguished the two.
 
-**Open — product call**
-- [ ] `confirm_risky=False` silently means "run against my real dirty repo, no warning" —
-  the reason is computed, then discarded without ever reaching `sender()`. Consistent with the
-  pre-existing semantics for risky *text*, but the stakes changed once tasks could target real
-  projects. Needs an owner decision, not a code fix.
+**Product call — RESOLVED (2026-07-17): warn, don't gate**
+- [x] `confirm_risky=False` no longer runs risky tasks silently. The git probe now runs
+  whenever a project is supplied and `git_dirty` is wired (no longer conditioned on
+  `gate_live`), and when reasons exist but the gate is off, the queued message carries
+  "Warning — running without confirmation: <reasons>". Gate-on behaviour unchanged.
+  Tests: `test_gate_disabled_risky_text_still_warns`,
+  `test_gate_disabled_dirty_project_still_probed_and_warned`,
+  `test_gate_disabled_clean_project_gets_no_warning`.
 
-**Open — test quality (accepted for merge; fix opportunistically)**
-- [ ] `test_recovery.py::test_caps_listing_at_five_per_group` asserts `msg.count("  t") == 5` —
-  an incidental substring, not a structural property. It only equals 5 because the fixture's
-  task ids happen to start with `t`.
-- [ ] `test_config.py::test_projects_accepts_absolute_paths` and `::test_projects_roundtrip`
-  would both still pass if the validator were deleted. The other four do pin it.
-- [ ] `run_task`'s "a supplied `proj` is never `mkdir`-ed" is not test-enforced —
-  `mkdir(exist_ok=True)` on an existing dir is a no-op, so a buggy implementation still passes.
-  The guarantee is structural, via the `if proj is None:` guard.
-- [ ] `group_digests`: no test pins singular "1 task was" vs plural "N tasks were"; none
-  combines a capped (>5) section with a second non-empty section (the grand-total case); none
-  covers `text=None`, though the column has no `NOT NULL`; within-section ordering of
-  same-status rows is untested, so a sort regression would slip through.
-- [ ] No test asserts the git probe is **skipped** when `gate_live=False` but `git_dirty` IS
-  configured.
+**Test quality — FIXED (2026-07-17)**
+- [x] `test_caps_listing_at_five_per_group` now asserts the listed ids are exactly the first
+  five, in order — structural, not the incidental `msg.count("  t")`.
+- [x] `test_projects_accepts_absolute_paths` / `::test_projects_roundtrip` — reframed with
+  docstrings as positive-path tests (pinning non-rejection); the rejection behaviour is pinned
+  by the neighbouring tests. Passing without the validator is by design for these two.
+- [x] `run_task`'s "a supplied `proj` is never `mkdir`-ed" now test-enforced via a `Path.mkdir`
+  spy: `test_run_task_never_mkdirs_a_supplied_proj`.
+- [x] `group_digests` gaps closed: singular/plural wording, capped-section + second-section
+  grand total, `text=None`, within-section input ordering.
+- [x] ~~git probe skipped when `gate_live=False`~~ — superseded by the product call above: the
+  probe now deliberately RUNS with the gate off, and that is what is tested.
 
 **Cosmetic / duplication**
 - [x] ~~Name-shape regex duplicated~~ — fixed in `9bbb0b3` via shared `config._NAME_CHAR`.
-- [ ] `session_store.sweep_interrupted` hardcodes `(?,?,?)` in three places rather than
-  deriving it from `len(INTERRUPTIBLE)`. Fail-loud if it drifts, not silent.
+- [x] ~~`session_store.sweep_interrupted` hardcodes `(?,?,?)`~~ — placeholders now derived:
+  `_IN_INTERRUPTIBLE = f"({','.join('?' * len(INTERRUPTIBLE))})"`, used in all three queries.
 - [x] ~~README silent on zero-projects-registered rejection~~ — fixed with the review.
 - [ ] `http://127.0.0.1:8799` is hardcoded in four modules (five with `recovery.py`).
   Pre-existing convention.
@@ -242,7 +232,23 @@ None are known bugs. Triaged during the final whole-branch review (2026-07-15).
   user to resubmit, but the button itself is still silent.
 - [ ] Real end-to-end smoke run (needs your NVIDIA key, Telegram token, an AVD) — see
   `docs/SMOKE.md`.
-- [ ] HTML forms for the settings / MCP pages (currently JSON API only; dashboard is minimal).
+- [x] ~~HTML forms for the settings / MCP pages~~ — settings form, MCP cards, and (2026-07-17)
+  the Projects Registry panel all exist in `spa.html`. Remaining UI work is polish, not forms.
+- Landed 2026-07-17, author-reviewed only (add to the review backlog above):
+  - **Projects Registry web panel** — `GET /api/projects` (adds an `exists` hint; existence
+    stays out of the Settings validator by design), `POST /api/projects` (422 surfaces the
+    validator's own message; a rejected post never clobbers the stored registry).
+  - **Engine model/effort from the web** — per-engine: `Settings.claude_model` /
+    `Settings.claude_effort` (`Literal["", low, medium, high, xhigh, max]`) and
+    `Settings.agy_model` (model fields free-text; separate fields because the two CLIs accept
+    different model names, and `auto` mixes engines). Validators differ per CLI: claude ids are
+    single tokens, but agy models are *display names with spaces* — agy's own settings.json
+    stores `"Gemini 3.5 Flash (High)"` — so agy allows printable ASCII, spaces included.
+    Threaded orchestrator → `run_engine` as opt-in kwargs (the `send_file` pattern, so fakes
+    keep narrow signatures). Flag support per CLI is in `engine_runner.MODEL_FLAG` /
+    `EFFORT_FLAG`: both take `--model`, only `claude` has `--effort` — both verified against
+    the live `--help` output (2026-07-17). Not yet tested against a live engine run — fold
+    into the smoke run.
 
 ---
 
