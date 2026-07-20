@@ -38,20 +38,45 @@ class RunResult:
     timed_out: bool
     returncode: int | None
 
+def _extra_tool_dirs() -> list[str]:
+    """Well-known install dirs for the engine CLIs, searched when the bot's
+    PATH predates their install.
+
+    A cmd window caches PATH at launch; start.bat's auto-restart loop reuses
+    that env on every restart. A CLI installed (or PATH-registered) after the
+    window opened is invisible to Hermes until the window is reopened — the
+    "'claude' not found on PATH" trap even though `claude` runs fine in a fresh
+    shell. npm publishes global shims to %APPDATA%\\npm; the antigravity CLI
+    installs to %LOCALAPPDATA%\\agy\\bin. Searching these directly defuses it.
+    Only existing dirs are returned, so a missing var never widens the search.
+    """
+    candidates = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        candidates.append(os.path.join(appdata, "npm"))
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.append(os.path.join(local, "agy", "bin"))
+    return [d for d in candidates if os.path.isdir(d)]
+
 def _resolve(argv: list[str]) -> list[str]:
     """Resolve argv[0] to something CreateProcess can actually run.
 
     npm installs CLIs as .cmd/.ps1 shims; create_subprocess_exec does not apply
     PATHEXT, so bare names like "claude" raise WinError 2. Prefer a real .exe,
-    then wrap script shims in their interpreter.
+    then wrap script shims in their interpreter. The search covers PATH plus the
+    known CLI install dirs (_extra_tool_dirs), so a stale-PATH bot process still
+    finds an installed engine.
     """
     name = argv[0]
+    search = os.pathsep.join(
+        d for d in [os.environ.get("PATH", ""), *_extra_tool_dirs()] if d)
     exe = None
     for ext in (".exe", ".cmd", ".bat", ".ps1"):
-        exe = shutil.which(name + ext)
+        exe = shutil.which(name + ext, path=search)
         if exe:
             break
-    exe = exe or shutil.which(name)
+    exe = exe or shutil.which(name, path=search)
     if exe is None:
         raise FileNotFoundError(
             f"engine executable {name!r} not found on PATH — is it installed?")

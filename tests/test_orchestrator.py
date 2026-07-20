@@ -1,15 +1,44 @@
 import json
 from pathlib import Path
 from hermes.orchestrator import (
-    Orchestrator, parse_plan, choose_engine, _project_summary,
+    Orchestrator, parse_plan, validate_plan, choose_engine, _project_summary,
     _compose_engine_prompt, _DONE_SENTINEL)
 from hermes.config import Settings
 from hermes.session_store import Store
+import pytest
 
 def test_parse_plan_with_fences():
     raw = "```json\n{\"steps\":[{\"type\":\"code\",\"engine\":\"claude\",\"prompt\":\"x\"}]}\n```"
     steps = parse_plan(raw)
     assert steps[0]["type"] == "code"
+
+def test_validate_plan_rejects_emulator_test_without_build():
+    """The exact broken plan a weak planner produced against a web project: a
+    lone emulator test, no build. It can only fail with 'no apk artifact to
+    test', so reject it at planning time."""
+    steps = [{"type": "test", "mode": "emulator"}]
+    with pytest.raises(ValueError) as e:
+        validate_plan(steps)
+    assert "build step" in str(e.value)
+
+def test_validate_plan_accepts_build_then_emulator_test():
+    """A real Android plan — build produces the APK, then the emulator test
+    installs it — is exactly what the guard must allow through."""
+    steps = [{"type": "build", "target": "apk"},
+             {"type": "test", "mode": "emulator"}]
+    validate_plan(steps)  # must not raise
+
+def test_validate_plan_ignores_browser_and_default_mode_tests():
+    """Only emulator tests depend on a build. A browser test, and a test left
+    at the default mode, have no APK dependency and must pass untouched."""
+    validate_plan([{"type": "test", "mode": "browser"}])
+    validate_plan([{"type": "test"}])  # default_test_mode defaults to "none"
+
+def test_validate_plan_honors_configured_default_emulator_mode():
+    """A test step with no explicit mode inherits the configured default, the
+    same way _exec_step resolves it — so default 'emulator' must still gate."""
+    with pytest.raises(ValueError):
+        validate_plan([{"type": "test"}], default_test_mode="emulator")
 
 def test_choose_engine_default():
     s = Settings(default_engine="claude")
@@ -63,6 +92,69 @@ async def test_planning_failure_marks_task_failed(hermes_home):
     assert store.get_task("t1")["status"] == "failed"
     assert any("planning failed" in m for m in reports)
 
+async def test_invalid_plan_fails_task_before_running_any_step(hermes_home):
+    """An emulator-test-without-build plan must die at validation, not by
+    running the doomed step. The engine must never be touched."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(projects_path=str(hermes_home / "proj"))
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "test", "mode": "emulator"}]})
+
+    async def must_not_run(*a, **k):
+        raise AssertionError("no step should run on an invalid plan")
+
+    deps = dict(run_engine=must_not_run, build_apk=must_not_run,
+                detect=must_not_run, test_emulator=must_not_run)
+    orch = Orchestrator(settings, store, planner, deps)
+    reports = []
+    async def report(tid, msg): reports.append(msg)
+    store.create_task("t1", 5, "cek bug halaman detail")
+    await orch.run_task("t1", 5, "cek bug halaman detail", report)
+
+    assert store.get_task("t1")["status"] == "failed"
+    assert any("planning failed" in m and "build step" in m for m in reports)
+
+async def test_task_complete_reports_change_summary_for_git_project(hermes_home):
+    """When the project is a git repo, the completion message must carry a
+    short summary of what the task changed — the file the engine edited."""
+    import asyncio as _aio
+    async def _git(cwd, *args):
+        p = await _aio.create_subprocess_exec(
+            "git", *args, cwd=str(cwd),
+            stdout=_aio.subprocess.DEVNULL, stderr=_aio.subprocess.DEVNULL)
+        await p.wait()
+        assert p.returncode == 0
+
+    repo = hermes_home / "proj"; repo.mkdir()
+    await _git(repo, "init", "-q")
+    await _git(repo, "config", "user.email", "t@example.com")
+    await _git(repo, "config", "user.name", "Test")
+    (repo / "a.txt").write_text("one\n")
+    await _git(repo, "add", "a.txt")
+    await _git(repo, "commit", "-q", "-m", "init")
+
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude")
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "edit a.txt"}]})
+
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, **kw):
+        from hermes.engine_runner import RunResult
+        (Path(cwd) / "a.txt").write_text("one\ntwo\nthree\n")   # the task's edit
+        return RunResult(True, _DONE_SENTINEL, "", False, 0)
+
+    orch = Orchestrator(settings, store, planner, dict(run_engine=fake_run_engine))
+    reports = []
+    async def report(tid, msg): reports.append(msg)
+    store.create_task("t1", 5, "edit a.txt")
+    await orch.run_task("t1", 5, "edit a.txt", report, proj=repo)
+
+    assert store.get_task("t1")["status"] == "done"
+    done = [m for m in reports if m.startswith("task complete")]
+    assert done and "Perubahan (1 file)" in done[-1] and "M a.txt" in done[-1]
+
 async def test_code_step_failure_halts_task(hermes_home):
     store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(default_engine="claude", projects_path=str(hermes_home / "proj"))
@@ -113,10 +205,18 @@ async def test_emulator_step_passes_app_id(hermes_home):
     store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(projects_path=str(hermes_home / "proj"))
 
+    # A build step precedes the emulator test — the only shape validate_plan
+    # allows, and the only one that can work: the build produces the APK the
+    # emulator installs.
     async def planner(text, tools):
-        return json.dumps({"steps": [{"type": "test", "mode": "emulator"}]})
+        return json.dumps({"steps": [
+            {"type": "build", "target": "apk"},
+            {"type": "test", "mode": "emulator"}]})
 
     from hermes.test_runner import TestResult
+    from hermes.build_runner import BuildResult
+    async def fake_build(project_dir, ptype, timeout_s, run=None):
+        return BuildResult(True, "app.apk", "", "")
     seen = []
     async def fake_test_emulator(apk, out, pkg):
         seen.append((apk, pkg))
@@ -125,12 +225,12 @@ async def test_emulator_step_passes_app_id(hermes_home):
         shot.write_bytes(b"PNG")
         return TestResult(True, str(shot), "ok")
 
-    deps = dict(test_emulator=fake_test_emulator,
+    deps = dict(build_apk=fake_build, detect=lambda d: "flutter",
+                test_emulator=fake_test_emulator,
                 detect_app_id=lambda proj: "com.example.app")
     orch = Orchestrator(settings, store, planner, deps)
     async def report(tid, msg): pass
     store.create_task("t1", 5, "test it")
-    store.add_artifact("t1", "apk", "app.apk")
     await orch.run_task("t1", 5, "test it", report)
 
     assert seen == [("app.apk", "com.example.app")]
@@ -143,18 +243,23 @@ async def test_emulator_step_fails_without_app_id(hermes_home):
     settings = Settings(projects_path=str(hermes_home / "proj"))
 
     async def planner(text, tools):
-        return json.dumps({"steps": [{"type": "test", "mode": "emulator"}]})
+        return json.dumps({"steps": [
+            {"type": "build", "target": "apk"},
+            {"type": "test", "mode": "emulator"}]})
 
+    from hermes.build_runner import BuildResult
+    async def fake_build(project_dir, ptype, timeout_s, run=None):
+        return BuildResult(True, "app.apk", "", "")
     async def fake_test_emulator(apk, out, pkg):
         raise AssertionError("must not run without app id")
 
-    deps = dict(test_emulator=fake_test_emulator,
+    deps = dict(build_apk=fake_build, detect=lambda d: "flutter",
+                test_emulator=fake_test_emulator,
                 detect_app_id=lambda proj: None)
     orch = Orchestrator(settings, store, planner, deps)
     reports = []
     async def report(tid, msg): reports.append(msg)
     store.create_task("t1", 5, "test it")
-    store.add_artifact("t1", "apk", "app.apk")
     await orch.run_task("t1", 5, "test it", report)
 
     assert store.get_task("t1")["status"] == "failed"

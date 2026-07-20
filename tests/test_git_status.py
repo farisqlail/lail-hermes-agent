@@ -1,5 +1,5 @@
 import asyncio
-from hermes.git_status import git_dirty
+from hermes.git_status import git_dirty, start_snapshot, summarize_since
 
 
 async def _git(cwd, *args):
@@ -81,3 +81,44 @@ async def test_tracked_subdir_of_dirty_repo_is_true(tmp_path):
     await _git(repo, "commit", "-q", "-m", "add sub")
     (repo / "a.txt").write_text("modified elsewhere in the same repo")
     assert await git_dirty(subdir) is True
+
+
+# --- change summary -------------------------------------------------------
+
+async def test_summary_reports_modified_tracked_file(tmp_path):
+    repo = await _repo(tmp_path / "mod")
+    snap = await start_snapshot(repo)
+    (repo / "a.txt").write_text("one\ntwo\nthree\n")   # was "one"
+    s = await summarize_since(repo, snap)
+    assert s is not None
+    assert "M a.txt" in s
+    assert "Perubahan (1 file)" in s
+    assert "Total: +" in s
+
+
+async def test_summary_reports_new_file_the_task_created(tmp_path):
+    repo = await _repo(tmp_path / "new")
+    snap = await start_snapshot(repo)
+    (repo / "created.txt").write_text("brand new\n")
+    s = await summarize_since(repo, snap)
+    assert s is not None
+    assert "A created.txt" in s
+
+
+async def test_summary_excludes_changes_present_before_the_task(tmp_path):
+    """A project already dirty at task start must not have those pre-existing
+    edits counted as the task's output — the whole point of snapshotting."""
+    repo = await _repo(tmp_path / "predirty")
+    (repo / "a.txt").write_text("edited before the task even started")
+    already_untracked = repo / "leftover.txt"
+    already_untracked.write_text("was here before")
+    snap = await start_snapshot(repo)          # snapshot AFTER the pre-existing mess
+    s = await summarize_since(repo, snap)
+    assert s is None                           # task changed nothing of its own
+
+
+async def test_summary_none_for_non_repo(tmp_path):
+    plain = tmp_path / "plain"; plain.mkdir()
+    snap = await start_snapshot(plain)
+    assert snap is None
+    assert await summarize_since(plain, None) is None

@@ -114,6 +114,49 @@ async def test_completion_retry_passes_real_errors_through():
     assert getattr(e.value, "status_code", None) == 401
 
 
+async def test_telegram_send_retry_absorbs_a_timeout_blip():
+    """A single TimedOut on an outbound send must not surface: retry, then the
+    task's status message gets through. This is the exact path that used to die
+    as 'Internal error - task crashed: Timed out' the moment a /task was sent."""
+    from telegram.error import TimedOut
+    calls, slept = [], []
+    async def send():
+        calls.append(1)
+        if len(calls) < 2:
+            raise TimedOut()
+        return "ok"
+    async def sleep(s): slept.append(s)
+
+    assert await main._telegram_send_with_retry(send, sleep=sleep) == "ok"
+    assert slept == [1]   # one backoff, first configured delay
+
+
+async def test_telegram_send_retry_exhausted_reraises():
+    """A real Telegram outage (every attempt times out) must still surface, not
+    be swallowed — the final attempt re-raises after the backoff is spent."""
+    import pytest
+    from telegram.error import TimedOut
+    slept = []
+    async def send(): raise TimedOut()
+    async def sleep(s): slept.append(s)
+
+    with pytest.raises(TimedOut):
+        await main._telegram_send_with_retry(send, sleep=sleep)
+    assert slept == list(main._SEND_RETRY_DELAYS_S)
+
+
+async def test_telegram_send_retry_passes_non_network_errors_through():
+    """A bad request (unauthorized chat, oversized message) is not a blip;
+    retrying hides it. Only NetworkError/TimedOut should retry."""
+    import pytest
+    from telegram.error import BadRequest
+    async def send(): raise BadRequest("chat not found")
+    async def sleep(s): raise AssertionError("must not retry a BadRequest")
+
+    with pytest.raises(BadRequest):
+        await main._telegram_send_with_retry(send, sleep=sleep)
+
+
 def test_clip_for_telegram_passes_short_messages_unchanged():
     assert main._clip_for_telegram("task complete") == "task complete"
     exactly_at_limit = "x" * main._TELEGRAM_CLIP_AT

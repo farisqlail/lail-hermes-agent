@@ -69,3 +69,32 @@ def test_resolve_passes_through_real_path():
     argv = engine_runner._resolve([sys.executable, "-c", "pass"])
     assert argv[0].lower().endswith(".exe")
     assert argv[1:] == ["-c", "pass"]
+
+def test_resolve_finds_shim_in_extra_tool_dir_when_path_lacks_it(tmp_path, monkeypatch):
+    """The bot-process trap: engine installed, but its dir is not on the
+    process PATH. _resolve must still find it via _extra_tool_dirs. A .cmd shim
+    is wrapped in cmd /c, exactly as a real npm-global claude.cmd would be."""
+    shim = tmp_path / "myengine.cmd"
+    shim.write_text("@echo off\n")
+    monkeypatch.setattr(engine_runner, "_extra_tool_dirs", lambda: [str(tmp_path)])
+    monkeypatch.setenv("PATH", "")  # engine is NOT on PATH
+
+    resolved = engine_runner._resolve(["myengine", "-p"])
+    assert resolved[0] == "cmd" and resolved[1] == "/c"
+    assert resolved[2].lower() == str(shim).lower()
+    assert resolved[3:] == ["-p"]
+
+def test_resolve_still_raises_when_nowhere_to_be_found(monkeypatch):
+    monkeypatch.setattr(engine_runner, "_extra_tool_dirs", lambda: [])
+    monkeypatch.setenv("PATH", "")
+    with pytest.raises(FileNotFoundError):
+        engine_runner._resolve(["definitely-not-a-real-engine-binary", "-p"])
+
+def test_extra_tool_dirs_skips_missing_dirs(monkeypatch, tmp_path):
+    """A missing env var or non-existent dir must never widen the search."""
+    monkeypatch.setenv("APPDATA", str(tmp_path / "nope-appdata"))
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    assert engine_runner._extra_tool_dirs() == []
+    real = tmp_path / "npm"; real.mkdir()
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    assert str(real) in engine_runner._extra_tool_dirs()

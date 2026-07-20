@@ -14,6 +14,35 @@ def parse_plan(raw: str) -> list[dict]:
         raise ValueError("plan has no steps list")
     return steps
 
+def validate_plan(steps: list[dict], default_test_mode: str = "none") -> None:
+    """Reject a structurally impossible plan before any step runs.
+
+    The planner LLM sometimes emits a `test`/emulator step with no `build`
+    ahead of it — or, as seen against a web project, types a whole bug-fix task
+    as a lone emulator test. That step can only ever fail with "no apk artifact
+    to test": the emulator needs an APK a build step would have produced.
+    Catching it here turns a doomed run into an actionable planning error,
+    surfaced the same way as any other planning failure.
+
+    Only emulator tests need a build. A `browser` test, or a test left at the
+    default `none` mode, has no such dependency and is left alone. mode is read
+    the same way _exec_step reads it: the step's own mode, else the configured
+    default.
+    """
+    built = False
+    for i, step in enumerate(steps):
+        kind = step.get("type")
+        if kind == "build":
+            built = True
+        elif kind == "test":
+            mode = step.get("mode") or default_test_mode
+            if mode == "emulator" and not built:
+                raise ValueError(
+                    f"step {i} is an emulator test with no build step before it "
+                    "— nothing produces an APK to install. The plan needs a "
+                    "`build` step first, or (for a non-Android project) the test "
+                    "should use mode `browser` or be dropped.")
+
 # Directories whose contents say nothing about the project's own code. Their
 # names are still listed (with a marker) so the engine knows they exist.
 _SUMMARY_SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__",
@@ -146,10 +175,18 @@ class Orchestrator:
             projects_path = self.settings.projects_path or str(paths.projects_dir())
             proj = Path(projects_path) / task_id
             proj.mkdir(parents=True, exist_ok=True)
+        # Snapshot the project *before* any step edits it, so the end-of-task
+        # summary reflects only this task's work. None for a non-git workspace.
+        from . import git_status
+        try:
+            snapshot = await git_status.start_snapshot(proj)
+        except Exception:
+            snapshot = None
         await report(task_id, "planning...")
         try:
             raw = await self.planner(text, [])
             steps = parse_plan(raw)
+            validate_plan(steps, self.settings.default_test_mode)
         except Exception as e:
             self.store.set_task_status(task_id, "failed")
             self.store.append_log(task_id, f"planning failed: {e}")
@@ -174,8 +211,15 @@ class Orchestrator:
                 self.store.set_task_status(task_id, "failed")
                 return
         self.store.set_task_status(task_id, "done")
-        self.store.append_log(task_id, "task complete")
-        await report(task_id, "task complete")
+        # A change summary is a courtesy: a failure computing it must never
+        # turn a completed task into a reported failure.
+        try:
+            summary = await git_status.summarize_since(proj, snapshot)
+        except Exception:
+            summary = None
+        done_msg = "task complete" if not summary else f"task complete\n\n{summary}"
+        self.store.append_log(task_id, done_msg)
+        await report(task_id, done_msg)
 
     def _save_engine_transcript(self, task_id: str, idx: int, engine: str,
                                 attempts: list) -> None:

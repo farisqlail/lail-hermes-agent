@@ -51,6 +51,16 @@ MAX_TOOL_ROUNDS = 8  # bound NIM tool round-trips so a misbehaving model/tool ca
 PLANNER_REQUEST_TIMEOUT_S = 120   # single NIM completion call
 MCP_DISCOVERY_TIMEOUT_S = 20      # tool discovery must never stall planning
 
+# python-telegram-bot's default HTTP timeouts (connect/read ~5s) are tight for
+# a slow or flaky uplink to api.telegram.org: a single timed-out send raised
+# telegram.error.TimedOut ("Timed out"), which — uncaught in handle_task —
+# escaped to crash_reporter as "Internal error - task crashed: Timed out",
+# killing a task before the engine even ran. Widen the window here; retry below.
+BOT_HTTP_TIMEOUT_S = 20
+# Backoff for transient Telegram send failures. Absorbs a network blip so a
+# status message (e.g. handle_task's opening "queued") can't abort the task.
+_SEND_RETRY_DELAYS_S = (1, 3, 6)
+
 # The shared NIM endpoint saturates for whole minutes at a time
 # ("ResourceExhausted: Worker local total request limit reached"). The OpenAI
 # SDK's built-in retries (2, near-instant) don't outlast that, so we add our
@@ -97,9 +107,28 @@ async def _completion_with_retry(create, sleep=asyncio.sleep):
             "a few minutes.") from e
 
 def build_nim_planner(settings, secrets, hub):
-    system = ("You are Hermes' planner. Output ONLY JSON: "
-              '{"steps":[{"type":"code|build|test","engine":"claude|antigravity",'
-              '"prompt":"...","target":"apk","mode":"browser|emulator"}]}')
+    system = (
+        "You are Hermes' planner. Read the user's task and output ONLY a JSON "
+        "object, no prose:\n"
+        '{"steps":[{"type":"code|build|test","engine":"claude|antigravity",'
+        '"prompt":"...","target":"apk","mode":"browser|emulator"}]}\n'
+        "\n"
+        "Rules:\n"
+        "1. Most tasks are a SINGLE code step. Investigating, fixing, debugging, "
+        "checking, refactoring, or adding a feature is a `code` step: the engine "
+        "opens the project and edits it directly. Do NOT add a test step merely "
+        "to 'verify' — a code step verifies its own work.\n"
+        "2. `build`, and `test` with mode `emulator` / target `apk`, are ONLY "
+        "for Android projects — an app that compiles to an APK (Gradle, an "
+        "`android/` module). For a web app, backend, script, or anything "
+        "non-Android, never use emulator mode or an apk target.\n"
+        "3. If a web app genuinely needs a test, use mode `browser`; otherwise "
+        "omit the test step entirely.\n"
+        "4. Never emit a `test` step unless a `build` step precedes it in the "
+        "same plan: an emulator test with no prior build has no APK to install "
+        "and always fails.\n"
+        "5. `prompt` is the instruction handed to the coding engine — write it "
+        "as a clear, self-contained task, in the language the user used.")
     async def planner(text: str, tools: list) -> str:
         if not secrets.nvidia_api_key:
             raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
@@ -177,6 +206,33 @@ def _console_safe(e: object) -> str:
     """
     return str(e).encode("ascii", errors="backslashreplace").decode("ascii")
 
+async def _telegram_send_with_retry(send, sleep=asyncio.sleep):
+    """Run an outbound Telegram call, retrying transient network failures.
+
+    A single TimedOut/NetworkError on a status message must not abort the whole
+    task: handle_task's first act is a "queued" send, and an uncaught TimedOut
+    there escaped to crash_reporter as "Internal error - task crashed: Timed
+    out" -- killing a task the engine never even started. Retrying absorbs the
+    blip; exhausting the delays lets the final attempt re-raise, so a real
+    Telegram outage still surfaces instead of being swallowed.
+
+    Retry only genuinely transient failures. TimedOut is a NetworkError
+    subclass (caught), but so is BadRequest -- "chat not found", an oversized
+    message -- which is a permanent rejection: retrying it just burns the
+    backoff and buries the real cause, so re-raise it at once. Forbidden (bot
+    blocked) is not a NetworkError, so it already propagates untouched.
+    """
+    from telegram.error import BadRequest, NetworkError
+    for delay in _SEND_RETRY_DELAYS_S:
+        try:
+            return await send()
+        except NetworkError as e:
+            if isinstance(e, BadRequest):
+                raise
+            print(f"Telegram send failed ({_console_safe(e)}); retrying in {delay}s")
+            await sleep(delay)
+    return await send()
+
 def _make_crash_reporter(sender):
     """Build the done-callback for fire-and-forget tasks.
 
@@ -250,23 +306,32 @@ async def run():
     app = None
     if bot_token and bot_token.strip():
         try:
-            app = Application.builder().token(bot_token).build()
+            app = (Application.builder().token(bot_token)
+                   .connect_timeout(BOT_HTTP_TIMEOUT_S)
+                   .read_timeout(BOT_HTTP_TIMEOUT_S)
+                   .write_timeout(BOT_HTTP_TIMEOUT_S)
+                   .pool_timeout(BOT_HTTP_TIMEOUT_S)
+                   .build())
 
             async def sender(chat_id, text):
-                await app.bot.send_message(chat_id=chat_id,
-                                           text=_clip_for_telegram(text))
+                await _telegram_send_with_retry(lambda: app.bot.send_message(
+                    chat_id=chat_id, text=_clip_for_telegram(text)))
 
             async def send_file(chat_id, kind, path):
                 # Screenshots land inline as photos; anything else (apk,
                 # logs) as a document. Callers guard failures — Telegram's
-                # 50 MB bot upload cap can reject a big APK.
-                with open(path, "rb") as f:
-                    if kind == "screenshot":
-                        await app.bot.send_photo(chat_id=chat_id, photo=f)
-                    else:
-                        await app.bot.send_document(
+                # 50 MB bot upload cap can reject a big APK. The file is
+                # (re)opened inside the retried coroutine, not before it: a
+                # retry after a partial upload must start from a fresh handle,
+                # never a spent one parked at EOF.
+                async def _do():
+                    with open(path, "rb") as f:
+                        if kind == "screenshot":
+                            return await app.bot.send_photo(chat_id=chat_id, photo=f)
+                        return await app.bot.send_document(
                             chat_id=chat_id, document=f,
                             filename=Path(path).name)
+                await _telegram_send_with_retry(_do)
 
             crash_reporter = _make_crash_reporter(sender)
 
@@ -278,12 +343,12 @@ async def run():
                 # Clipped like every other outgoing message: reasons are short
                 # today, but an unclipped send raises, and this one carries the
                 # only buttons that can approve or cancel the task.
-                await app.bot.send_message(
+                await _telegram_send_with_retry(lambda: app.bot.send_message(
                     chat_id=chat_id,
                     text=_clip_for_telegram(
                         f"Task {task_id} needs confirmation before running:\n- "
                         + "\n- ".join(reasons)),
-                    reply_markup=kb)
+                    reply_markup=kb))
 
             bridge = _build_bridge(settings, store, orch, sender, ask_confirm,
                                    send_file=send_file)
