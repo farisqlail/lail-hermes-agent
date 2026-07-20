@@ -68,7 +68,7 @@ async def test_run_task_executes_steps(hermes_home):
     orch = Orchestrator(settings, store, planner, deps)
 
     reports = []
-    async def report(tid, msg): reports.append(msg)
+    async def report(tid, msg, html=False): reports.append(msg)
     store.create_task("t1", 5, "build a flutter app")
     await orch.run_task("t1", 5, "build a flutter app", report)
 
@@ -85,7 +85,7 @@ async def test_planning_failure_marks_task_failed(hermes_home):
 
     orch = Orchestrator(settings, store, planner, {})
     reports = []
-    async def report(tid, msg): reports.append(msg)
+    async def report(tid, msg, html=False): reports.append(msg)
     store.create_task("t1", 5, "x")
     await orch.run_task("t1", 5, "x", report)
 
@@ -108,7 +108,7 @@ async def test_invalid_plan_fails_task_before_running_any_step(hermes_home):
                 detect=must_not_run, test_emulator=must_not_run)
     orch = Orchestrator(settings, store, planner, deps)
     reports = []
-    async def report(tid, msg): reports.append(msg)
+    async def report(tid, msg, html=False): reports.append(msg)
     store.create_task("t1", 5, "cek bug halaman detail")
     await orch.run_task("t1", 5, "cek bug halaman detail", report)
 
@@ -147,13 +147,19 @@ async def test_task_complete_reports_change_summary_for_git_project(hermes_home)
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=fake_run_engine))
     reports = []
-    async def report(tid, msg): reports.append(msg)
+    async def report(tid, msg, html=False): reports.append((msg, html))
     store.create_task("t1", 5, "edit a.txt")
     await orch.run_task("t1", 5, "edit a.txt", report, proj=repo)
 
     assert store.get_task("t1")["status"] == "done"
-    done = [m for m in reports if m.startswith("task complete")]
-    assert done and "Perubahan (1 file)" in done[-1] and "M a.txt" in done[-1]
+    done = [(m, h) for m, h in reports if m.startswith("task complete")]
+    assert done and "Perubahan (1 file)" in done[-1][0] and "M  a.txt" in done[-1][0]
+    # The summary carries a <pre> table, so it must be sent as HTML — plain
+    # text would show the raw tags instead of an aligned table.
+    assert done[-1][1] is True
+    # Every other report is raw text (engine stderr, paths) and must NOT be
+    # parsed as HTML.
+    assert all(h is False for m, h in reports if not m.startswith("task complete"))
 
 async def test_code_step_failure_halts_task(hermes_home):
     store = Store(hermes_home / "t.db"); store.init_schema()
@@ -175,7 +181,7 @@ async def test_code_step_failure_halts_task(hermes_home):
     deps = dict(run_engine=failing_engine, build_apk=fake_build,
                 detect=lambda d: "flutter")
     orch = Orchestrator(settings, store, planner, deps)
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "x")
     await orch.run_task("t1", 5, "x", report)
 
@@ -194,7 +200,7 @@ async def test_step_crash_marks_task_failed(hermes_home):
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=exploding_engine))
     reports = []
-    async def report(tid, msg): reports.append(msg)
+    async def report(tid, msg, html=False): reports.append(msg)
     store.create_task("t1", 5, "x")
     await orch.run_task("t1", 5, "x", report)
 
@@ -229,7 +235,7 @@ async def test_emulator_step_passes_app_id(hermes_home):
                 test_emulator=fake_test_emulator,
                 detect_app_id=lambda proj: "com.example.app")
     orch = Orchestrator(settings, store, planner, deps)
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "test it")
     await orch.run_task("t1", 5, "test it", report)
 
@@ -258,7 +264,7 @@ async def test_emulator_step_fails_without_app_id(hermes_home):
                 detect_app_id=lambda proj: None)
     orch = Orchestrator(settings, store, planner, deps)
     reports = []
-    async def report(tid, msg): reports.append(msg)
+    async def report(tid, msg, html=False): reports.append(msg)
     store.create_task("t1", 5, "test it")
     await orch.run_task("t1", 5, "test it", report)
 
@@ -280,7 +286,7 @@ async def test_browser_step_via_injected_dep(hermes_home):
         return TestResult(True, None, "ok")
 
     orch = Orchestrator(settings, store, planner, dict(test_browser=fake_test_browser))
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "test it")
     await orch.run_task("t1", 5, "test it", report)
 
@@ -345,7 +351,7 @@ async def test_code_step_prompt_carries_task_and_project_context(hermes_home):
         return RunResult(True, "fixed\nHERMES_STEP_DONE", "", False, 0)
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=fake_run_engine))
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "fix login on @myprofit")
     await orch.run_task("t1", 5, "fix login on myprofit", report, proj=existing)
 
@@ -382,7 +388,7 @@ async def test_unconfirmed_completion_gets_a_fixup_round(hermes_home):
 
     orch = _code_plan_orch(hermes_home, store, engine)
     reports = []
-    async def report(tid, msg): reports.append(msg)
+    async def report(tid, msg, html=False): reports.append(msg)
     store.create_task("t1", 5, "x")
     await orch.run_task("t1", 5, "x", report)
 
@@ -405,7 +411,7 @@ async def test_confirmed_done_stops_at_one_round(hermes_home):
         return RunResult(True, "done\nHERMES_STEP_DONE", "", False, 0)
 
     orch = _code_plan_orch(hermes_home, store, engine)
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "x")
     await orch.run_task("t1", 5, "x", report)
 
@@ -445,7 +451,7 @@ async def test_echoed_prompt_does_not_confirm_completion(hermes_home):
 
     orch = _code_plan_orch(hermes_home, store, echoing_engine)
     reports = []
-    async def report(tid, msg): reports.append(msg)
+    async def report(tid, msg, html=False): reports.append(msg)
     store.create_task("t1", 5, "x")
     await orch.run_task("t1", 5, "x", report)
 
@@ -467,7 +473,7 @@ async def test_rounds_exhausted_without_sentinel_still_succeeds_with_a_note(herm
 
     orch = _code_plan_orch(hermes_home, store, engine)
     reports = []
-    async def report(tid, msg): reports.append(msg)
+    async def report(tid, msg, html=False): reports.append(msg)
     store.create_task("t1", 5, "x")
     await orch.run_task("t1", 5, "x", report)
 
@@ -495,7 +501,7 @@ async def test_failed_code_step_saves_full_engine_transcript(hermes_home):
                          f"long stderr attempt {len(calls)} " + "y" * 500, False, 1)
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=failing_engine))
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "x")
     await orch.run_task("t1", 5, "x", report)
 
@@ -525,7 +531,7 @@ async def test_successful_code_step_saves_transcript_too(hermes_home):
         return RunResult(True, "all good\nHERMES_STEP_DONE", "", False, 0)
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=fake_run_engine))
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "x")
     await orch.run_task("t1", 5, "x", report)
 
@@ -548,7 +554,7 @@ async def test_timed_out_code_step_still_saves_transcript(hermes_home):
         return RunResult(False, "", "", True, None)
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=timing_out_engine))
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "x")
     await orch.run_task("t1", 5, "x", report)
 
@@ -589,7 +595,7 @@ async def test_artifacts_are_sent_to_the_chat(hermes_home):
     async def send_file(kind, path): sent.append((kind, path))
 
     orch = Orchestrator(settings, store, planner, _artifact_task_deps([]))
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "build and test")
     await orch.run_task("t1", 5, "build and test", report, send_file=send_file)
 
@@ -612,7 +618,7 @@ async def test_failed_artifact_send_does_not_fail_the_step(hermes_home):
         raise RuntimeError("Request Entity Too Large")
 
     orch = Orchestrator(settings, store, planner, _artifact_task_deps([]))
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "build it")
     await orch.run_task("t1", 5, "build it", report, send_file=send_file)
 
@@ -645,7 +651,7 @@ async def test_run_task_uses_supplied_proj(hermes_home):
                 detect=lambda d: "flutter", test_emulator=None, test_browser=None)
     orch = Orchestrator(settings, store, planner, deps)
 
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "fix it")
     await orch.run_task("t1", 5, "fix it", report, proj=existing)
 
@@ -682,7 +688,7 @@ async def test_run_task_threads_engine_tuning_per_engine(hermes_home):
                 detect=lambda d: "flutter", test_emulator=None, test_browser=None)
     orch = Orchestrator(settings, store, planner, deps)
 
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "fix it")
     await orch.run_task("t1", 5, "fix it", report)
 
@@ -719,7 +725,7 @@ async def test_run_task_never_mkdirs_a_supplied_proj(hermes_home, monkeypatch):
         return real_mkdir(self, *args, **kwargs)
     monkeypatch.setattr(Path, "mkdir", spy)
 
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "fix it")
     await orch.run_task("t1", 5, "fix it", report, proj=existing)
 
@@ -747,7 +753,7 @@ async def test_run_task_without_proj_creates_workspace(hermes_home):
                 detect=lambda d: "flutter", test_emulator=None, test_browser=None)
     orch = Orchestrator(settings, store, planner, deps)
 
-    async def report(tid, msg): pass
+    async def report(tid, msg, html=False): pass
     store.create_task("t1", 5, "make it")
     await orch.run_task("t1", 5, "make it", report)
 

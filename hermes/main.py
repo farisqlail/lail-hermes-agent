@@ -177,17 +177,47 @@ def _build_bridge(settings, store, orchestrator, sender, ask_confirm,
 _TELEGRAM_CLIP_AT = 3800  # headroom under Telegram's hard 4096-char limit
 _TRUNCATION_SUFFIX = "...(truncated)"
 
-def _clip_for_telegram(text: str) -> str:
+def _clip_for_telegram(text: str, html: bool = False) -> str:
     """Keep a message under Telegram's 4096-char limit.
 
     An oversized message (e.g. a full Gradle stacktrace in a step report)
     makes send_message() raise; that error then reaches crash_reporter, which
     tries to send it — long again — and the failure loops. Clipping at the
     sender chokepoint breaks the loop for every caller at once.
+
+    With html=True the cut must also leave valid markup: a message ending
+    mid-`<pre>` or mid-`&amp;` is rejected outright by Telegram's parser, so
+    the whole summary would be lost rather than merely shortened.
     """
     if len(text) <= _TELEGRAM_CLIP_AT:
         return text
-    return text[:_TELEGRAM_CLIP_AT] + _TRUNCATION_SUFFIX
+    cut = text[:_TELEGRAM_CLIP_AT]
+    if not html:
+        return cut + _TRUNCATION_SUFFIX
+    # Drop a half-written entity (`&amp;` is 5 chars, `&quot;` 6 — never look
+    # back further than the longest one we emit).
+    amp = cut.rfind("&")
+    if amp != -1 and ";" not in cut[amp:]:
+        cut = cut[:amp]
+    if cut.count("<pre>") > cut.count("</pre>"):
+        cut = cut[:cut.rfind("<")] if cut.rstrip().endswith("<") else cut
+        return cut + _TRUNCATION_SUFFIX + "</pre>"
+    return cut + _TRUNCATION_SUFFIX
+
+
+def _make_sender(bot):
+    """Outbound text chokepoint: clip, then send.
+
+    html=True switches Telegram's HTML parser on for that one message — used
+    by the change-summary table's <pre> block. It stays opt-in per call
+    because every other message is raw text that may contain `<` or `&`, and
+    parsing those as markup would corrupt or reject them.
+    """
+    async def sender(chat_id, text, html: bool = False):
+        kw = {"parse_mode": "HTML"} if html else {}
+        await _telegram_send_with_retry(lambda: bot.send_message(
+            chat_id=chat_id, text=_clip_for_telegram(text, html=html), **kw))
+    return sender
 
 def _console_safe(e: object) -> str:
     """Render an exception (or anything) so print() can never itself raise.
@@ -313,9 +343,7 @@ async def run():
                    .pool_timeout(BOT_HTTP_TIMEOUT_S)
                    .build())
 
-            async def sender(chat_id, text):
-                await _telegram_send_with_retry(lambda: app.bot.send_message(
-                    chat_id=chat_id, text=_clip_for_telegram(text)))
+            sender = _make_sender(app.bot)
 
             async def send_file(chat_id, kind, path):
                 # Screenshots land inline as photos; anything else (apk,

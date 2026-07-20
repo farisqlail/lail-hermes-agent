@@ -218,8 +218,13 @@ class Orchestrator:
         except Exception:
             summary = None
         done_msg = "task complete" if not summary else f"task complete\n\n{summary}"
-        self.store.append_log(task_id, done_msg)
-        await report(task_id, done_msg)
+        # The log feeds the web UI, which escapes what it renders — store the
+        # tag-free form so the summary reads as a table there too.
+        from . import tg_format
+        self.store.append_log(task_id, tg_format.plain_text(done_msg))
+        # The summary embeds a <pre> table, so it — and only it — goes out as
+        # HTML. Every other report is raw engine text that must not be parsed.
+        await report(task_id, done_msg, html=summary is not None)
 
     def _save_engine_transcript(self, task_id: str, idx: int, engine: str,
                                 attempts: list) -> None:

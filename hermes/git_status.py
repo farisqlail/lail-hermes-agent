@@ -2,6 +2,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from . import tg_format
+
 # This is a local `status`/`check-ignore` call, not a network op -- a few
 # seconds is generous. If git hangs (e.g. a credential or hook prompt), the
 # safety check must not block the caller forever.
@@ -107,6 +109,11 @@ async def start_snapshot(path: Path) -> tuple[str, frozenset[str]] | None:
 
 _SUMMARY_MAX_FILES = 20
 
+# Column budget: a phone renders roughly 40 monospace chars before wrapping,
+# and a wrapped row destroys the alignment of the whole block.
+_SUMMARY_HEADERS = ["St", "File", "+", "-"]
+_SUMMARY_WIDTHS = [2, 22, 5, 5]
+
 
 async def summarize_since(path: Path, snapshot: tuple[str, frozenset[str]] | None
                           ) -> str | None:
@@ -154,10 +161,10 @@ async def summarize_since(path: Path, snapshot: tuple[str, frozenset[str]] | Non
 
     files.sort(key=lambda f: f[1])
     shown = files[:_SUMMARY_MAX_FILES]
-    lines = [f"Perubahan ({len(files)} file):"]
-    for code, p, add, dele in shown:
-        lines.append(f"  {code} {p}  (+{add} -{dele})")
+    rows = [[code, p, f"+{add}", f"-{dele}"] for code, p, add, dele in shown]
+    table = tg_format.table(_SUMMARY_HEADERS, rows, _SUMMARY_WIDTHS)
+    out = [f"Perubahan ({len(files)} file):", tg_format.mono_block(table)]
     if len(files) > _SUMMARY_MAX_FILES:
-        lines.append(f"  …dan {len(files) - _SUMMARY_MAX_FILES} file lainnya")
-    lines.append(f"Total: +{total_add} -{total_del}")
-    return "\n".join(lines)
+        out.append(f"…dan {len(files) - _SUMMARY_MAX_FILES} file lainnya")
+    out.append(f"Total: +{total_add} -{total_del}")
+    return "\n".join(out)

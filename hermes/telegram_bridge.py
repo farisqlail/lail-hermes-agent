@@ -190,8 +190,10 @@ class Bridge:
 
     async def _run(self, task_id: str, chat_id: int, text: str,
                    proj: Path | None = None):
-        async def report(tid, msg):
-            await self.sender(chat_id, f"[{tid}] {msg}")
+        async def report(tid, msg, html=False):
+            # The task-id prefix is safe to prepend to an HTML message: it is
+            # hex + digits + dashes, nothing the parser reacts to.
+            await self.sender(chat_id, f"[{tid}] {msg}", html=html)
         # Only thread send_file through when configured, so orchestrator fakes
         # (and a Bridge wired without Telegram) keep their narrower signature.
         kwargs = {}

@@ -18,7 +18,7 @@ def test_build_bridge_injects_git_dirty(tmp_path):
     from hermes.session_store import Store
     store = Store(tmp_path / "t.db"); store.init_schema()
 
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
 
     b = main._build_bridge(Settings(), store, orchestrator=None, sender=sender,
                            ask_confirm=None)
@@ -28,7 +28,7 @@ def test_build_bridge_injects_git_dirty(tmp_path):
 
 async def test_notify_restart_sends_one_digest_per_chat():
     sent = []
-    async def sender(chat, text): sent.append((chat, text))
+    async def sender(chat, text, html=False): sent.append((chat, text))
     swept = [
         {"task_id": "t1", "chat_id": 5, "text": "refactor auth", "status": "running"},
         {"task_id": "t2", "chat_id": 7, "text": "build apk", "status": "queued"},
@@ -171,6 +171,36 @@ def test_clip_for_telegram_keeps_long_messages_under_the_hard_limit():
     assert len(clipped) <= 4096
     assert clipped.endswith("...(truncated)")
     assert clipped.startswith("gradle error line")
+
+
+def test_clip_for_telegram_closes_a_cut_pre_block():
+    """Clipping mid-<pre> leaves an unclosed tag, and Telegram rejects the
+    whole message with a parse error — the summary would vanish entirely."""
+    long = "<pre>" + "M  file.txt  +1 -0\n" * 1000 + "</pre>"
+    clipped = main._clip_for_telegram(long, html=True)
+    assert len(clipped) <= 4096
+    assert clipped.count("<pre>") == clipped.count("</pre>") == 1
+    assert clipped.endswith("</pre>")
+
+
+def test_clip_for_telegram_never_cuts_an_html_entity_in_half():
+    """A half-written `&amp;` is itself a parse error."""
+    long = "<pre>" + "&amp;" * 2000 + "</pre>"
+    clipped = main._clip_for_telegram(long, html=True)
+    assert "&am" not in clipped.replace("&amp;", "")
+
+
+async def test_sender_uses_html_parse_mode_only_when_asked():
+    class FakeBot:
+        def __init__(self): self.calls = []
+        async def send_message(self, **kw): self.calls.append(kw)
+
+    bot = FakeBot()
+    sender = main._make_sender(bot)
+    await sender(7, "plain <not markup>")
+    await sender(7, "<pre>table</pre>", html=True)
+    assert "parse_mode" not in bot.calls[0]
+    assert bot.calls[1]["parse_mode"] == "HTML"
 
 
 def test_console_safe_output_is_pure_ascii():

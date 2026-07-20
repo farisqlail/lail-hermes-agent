@@ -91,9 +91,37 @@ async def test_summary_reports_modified_tracked_file(tmp_path):
     (repo / "a.txt").write_text("one\ntwo\nthree\n")   # was "one"
     s = await summarize_since(repo, snap)
     assert s is not None
-    assert "M a.txt" in s
+    assert "M  a.txt" in s
     assert "Perubahan (1 file)" in s
     assert "Total: +" in s
+
+
+async def test_summary_renders_a_monospace_table(tmp_path):
+    """The file list ships as a <pre> block so Telegram renders aligned
+    columns; without it the counts wander and the list is unreadable."""
+    repo = await _repo(tmp_path / "table")
+    snap = await start_snapshot(repo)
+    (repo / "a.txt").write_text("one\ntwo\n")
+    (repo / "created.txt").write_text("new\n")
+    s = await summarize_since(repo, snap)
+    assert s is not None
+    assert "<pre>" in s and "</pre>" in s
+    body = s.split("<pre>")[1].split("</pre>")[0]
+    rows = body.splitlines()
+    assert len({len(r) for r in rows}) == 1     # header + every row same width
+    assert rows[0].startswith("St")
+
+
+async def test_summary_escapes_html_special_characters_in_filenames(tmp_path):
+    """An unescaped `&` in a path makes Telegram reject the whole message
+    with a parse error, losing the summary entirely."""
+    repo = await _repo(tmp_path / "escape")
+    snap = await start_snapshot(repo)
+    (repo / "a&b.txt").write_text("x\n")
+    s = await summarize_since(repo, snap)
+    assert s is not None
+    assert "a&amp;b.txt" in s
+    assert "a&b.txt" not in s
 
 
 async def test_summary_reports_new_file_the_task_created(tmp_path):
@@ -102,7 +130,7 @@ async def test_summary_reports_new_file_the_task_created(tmp_path):
     (repo / "created.txt").write_text("brand new\n")
     s = await summarize_since(repo, snap)
     assert s is not None
-    assert "A created.txt" in s
+    assert "A  created.txt" in s
 
 
 async def test_summary_excludes_changes_present_before_the_task(tmp_path):

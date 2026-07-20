@@ -15,7 +15,7 @@ async def test_reject_unlisted(hermes_home):
     store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(allowed_user_ids=[1])
     sent = []
-    async def sender(chat, text): sent.append((chat, text))
+    async def sender(chat, text, html=False): sent.append((chat, text))
     class FakeOrch:
         async def run_task(self, *a, **k): raise AssertionError("should not run")
     b = Bridge(settings, store, FakeOrch(), sender)
@@ -27,7 +27,7 @@ async def test_accept_listed(hermes_home):
     store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(allowed_user_ids=[1])
     ran = []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     class FakeOrch:
         async def run_task(self, task_id, chat_id, text, report, proj=None):
             ran.append(task_id); await report(task_id, "hello")
@@ -35,6 +35,23 @@ async def test_accept_listed(hermes_home):
     tid = await b.handle_task(user_id=1, chat_id=5, text="build app")
     assert tid is not None and ran == [tid]
     assert store.get_task(tid)["status"] in ("queued", "running", "done")
+
+async def test_report_forwards_the_html_flag_to_the_sender(hermes_home):
+    """The orchestrator's change-summary table is HTML; the flag has to
+    survive the hop through Bridge, or the <pre> tags arrive as literal text."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(allowed_user_ids=[1])
+    sent = []
+    async def sender(chat, text, html=False): sent.append((text, html))
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            await report(task_id, "step 0 [code]: ok")
+            await report(task_id, "task complete\n<pre>table</pre>", html=True)
+    b = Bridge(settings, store, FakeOrch(), sender)
+    await b.handle_task(user_id=1, chat_id=5, text="build app")
+    assert [html for text, html in sent if "step 0" in text] == [False]
+    assert [html for text, html in sent if "<pre>" in text] == [True]
+
 
 def test_help_text_covers_the_command_surface():
     """Every user-facing command and the @nama mechanism must be
@@ -101,7 +118,7 @@ async def test_risky_task_awaits_confirmation(hermes_home):
     store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(allowed_user_ids=[1])
     ran, asked = [], []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     async def ask_confirm(chat, task_id, reasons): asked.append((task_id, reasons))
     class FakeOrch:
         async def run_task(self, task_id, chat_id, text, report, proj=None): ran.append(task_id)
@@ -121,7 +138,7 @@ async def test_risky_task_cancelled_on_deny(hermes_home):
     store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(allowed_user_ids=[1])
     ran = []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     async def ask_confirm(chat, task_id, reasons): pass
     class FakeOrch:
         async def run_task(self, task_id, chat_id, text, report): ran.append(task_id)
@@ -136,7 +153,7 @@ async def test_confirm_gate_disabled_runs_directly(hermes_home):
     store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(allowed_user_ids=[1], confirm_risky=False)
     ran = []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     async def ask_confirm(chat, task_id, reasons): raise AssertionError("gate disabled")
     class FakeOrch:
         async def run_task(self, task_id, chat_id, text, report, proj=None): ran.append(task_id)
@@ -241,7 +258,7 @@ async def test_clean_project_runs_without_gate(hermes_home):
     proj = hermes_home / "myprofit"; proj.mkdir()
     settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
     got = []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     async def ask_confirm(chat, task_id, reasons): raise AssertionError("clean tree must not gate")
     async def git_dirty(path): return False
     class FakeOrch:
@@ -260,7 +277,7 @@ async def test_dirty_project_gates(hermes_home):
     proj = hermes_home / "myprofit"; proj.mkdir()
     settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
     ran, asked = [], []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     async def ask_confirm(chat, task_id, reasons): asked.append(reasons)
     async def git_dirty(path): return True
     class FakeOrch:
@@ -284,7 +301,7 @@ async def test_no_undo_available_gates(hermes_home):
     proj = hermes_home / "myprofit"; proj.mkdir()
     settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
     asked = []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     async def ask_confirm(chat, task_id, reasons): asked.append(reasons)
     async def git_dirty(path): return None
     class FakeOrch:
@@ -301,7 +318,7 @@ async def test_risky_text_and_dirty_tree_both_reported(hermes_home):
     proj = hermes_home / "myprofit"; proj.mkdir()
     settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
     asked = []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     async def ask_confirm(chat, task_id, reasons): asked.append(reasons)
     async def git_dirty(path): return True
     class FakeOrch:
@@ -319,7 +336,7 @@ async def test_no_sigil_still_creates_fresh_workspace(hermes_home):
     store = _store(hermes_home)
     settings = Settings(allowed_user_ids=[1])
     got = []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     async def git_dirty(path): raise AssertionError("no project, nothing to check")
     class FakeOrch:
         async def run_task(self, task_id, chat_id, text, report, proj=None):
@@ -337,7 +354,7 @@ async def test_git_dirty_raising_still_gates(hermes_home):
     proj = hermes_home / "myprofit"; proj.mkdir()
     settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
     asked = []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     async def ask_confirm(chat, task_id, reasons): asked.append(reasons)
     async def git_dirty(path): raise RuntimeError("git blew up")
     class FakeOrch:
@@ -356,7 +373,7 @@ async def test_named_project_recorded_in_log(hermes_home):
     store = _store(hermes_home)
     proj = hermes_home / "myprofit"; proj.mkdir()
     settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     async def git_dirty(path): return False
     class FakeOrch:
         async def run_task(self, task_id, chat_id, text, report, proj=None): pass
@@ -373,7 +390,7 @@ async def test_send_file_is_bound_to_the_chat(hermes_home):
     store = _store(hermes_home)
     settings = Settings(allowed_user_ids=[1])
     sent, got = [], []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     async def send_file(chat_id, kind, path): sent.append((chat_id, kind, path))
     class FakeOrch:
         async def run_task(self, task_id, chat_id, text, report, proj=None,
@@ -393,7 +410,7 @@ async def test_without_send_file_orchestrator_keeps_narrow_signature(hermes_home
     store = _store(hermes_home)
     settings = Settings(allowed_user_ids=[1])
     ran = []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     class FakeOrch:
         async def run_task(self, task_id, chat_id, text, report, proj=None):
             ran.append(task_id)   # would TypeError if send_file were passed
@@ -410,7 +427,7 @@ async def test_clean_project_runs_when_git_dirty_not_configured(hermes_home):
     proj = hermes_home / "myprofit"; proj.mkdir()
     settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
     got = []
-    async def sender(chat, text): pass
+    async def sender(chat, text, html=False): pass
     async def ask_confirm(chat, task_id, reasons): raise AssertionError("no git_dirty means no gate")
     class FakeOrch:
         async def run_task(self, task_id, chat_id, text, report, proj=None):
