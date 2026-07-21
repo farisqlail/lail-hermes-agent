@@ -272,3 +272,51 @@ async def test_a_failing_log_never_breaks_an_ask():
     await asyncio.sleep(0)
     r.answer_options(sent[0].ask_id, [0])
     assert await task == "User chose: A"
+
+
+async def test_concurrent_asks_on_same_run_nest_pause_correctly():
+    """Two parallel asks from the same run must nest pause/resume so the clock
+    stays paused until both are answered. This can happen in production when the
+    engine emits parallel tool calls."""
+    c = FakeClock()
+    d = Deadline(10, clock=c)
+    r, sent, _ = _registry()
+    run = r.run_for_token(r.open_run("t1", 5, deadline=d))
+
+    # Start two asks concurrently
+    c.tick(2)  # advance time a bit, leaving 8 seconds
+    task1 = asyncio.create_task(
+        r.ask(run, "Question 1?", [{"label": "Answer 1"}]))
+    task2 = asyncio.create_task(
+        r.ask(run, "Question 2?", [{"label": "Answer 2"}]))
+    await asyncio.sleep(0)
+
+    # Both asks should now be pending; deadline is paused with nesting count 2
+    assert len(sent) == 2
+    assert d.paused
+
+    # Advance clock way into the future while both are pending
+    c.tick(3600)
+    assert not d.expired()  # deadline must still be paused
+
+    # Answer the first ask; nesting count drops to 1, still paused
+    r.answer_options(sent[0].ask_id, [0])
+    result1 = await task1
+    assert d.paused  # key property: one answer does not restart the clock
+    assert result1 == "User chose: Answer 1"
+
+    # Advance clock again while the second ask is still pending
+    c.tick(3600)
+    assert not d.expired()
+
+    # Answer the second ask; nesting count drops to 0, now running
+    r.answer_options(sent[1].ask_id, [0])
+    result2 = await task2
+    assert not d.paused
+    assert result2 == "User chose: Answer 2"
+
+    # The deadline should expire after the remaining time (8 seconds after tick(2))
+    c.tick(7.9)
+    assert not d.expired()
+    c.tick(0.2)
+    assert d.expired()
