@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, os, shutil
+import asyncio, json, os, shutil, tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
@@ -35,15 +35,31 @@ PRINT_TIMEOUT_FLAG = {"antigravity"}
 # Whose stdout carries a machine-readable envelope. Absent here means the
 # engine is read as plain text, exactly as before this module existed.
 PARSERS = {"claude": parse_claude_json}
+# Whose CLI accepts --mcp-config pointing at Hermes' in-process ask_user server.
+# claude namespaces the tool as mcp__hermes__ask_user; --dangerously-skip-
+# permissions (always passed) auto-approves it. agy's MCP config shape differs
+# and its ask path is not wired, so it stays off.
+MCP_CONFIG_FLAG = {"claude"}
+
+
+def mcp_config_dict(url: str, token: str) -> dict:
+    """The claude --mcp-config payload wiring one engine run to Hermes' ask
+    server. The token rides as a header, not in the URL, so it never lands in a
+    log line that records the endpoint."""
+    from .ask_server import SERVER_NAME, TOKEN_HEADER
+    return {"mcpServers": {SERVER_NAME: {
+        "type": "http", "url": url, "headers": {TOKEN_HEADER: token}}}}
 
 def _argv(engine: str, prompt: str, model: str = "", effort: str = "",
           session_id: str = "", resume_id: str = "",
-          timeout_s: int = 0) -> list[str]:
+          timeout_s: int = 0, mcp_config_path: str = "") -> list[str]:
     argv = list(COMMANDS[engine](prompt))
     if model and engine in MODEL_FLAG:
         argv += ["--model", model]
     if effort and engine in EFFORT_FLAG:
         argv += ["--effort", effort]
+    if mcp_config_path and engine in MCP_CONFIG_FLAG:
+        argv += ["--mcp-config", mcp_config_path]
     if engine in RESUMABLE:
         # Resume wins: passing both would ask claude to open a new session and
         # reopen an old one in the same invocation.
@@ -131,26 +147,41 @@ async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
                      cwd: Path, timeout_s: int,
                      extra_env: dict | None = None,
                      model: str = "", effort: str = "",
-                     session_id: str = "", resume_id: str = "") -> RunResult:
-    argv = _resolve(_argv(engine, prompt, model, effort,
-                          session_id, resume_id, timeout_s))
-    env = {**os.environ, **(extra_env or {})}
-    send = prompt.encode() if engine in STDIN_PROMPT else None
-    proc = await asyncio.create_subprocess_exec(
-        *argv, cwd=str(cwd), env=env,
-        stdin=asyncio.subprocess.PIPE if send is not None else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                     session_id: str = "", resume_id: str = "",
+                     ask_url: str = "", ask_token: str = "") -> RunResult:
+    # A wedged engine must never leave the config behind: it carries the run
+    # token, and a stale one on disk would let a later engine reach a closed run.
+    mcp_config_path = ""
+    if ask_url and ask_token and engine in MCP_CONFIG_FLAG:
+        fd, mcp_config_path = tempfile.mkstemp(prefix="hermes-mcp-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(mcp_config_dict(ask_url, ask_token), f)
     try:
-        out, err = await asyncio.wait_for(proc.communicate(send), timeout=timeout_s)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return RunResult(False, "", "", True, None)
-    stdout = out.decode(errors="replace")
-    parser = PARSERS.get(engine)
-    outcome = parser(stdout) if parser else None
-    # An API error kills the session but still exits 0, so returncode alone
-    # called that a success. The envelope is the first thing able to see it.
-    ok = proc.returncode == 0 and (outcome is None or outcome.api_error is None)
-    return RunResult(ok, stdout, err.decode(errors="replace"),
-                     False, proc.returncode, outcome)
+        argv = _resolve(_argv(engine, prompt, model, effort,
+                              session_id, resume_id, timeout_s, mcp_config_path))
+        env = {**os.environ, **(extra_env or {})}
+        send = prompt.encode() if engine in STDIN_PROMPT else None
+        proc = await asyncio.create_subprocess_exec(
+            *argv, cwd=str(cwd), env=env,
+            stdin=asyncio.subprocess.PIPE if send is not None else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(send), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return RunResult(False, "", "", True, None)
+        stdout = out.decode(errors="replace")
+        parser = PARSERS.get(engine)
+        outcome = parser(stdout) if parser else None
+        # An API error kills the session but still exits 0, so returncode alone
+        # called that a success. The envelope is the first thing able to see it.
+        ok = proc.returncode == 0 and (outcome is None or outcome.api_error is None)
+        return RunResult(ok, stdout, err.decode(errors="replace"),
+                         False, proc.returncode, outcome)
+    finally:
+        if mcp_config_path:
+            try:
+                os.unlink(mcp_config_path)
+            except OSError:
+                pass
