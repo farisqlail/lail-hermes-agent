@@ -90,15 +90,158 @@ Fixed before merge (`f0ed344`, `0a4574d`):
   every caller.
 
 Open on the engine loop:
-- [ ] **Does the real `claude` CLI actually emit the sentinel?** The whole design rests on it
-  and it has never been tested against a live engine — only fakes. If it does not comply,
-  every code step silently costs `MAX_ENGINE_ROUNDS` sessions and reports "not confirmed".
-  Settle this in the smoke run before trusting the loop.
-- [ ] **Cost.** Worst case per step is now `MAX_ENGINE_ROUNDS * timeout_code_s`, and an
-  unconfirmed-but-successful step burns all 3 rounds and still returns success.
+- [ ] **Does the real `claude` CLI actually emit the sentinel?** Still unproven against a live
+  engine. What changed 2026-07-21: the sentinel is now read from the JSON envelope's `result`
+  field — the model's own closing message — instead of raw stdout, so the answer is finally
+  observable rather than confounded by tool output and echoed prompts. Smoke step 6 says where
+  to look.
+- [x] ~~**Cost** is invisible~~ — `claude --output-format json` reports `total_cost_usd` per
+  session; `_log_engine_cost` sums the rounds into one log line per code step. Worst case per
+  step is still `MAX_ENGINE_ROUNDS * timeout_code_s`, but it is no longer unmeasured. A budget
+  cap remains unbuilt.
 - [ ] No spec or plan exists. If the loop is kept, write one retroactively.
 
 ---
+
+## Landed 2026-07-21 — planner eval harness
+
+`python -m hermes.evals`. Outside `testpaths`, so pytest never collects it.
+
+- `hermes/evals/rules.py` — pure predicates, one per rule the system prompt already mandates.
+  Unit-tested in `tests/test_eval_rules.py`; the model call is the only stochastic part.
+- `hermes/evals/cases.py` — 8 cases over web / react-native / flutter / greenfield fixtures,
+  written in Indonesian because that is the language the live task history is in and planning
+  behaviour is not language-invariant.
+- `hermes/evals/__main__.py` — drives the real `build_nim_planner` and the real
+  `Orchestrator._plan_context`. A local reimplementation of either would score a fork.
+- `Settings.planner_temperature` (default `0.0`), threaded into the NIM call. Planning is
+  rule-following JSON; sampling randomness bought nothing and made evals noisy. A setting, not
+  a literal, so a model that rejects the parameter can be worked around without a release.
+
+Design notes worth keeping:
+- **`ERROR` is a third outcome, not a `FAIL`.** A NIM outage must never be read as a quality
+  regression.
+- **Nothing scores taste.** Engine choice and prompt wording differ between correct answers.
+- **Not in pytest, on purpose.** A stochastic signal in the suite either goes flaky or teaches
+  everyone to ignore red.
+
+**First baseline, 2026-07-21, `deepseek-ai/deepseek-v4-flash` @ temperature 0:**
+`python -m hermes.evals` → **10/10**. `--no-context` → **8/10**.
+
+How that number was earned matters more than the number. The set shipped with 8 cases and
+scored 8/8 on the first run. Ablating the project context — the pre-#3 behaviour — **also
+scored 8/8**, which meant the set could not distinguish the feature from its absence and
+was measuring nothing. Two cases were then written whose task text pulls toward an APK on a
+project that has none (`web-build-wording`, `web-apk-wording`). Without context they plan
+`['code','build']` and `['code','build','test']`; the second is task 20260715-104754-5b44a5
+reproduced. Reproduced identically on three separate runs.
+
+That is the same failure as the vacuous test caught earlier the same day, one layer up: a
+green result that could not have been red. `--no-context` was promoted from a throwaway probe
+to a permanent flag so the question "can this set still fail?" stays cheap to ask.
+
+**Output is ASCII-only, deliberately.** The first ablation run silently lost its own header
+line: the mode string contained an em-dash, and `grep` in the pipeline declared the stream
+binary and dropped the line. Same family as `main._console_safe`. A scorecard is made to be
+piped.
+
+Follow-ups this opens:
+- [ ] Once a baseline exists, `R1-no-apk` failures are the direct argument for adding the same
+  check to `validate_plan`, where it would be deterministic rather than measured.
+- [ ] No case covers a task naming a project in prose without `@` — the shape that caused
+  20260715-104754-5b44a5. Planning is not where that one is decided, but it is worth a case
+  once resolution feeds the planner.
+
+## Landed 2026-07-21 — a code step that leaves the project empty now fails
+
+Root-caused from a live failure, task `20260715-104754-5b44a5`. The reported symptom was
+`step 1 [build]: build failed: unsupported project type: unknown`. That was the messenger.
+
+What actually happened: the task said *"project myprofit-v3"* in prose, with no `@` sigil
+(the registry did not exist yet). `parse_project_ref` found nothing, `proj` stayed `None`,
+`run_task` created `C:\Hermes\projects\20260715-104754-5b44a5` — **still on disk, still
+empty** — and the engine ran there against nothing. Pre-completion-contract code reported
+`step 0 [code]: coded` on exit 0. `detect()` on the real `myprofit-v3` returns
+`react_native`, not `unknown`; the project was never touched.
+
+**Had the plan carried no build step, the run would have reported success while changing no
+code at all.** That is the failure, not the build error.
+
+Fix: a code step whose project directory is empty afterwards fails, with a message naming the
+likely cause and pointing at `@name` / `/projects`.
+
+Mutation testing changed the design. The first version scoped the check to workspaces that
+started empty (`started_empty and _is_empty(proj)`). Removing `started_empty` turned nothing
+red — because a project with files that keeps them never reaches the check at all. The
+conjunct only ever *weakened* the guard, letting an engine that deleted every file in a
+registered project report success. Dropped, and that case is now pinned by
+`test_engine_that_empties_a_real_project_fails_the_step`.
+
+Ten existing tests went red on the fix. All ten had fakes reporting `coded` while touching
+no disk — i.e. describing exactly this bug. They now call a `_worked(cwd)` helper. No
+assertion was weakened to accommodate the change.
+
+Still open, deliberately not bundled:
+- [ ] **A task with no `@project` is still silent.** It creates a throwaway workspace with no
+  warning. Forgetting one character reproduces the whole path; only the new guard catches it,
+  and only after a full engine round.
+- [ ] `validate_plan` still has no rule against a `build` step on a project that cannot build.
+  Now that `_plan_context` computes `ptype` at planning time, that check is cheap and
+  deterministic. It is rule R1 of the planner eval design.
+
+## Landed 2026-07-21 — planner project context
+
+Author-reviewed only; add to the review backlog above.
+
+- `hermes/plan_context.py` — pure `build(summary, ptype, is_new, name)`, four branches.
+- The planner's rules 2–4 (`main.py`) already forbade an emulator test on a non-Android
+  project. **They were unobeyable**: the task text was the planner's only input, so it had to
+  guess the project type from the user's wording. `validate_plan` was not covering a missing
+  rule — it was catching a rule the planner could not apply. It stays, now as a safety net.
+- Context rides as its own system message, after the rules and before the user's text.
+- The dead `tools` parameter on the planner signature became `context`. It was never read:
+  MCP discovery happens inside `build_nim_planner` via `hub.list_tools()`.
+
+Two traps found while building it:
+
+1. **An empty workspace and an unrecognised project both detect as `unknown`.** Deriving
+   "not an Android project" from detection alone would forbid the `build` step that every
+   greenfield task needs — including the smoke-test task. `is_new` is therefore taken from
+   `proj is None` in `run_task`, before the workspace is created, and never inferred from disk.
+2. **`ptype` falsy must claim nothing.** `detect` is an optional dep; absent, the context stays
+   silent about the type instead of reporting a type nothing measured.
+
+Mutation-checked: forcing `build()` to ignore `is_new` turns three tests red. A separate
+mutation (dropping the `not is_new` guard on the `detect` call) surfaced only as a
+`RuntimeWarning` from `test_invalid_plan_fails_task_before_running_any_step`'s `must_not_run`
+sentinel. Worth knowing: `_plan_context` trusts `detect`'s return type, and a non-`str` return
+would fall through to the "does NOT produce an APK" branch. Not reachable in production —
+`main` always injects `project_detect.detect` — but the guard is thin.
+
+## Landed 2026-07-21 — structured engine output (`feat/structured-engine-output`)
+
+Author-reviewed only; add to the review backlog above.
+
+- `hermes/engine_result.py` — pure `parse_claude_json` → `EngineOutcome`. Returns `None` for
+  unusable stdout, which is the documented "fall back to text" signal, not an error.
+- `engine_runner` — `claude` now runs `--output-format json`; `RunResult` gained an optional
+  `outcome` plus a `final_text` property (property, not a field, so ~15 existing fakes that
+  build `RunResult` positionally kept working untouched). `ok` now folds in `api_error`:
+  **a session killed by an API error used to exit 0 and be recorded as a success.**
+- Sessions: Hermes issues the UUID (`--session-id`) rather than reading one back, so a round
+  that dies before printing is still resumable. Fix-up rounds use `--resume`.
+  `_resumable_id` returning `""` is the entire fallback story — no separate recovery path.
+- `agy` gained `--print-timeout <timeout_code_s>s`. Its default is 5m, so **every code step
+  longer than five minutes was being killed by agy itself** and reported as an engine failure;
+  `asyncio.wait_for` had never once fired for agy.
+- Corrected a false claim in `docs/design-spec.md`: `agy` has no `--output-format`. Verified
+  against `agy --help`.
+
+Verified by mutation, not just by green: flipping `final_text` back to `stdout` and dropping
+`api_error` from `ok` each turn tests red. The first mutation exposed a **vacuous test** —
+`test_sentinel_only_in_stdout_...` had the sentinel mid-line, so it passed either way. Fixed to
+put the sentinel on its own final stdout line, which is what makes the two sources
+indistinguishable to a raw-stdout reader.
 
 ## Config that must be set before any of this is usable
 
@@ -111,31 +254,40 @@ Open on the engine loop:
   there beside `AppData`, `Documents`, and `OneDrive`, and the registry exists precisely so
   those can never become agent-writable targets.
 
-- [ ] **`HERMES_HOME` is unset**, so `hermes/paths.py` falls back to its hardcoded `E:/Hermes`.
-  That works today, but `deploy/install.ps1` now defaults to **`C:\Hermes`** when the variable
-  is missing (commit `8fc062f`). Re-running the installer as-is would create an empty
-  `C:\Hermes`, set `HERMES_HOME` to it permanently for the user, and leave Hermes reading a
-  config/projects/db root that is not yours. Set it first:
-  ```powershell
-  [Environment]::SetEnvironmentVariable("HERMES_HOME", "E:\Hermes", "User")
-  ```
+- [ ] **The `HERMES_HOME` fallbacks disagree, and nothing reports it.** Three entry points, two
+  different defaults, both absolute paths inherited from the machine this was first built on:
 
-- [ ] **`E:\Hermes\start.bat` is the old hardcoded version** — no banner, no auto-restart loop,
-  `cd /d E:\Hermes\app` baked in. `deploy/start.bat` is now the single source of truth, and the
-  installer writes a stub that calls it. Regen via the installer (after setting `HERMES_HOME`),
-  or write the stub by hand:
+  | Entry point | Fallback when `HERMES_HOME` is unset |
+  |---|---|
+  | `hermes/paths.py:5` | `E:/Hermes` |
+  | `deploy/install.ps1:8` | `C:\Hermes` |
+  | `deploy/start.bat:6` | `C:\Hermes` |
+
+  So `%HERMES_HOME%\start.bat` and `python -m hermes.main` read **different** config files,
+  registries and task databases — silently, because both roots are valid directories. Until
+  the defaults are reconciled, set the variable explicitly before installing:
+  ```powershell
+  [Environment]::SetEnvironmentVariable("HERMES_HOME", "<your data root>", "User")
+  ```
+  Fixing this properly means picking one fallback (or refusing to start without the variable)
+  and migrating any data already written under the other. Do not do it in passing: the losing
+  root holds live credentials and real task history.
+
+- [ ] **A stale hand-written `start.bat` may sit in the data root** — no banner, no
+  auto-restart loop, an absolute `cd /d` baked in. `deploy/start.bat` is the single source of
+  truth and the installer writes a stub that calls it. Regenerate via the installer (after
+  setting `HERMES_HOME`), or write the stub by hand:
   ```bat
   @echo off
-  set HERMES_HOME=E:\Hermes
-  call "E:\Hermes\app\deploy\start.bat"
+  set HERMES_HOME=<your data root>
+  call "<repo>\deploy\start.bat"
   ```
 
-- [ ] **Unexplained, never diagnosed:** a config change reported as "just added" never reached
-  disk. `config/config.yaml`, `config/.env`, and `hermes.db` were all last written
-  2026-07-14 ~17:00; the running process started 10:36 the next day — *after* them — and
-  `/api/settings` matched disk exactly. The save failed silently. If it recurs, watch
-  `POST /api/settings` in the browser's DevTools Network tab; the current code returns 422 with
-  a specific message.
+- [x] ~~**Unexplained, never diagnosed:** a config change reported as "just added" never
+  reached disk.~~ **Diagnosed 2026-07-21: it did reach disk, in the other data root.** The
+  files inspected were under one `HERMES_HOME` fallback while the running process, launched
+  via `start.bat`, was writing to the other. `/api/settings` matched the disk it was actually
+  serving. Not a silent save failure — two installations, per the item above.
 
 ---
 

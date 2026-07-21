@@ -3,6 +3,7 @@ import asyncio, os, shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
+from .engine_result import EngineOutcome, parse_claude_json
 
 # each entry maps a prompt to an argv list; overridable in tests
 # claude runs non-interactively (-p): it cannot prompt for tool permissions, so
@@ -10,7 +11,8 @@ from typing import Callable, Literal
 # churns until timeout. Safe here: engines run inside an isolated project dir
 # and risky tasks are gated behind Telegram confirmation.
 COMMANDS: dict[str, Callable[[str], list[str]]] = {
-    "claude": lambda p: ["claude", "-p", "--dangerously-skip-permissions"],
+    "claude": lambda p: ["claude", "-p", "--dangerously-skip-permissions",
+                         "--output-format", "json"],
     "antigravity": lambda p: ["agy", "-p", p],
 }
 # engines that read the prompt from stdin instead of argv: sidesteps cmd.exe
@@ -21,13 +23,36 @@ STDIN_PROMPT = {"claude"}
 # engine on every step, so unsupported tuning is dropped, not passed through.
 MODEL_FLAG = {"claude", "antigravity"}
 EFFORT_FLAG = {"claude"}
+# Engines whose sessions Hermes can name and reopen. agy has --conversation,
+# but it only accepts ids agy itself issued and prints none of them in print
+# mode, so there is nothing to hand back. It stays on fresh sessions.
+RESUMABLE = {"claude"}
+# agy's own print-mode budget defaults to 5m. Left alone, a 15m code step is
+# killed by the engine at minute five and surfaces as an engine failure rather
+# than a timeout. claude has no equivalent flag; asyncio's wait_for is its only
+# clock.
+PRINT_TIMEOUT_FLAG = {"antigravity"}
+# Whose stdout carries a machine-readable envelope. Absent here means the
+# engine is read as plain text, exactly as before this module existed.
+PARSERS = {"claude": parse_claude_json}
 
-def _argv(engine: str, prompt: str, model: str = "", effort: str = "") -> list[str]:
+def _argv(engine: str, prompt: str, model: str = "", effort: str = "",
+          session_id: str = "", resume_id: str = "",
+          timeout_s: int = 0) -> list[str]:
     argv = list(COMMANDS[engine](prompt))
     if model and engine in MODEL_FLAG:
         argv += ["--model", model]
     if effort and engine in EFFORT_FLAG:
         argv += ["--effort", effort]
+    if engine in RESUMABLE:
+        # Resume wins: passing both would ask claude to open a new session and
+        # reopen an old one in the same invocation.
+        if resume_id:
+            argv += ["--resume", resume_id]
+        elif session_id:
+            argv += ["--session-id", session_id]
+    if timeout_s and engine in PRINT_TIMEOUT_FLAG:
+        argv += ["--print-timeout", f"{timeout_s}s"]
     return argv
 
 @dataclass
@@ -37,6 +62,20 @@ class RunResult:
     stderr: str
     timed_out: bool
     returncode: int | None
+    # None means the engine was read as text: either it emits no envelope, or
+    # this run's stdout could not be parsed as one.
+    outcome: EngineOutcome | None = None
+
+    @property
+    def final_text(self) -> str:
+        """What the engine said last, as trustworthily as this run allows.
+
+        With an outcome this is the model's own closing message — never tool
+        output, never an echo of the prompt. Without one it degrades to raw
+        stdout, which is what every caller read before structured output
+        existed.
+        """
+        return self.outcome.final_text if self.outcome else self.stdout
 
 def _extra_tool_dirs() -> list[str]:
     """Well-known install dirs for the engine CLIs, searched when the bot's
@@ -91,8 +130,10 @@ def _resolve(argv: list[str]) -> list[str]:
 async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
                      cwd: Path, timeout_s: int,
                      extra_env: dict | None = None,
-                     model: str = "", effort: str = "") -> RunResult:
-    argv = _resolve(_argv(engine, prompt, model, effort))
+                     model: str = "", effort: str = "",
+                     session_id: str = "", resume_id: str = "") -> RunResult:
+    argv = _resolve(_argv(engine, prompt, model, effort,
+                          session_id, resume_id, timeout_s))
     env = {**os.environ, **(extra_env or {})}
     send = prompt.encode() if engine in STDIN_PROMPT else None
     proc = await asyncio.create_subprocess_exec(
@@ -105,7 +146,11 @@ async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
         proc.kill()
         await proc.wait()
         return RunResult(False, "", "", True, None)
-    return RunResult(proc.returncode == 0,
-                     out.decode(errors="replace"),
-                     err.decode(errors="replace"),
-                     False, proc.returncode)
+    stdout = out.decode(errors="replace")
+    parser = PARSERS.get(engine)
+    outcome = parser(stdout) if parser else None
+    # An API error kills the session but still exits 0, so returncode alone
+    # called that a success. The envelope is the first thing able to see it.
+    ok = proc.returncode == 0 and (outcome is None or outcome.api_error is None)
+    return RunResult(ok, stdout, err.decode(errors="replace"),
+                     False, proc.returncode, outcome)

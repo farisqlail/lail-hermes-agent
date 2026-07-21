@@ -7,6 +7,16 @@ from hermes.config import Settings
 from hermes.session_store import Store
 import pytest
 
+def _worked(cwd):
+    """Leave a trace on disk, as an engine that actually codes does.
+
+    A fake that reports `coded` while touching nothing describes the exact
+    failure of task 20260715-104754-5b44a5, which the orchestrator now rejects
+    — see test_engine_loop.test_empty_workspace_left_empty_fails_the_step.
+    """
+    (Path(cwd) / "touched.txt").write_text("engine output")
+
+
 def test_parse_plan_with_fences():
     raw = "```json\n{\"steps\":[{\"type\":\"code\",\"engine\":\"claude\",\"prompt\":\"x\"}]}\n```"
     steps = parse_plan(raw)
@@ -56,9 +66,10 @@ async def test_run_task_executes_steps(hermes_home):
         ]})
 
     events = []
-    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
-        events.append(("code", engine)); return RunResult(True, "done", "", False, 0)
+        events.append(("code", engine)); _worked(cwd)
+        return RunResult(True, "done", "", False, 0)
     async def fake_build(project_dir, ptype, timeout_s, run=None):
         from hermes.build_runner import BuildResult
         events.append(("build", ptype)); return BuildResult(True, "app.apk", "", "")
@@ -172,7 +183,7 @@ async def test_code_step_failure_halts_task(hermes_home):
         ]})
 
     built = []
-    async def failing_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def failing_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         return RunResult(False, "", "boom", False, 1)
     async def fake_build(project_dir, ptype, timeout_s, run=None):
@@ -195,7 +206,7 @@ async def test_step_crash_marks_task_failed(hermes_home):
     async def planner(text, tools):
         return json.dumps({"steps": [{"type": "code", "prompt": "x"}]})
 
-    async def exploding_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def exploding_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         raise FileNotFoundError("engine executable 'claude' not found on PATH")
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=exploding_engine))
@@ -343,7 +354,7 @@ async def test_code_step_prompt_carries_task_and_project_context(hermes_home):
         return json.dumps({"steps": [{"type": "code", "prompt": "patch the login flow"}]})
 
     prompts = []
-    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         prompts.append(prompt)
         if len(prompts) == 1:
@@ -378,10 +389,11 @@ async def test_unconfirmed_completion_gets_a_fixup_round(hermes_home):
     output and can actually finish and verify."""
     store = Store(hermes_home / "t.db"); store.init_schema()
     prompts = []
-    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None):
+    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         prompts.append(prompt)
         if len(prompts) == 1:
+            _worked(cwd)
             return RunResult(True, "Waiting on npm install. Will run tests "
                                    "once install lands.", "", False, 0)
         return RunResult(True, "17 tests pass\nHERMES_STEP_DONE", "", False, 0)
@@ -404,10 +416,11 @@ async def test_confirmed_done_stops_at_one_round(hermes_home):
     must not burn two more engine invocations."""
     store = Store(hermes_home / "t.db"); store.init_schema()
     calls = []
-    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None):
+    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         calls.append(1)
         assert "Completion contract" in prompt      # contract always present
+        _worked(cwd)
         return RunResult(True, "done\nHERMES_STEP_DONE", "", False, 0)
 
     orch = _code_plan_orch(hermes_home, store, engine)
@@ -444,9 +457,10 @@ async def test_echoed_prompt_does_not_confirm_completion(hermes_home):
     from hermes.orchestrator import MAX_ENGINE_ROUNDS
     store = Store(hermes_home / "t.db"); store.init_schema()
     calls = []
-    async def echoing_engine(engine_name, prompt, cwd, timeout_s, extra_env=None):
+    async def echoing_engine(engine_name, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         calls.append(1)
+        _worked(cwd)
         return RunResult(True, f"[echo] {prompt}\n[end of echo]", "", False, 0)
 
     orch = _code_plan_orch(hermes_home, store, echoing_engine)
@@ -466,9 +480,10 @@ async def test_rounds_exhausted_without_sentinel_still_succeeds_with_a_note(herm
     from hermes.orchestrator import MAX_ENGINE_ROUNDS
     store = Store(hermes_home / "t.db"); store.init_schema()
     calls = []
-    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None):
+    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         calls.append(1)
+        _worked(cwd)
         return RunResult(True, "did things, never said the magic word", "", False, 0)
 
     orch = _code_plan_orch(hermes_home, store, engine)
@@ -494,7 +509,7 @@ async def test_failed_code_step_saves_full_engine_transcript(hermes_home):
         return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
 
     calls = []
-    async def failing_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def failing_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         calls.append(prompt)
         return RunResult(False, f"long stdout attempt {len(calls)} " + "x" * 500,
@@ -526,8 +541,9 @@ async def test_successful_code_step_saves_transcript_too(hermes_home):
     async def planner(text, tools):
         return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
 
-    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
+        _worked(cwd)
         return RunResult(True, "all good\nHERMES_STEP_DONE", "", False, 0)
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=fake_run_engine))
@@ -549,7 +565,7 @@ async def test_timed_out_code_step_still_saves_transcript(hermes_home):
     async def planner(text, tools):
         return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
 
-    async def timing_out_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def timing_out_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         return RunResult(False, "", "", True, None)
 
@@ -640,7 +656,7 @@ async def test_run_task_uses_supplied_proj(hermes_home):
         return json.dumps({"steps": [{"type": "code", "prompt": "fix it"}]})
 
     seen = []
-    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         seen.append(Path(cwd))
         # Confirms completion, so the engine loop stops at one round and this
@@ -679,9 +695,10 @@ async def test_run_task_threads_engine_tuning_per_engine(hermes_home):
 
     got = []
     async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None,
-                              model="", effort=""):
+                              model="", effort="", **kw):
         from hermes.engine_runner import RunResult
         got.append((engine, model, effort))
+        _worked(cwd)
         return RunResult(True, f"done\n{_DONE_SENTINEL}", "", False, 0)
 
     deps = dict(run_engine=fake_run_engine, build_apk=None,
@@ -710,7 +727,7 @@ async def test_run_task_never_mkdirs_a_supplied_proj(hermes_home, monkeypatch):
     async def planner(text, tools):
         return json.dumps({"steps": [{"type": "code", "prompt": "fix it"}]})
 
-    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         return RunResult(True, f"done\n{_DONE_SENTINEL}", "", False, 0)
 
@@ -743,7 +760,7 @@ async def test_run_task_without_proj_creates_workspace(hermes_home):
         return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
 
     seen = []
-    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         seen.append(Path(cwd))
         # Confirms completion: see test_run_task_uses_supplied_proj.
@@ -759,3 +776,81 @@ async def test_run_task_without_proj_creates_workspace(hermes_home):
 
     assert seen == [root / "t1"]
     assert (root / "t1").is_dir()
+
+
+def _capture_context(hermes_home, store, deps_extra, proj=None):
+    """Run one code-step task and return the context string the planner got."""
+    seen = []
+    async def planner(text, context):
+        seen.append(context)
+        return json.dumps({"steps": [{"type": "code", "prompt": "x"}]})
+
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        from hermes.engine_runner import RunResult
+        return RunResult(True, f"done\n{_DONE_SENTINEL}", "", False, 0)
+
+    settings = Settings(default_engine="claude",
+                        projects_path=str(hermes_home / "proj"))
+    orch = Orchestrator(settings, store, planner,
+                        dict(run_engine=engine, **deps_extra))
+
+    async def report(tid, msg, html=False): pass
+    store.create_task("t1", 5, "x")
+    return orch, report, seen, proj
+
+
+async def test_planner_is_told_about_an_existing_typed_project(hermes_home):
+    """Rules 2-4 of the planner prompt forbid an emulator test on a non-Android
+    project. Until the project's type reaches the planner, they are rules it
+    has no way to apply."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    existing = hermes_home / "myprofit"; existing.mkdir()
+    (existing / "pubspec.yaml").write_text("name: app")
+    orch, report, seen, _ = _capture_context(
+        hermes_home, store, dict(detect=lambda d: "flutter"), existing)
+    await orch.run_task("t1", 5, "x", report, proj=existing)
+
+    assert len(seen) == 1
+    assert "myprofit" in seen[0]
+    assert "flutter" in seen[0]
+    assert "pubspec.yaml" in seen[0]          # tree summary rode along
+    assert "do not emit" not in seen[0].lower()
+
+
+async def test_planner_is_told_a_web_project_cannot_build_an_apk(hermes_home):
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    existing = hermes_home / "dashboard"; existing.mkdir()
+    (existing / "package.json").write_text("{}")
+    orch, report, seen, _ = _capture_context(
+        hermes_home, store, dict(detect=lambda d: "unknown"), existing)
+    await orch.run_task("t1", 5, "x", report, proj=existing)
+
+    assert "does NOT produce an APK" in seen[0]
+    assert "browser" in seen[0]
+
+
+async def test_planner_is_told_a_fresh_workspace_is_greenfield(hermes_home):
+    """The workspace is created moments earlier, so on disk it is empty and
+    detects as `unknown` — identical to an unrecognised existing project. Told
+    that, the planner would refuse the build step a greenfield task needs."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    orch, report, seen, _ = _capture_context(
+        hermes_home, store, dict(detect=lambda d: "unknown"))
+    await orch.run_task("t1", 5, "x", report)
+
+    assert "new empty workspace" in seen[0]
+    assert "does NOT produce an APK" not in seen[0]
+
+
+async def test_missing_detect_dependency_claims_no_project_type(hermes_home):
+    """`detect` is optional on deps. Absent, the context must stay silent about
+    the type rather than reporting a type nothing measured."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    existing = hermes_home / "whatever"; existing.mkdir()
+    (existing / "a.txt").write_text("x")
+    orch, report, seen, _ = _capture_context(hermes_home, store, {}, existing)
+    await orch.run_task("t1", 5, "x", report, proj=existing)
+
+    assert store.get_task("t1")["status"] == "done"      # no crash
+    assert "does NOT produce an APK" not in seen[0]
+    assert "a.txt" in seen[0]                            # tree still sent

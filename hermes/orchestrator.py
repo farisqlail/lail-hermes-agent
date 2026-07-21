@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, re
+import json, re, uuid
 from pathlib import Path
 from .config import Settings
 from .session_store import Store
@@ -121,18 +121,31 @@ _COMPLETION_CONTRACT = (
     "state precisely what remains to be done."
 )
 
-def _confirmed_done(stdout: str) -> bool:
-    """True only when the engine's own last output line is the sentinel.
+def _confirmed_done(final_text: str) -> bool:
+    """True only when the engine's own closing line is the sentinel.
 
-    Presence anywhere is not enough: _COMPLETION_CONTRACT quotes the sentinel,
-    so it is in every prompt, and _continuation_prompt feeds a previous
-    session's stdout back in. Any engine that echoes its input -- or that just
-    says "I'll print HERMES_STEP_DONE when tests pass" -- would otherwise
-    confirm a step it never did. Matching the final line is exactly what the
-    contract asks the engine for.
+    Read `RunResult.final_text`, never raw stdout. Presence anywhere is not
+    enough: _COMPLETION_CONTRACT quotes the sentinel, so it is in every prompt.
+    An engine emitting a structured envelope gives us only the model's final
+    message here — no tool output, no echoed prompt — which is what closes the
+    spoof surface. For a text-mode engine this falls back to stdout, where
+    matching the last line is the best available proxy.
     """
-    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+    lines = [ln.strip() for ln in final_text.splitlines() if ln.strip()]
     return bool(lines) and lines[-1] == _DONE_SENTINEL
+
+def _resume_prompt() -> str:
+    """The continuation instruction for a session being reopened.
+
+    Nothing is restated but the contract: the session already holds the task,
+    the tree summary, the step, and everything it printed. Re-sending them —
+    which is what _continuation_prompt must do for a fresh session — would pay
+    for the same context twice.
+    """
+    return ("# Continuation\nYour previous turn in this session ended without "
+            "confirming completion. Check what actually landed on disk, finish "
+            "the remaining work, run the verification for real, and fix "
+            "anything broken." + _COMPLETION_CONTRACT)
 
 def _continuation_prompt(base: str, prev) -> str:
     reason = ("ended with an error" if not prev.ok
@@ -144,6 +157,60 @@ def _continuation_prompt(base: str, prev) -> str:
             "verification for real, and fix anything broken.\n"
             f"--- previous stdout (tail) ---\n{prev.stdout[-800:]}\n"
             f"--- previous stderr (tail) ---\n{prev.stderr[-800:]}")
+
+def _is_empty(proj: Path) -> bool:
+    """True when the directory holds nothing. False if it cannot be read —
+    an unreadable directory is not evidence that no work was done."""
+    try:
+        return not any(proj.iterdir())
+    except OSError:
+        return False
+
+def _outcome_header(res) -> str:
+    """Session, cost and turns for a transcript attempt header, if reported.
+
+    Empty for a text-mode engine, so the header keeps its old shape rather
+    than filling up with `None`s that say nothing.
+    """
+    o = res.outcome
+    if o is None:
+        return ""
+    bits = []
+    if o.session_id:
+        bits.append(f"session: {o.session_id}")
+    if o.cost_usd is not None:
+        bits.append(f"cost: ${o.cost_usd:.4f}")
+    if o.num_turns is not None:
+        bits.append(f"turns: {o.num_turns}")
+    if o.api_error:
+        bits.append(f"api_error: {o.api_error}")
+    return ", " + ", ".join(bits) if bits else ""
+
+def _session_kwargs(engine: str, session_id: str, resume_id: str) -> dict:
+    """Session flags for this round, or nothing at all.
+
+    Empty for an engine that cannot resume, which keeps `run_engine` doubles
+    free to declare narrow signatures — the same reason model/effort are only
+    passed when configured.
+    """
+    from .engine_runner import RESUMABLE
+    if engine not in RESUMABLE:
+        return {}
+    return {"resume_id": resume_id} if resume_id else {"session_id": session_id}
+
+def _resumable_id(engine: str, res) -> str:
+    """The session to reopen next round, or "" to start a fresh one.
+
+    This one expression is the whole fallback story. A round that produced no
+    envelope — an unparseable stream, a text-mode engine, a session that never
+    got far enough to report — yields "", and the caller drops back to a new
+    session carrying the previous output. There is no separate recovery path to
+    rot, and the fallback is exercised on every antigravity run.
+    """
+    from .engine_runner import RESUMABLE
+    if engine not in RESUMABLE or not res.outcome:
+        return ""
+    return res.outcome.session_id or ""
 
 def choose_engine(step: dict, settings: Settings) -> str:
     if step.get("engine") in ("claude", "antigravity"):
@@ -170,6 +237,10 @@ class Orchestrator:
         from . import paths
         self.settings = self.get_settings()
         self.store.set_task_status(task_id, "running")
+        # Captured before the workspace is created: afterwards the two cases are
+        # indistinguishable on disk, and an empty workspace detects as `unknown`
+        # exactly like an unrecognised existing project would.
+        is_new = proj is None
         if proj is None:
             # No registered project: fresh throwaway workspace, named for the task.
             projects_path = self.settings.projects_path or str(paths.projects_dir())
@@ -184,7 +255,7 @@ class Orchestrator:
             snapshot = None
         await report(task_id, "planning...")
         try:
-            raw = await self.planner(text, [])
+            raw = await self.planner(text, self._plan_context(proj, is_new))
             steps = parse_plan(raw)
             validate_plan(steps, self.settings.default_test_mode)
         except Exception as e:
@@ -226,6 +297,22 @@ class Orchestrator:
         # HTML. Every other report is raw engine text that must not be parsed.
         await report(task_id, done_msg, html=summary is not None)
 
+    def _plan_context(self, proj: Path, is_new: bool) -> str:
+        """The project facts handed to the planner.
+
+        Called inside run_task's planning `try`, so a failure here reports as a
+        planning failure rather than needing an error path of its own.
+
+        `detect` is read off deps like every other capability: absent — as in
+        the many tests that inject only `run_engine` — means no type is
+        claimed, not that the type is unknown.
+        """
+        from . import plan_context
+        detect = self.deps.get("detect")
+        ptype = detect(proj) if detect and not is_new else ""
+        summary = "" if is_new else _project_summary(proj)
+        return plan_context.build(summary, ptype or "", is_new, proj.name)
+
     def _save_engine_transcript(self, task_id: str, idx: int, engine: str,
                                 attempts: list) -> None:
         """Persist the full engine output as an artifact.
@@ -244,7 +331,7 @@ class Orchestrator:
                 parts.append(
                     f"=== attempt {n}/{len(attempts)} — engine: {engine}, "
                     f"ok: {r.ok}, returncode: {r.returncode}, "
-                    f"timed_out: {r.timed_out} ===\n"
+                    f"timed_out: {r.timed_out}{_outcome_header(r)} ===\n"
                     f"--- stdout ---\n{r.stdout}\n"
                     f"--- stderr ---\n{r.stderr}\n")
             log = d / f"step-{idx}-engine.log"
@@ -253,6 +340,22 @@ class Orchestrator:
         except OSError as e:
             self.store.append_log(
                 task_id, f"could not save engine transcript for step {idx}: {e}")
+
+    def _log_engine_cost(self, task_id: str, idx: int, engine: str,
+                         attempts: list) -> None:
+        """Record what the step cost, when the engine reports it.
+
+        A log line, not a table: nothing queries spend yet, and the log is
+        already what the dashboard renders. A text-mode engine reports no cost
+        and so gets no line — an invented $0.0000 would read as free.
+        """
+        costs = [a.outcome.cost_usd for a in attempts
+                 if a.outcome and a.outcome.cost_usd is not None]
+        if not costs:
+            return
+        self.store.append_log(
+            task_id, f"step {idx} [{engine}]: {len(attempts)} round(s), "
+                     f"${sum(costs):.4f}")
 
     async def _send_artifact(self, task_id: str, send_file, kind: str,
                              path) -> None:
@@ -292,25 +395,57 @@ class Orchestrator:
                     tuning["effort"] = self.settings.claude_effort
             elif engine == "antigravity" and self.settings.agy_model:
                 tuning["model"] = self.settings.agy_model
+            # Hermes names the session rather than reading one back, so a
+            # round that dies before printing anything is still resumable.
+            session_id, resume_id = str(uuid.uuid4()), ""
             for _ in range(MAX_ENGINE_ROUNDS):
+                session = _session_kwargs(engine, session_id, resume_id)
                 res = await self.deps["run_engine"](
-                    engine, prompt, proj, self.settings.timeout_code_s, **tuning)
+                    engine, prompt, proj, self.settings.timeout_code_s,
+                    **tuning, **session)
                 attempts.append(res)
                 if res.timed_out:
                     break
-                if res.ok and _confirmed_done(res.stdout):
+                if res.ok and _confirmed_done(res.final_text):
                     break                      # confirmed done, stop early
-                # error OR unconfirmed completion: hand the session's output
-                # to a fresh session and let the engine fix/finish it itself
-                prompt = _continuation_prompt(base, res)
+                # error OR unconfirmed completion: let the engine fix/finish
+                # its own work. Reopening the session keeps its context for
+                # free; without one, the previous output has to be re-sent.
+                resume_id = _resumable_id(engine, res)
+                if resume_id:
+                    prompt = _resume_prompt()
+                else:
+                    session_id = str(uuid.uuid4())
+                    prompt = _continuation_prompt(base, res)
             self._save_engine_transcript(task_id, idx, engine, attempts)
+            self._log_engine_cost(task_id, idx, engine, attempts)
             rounds = len(attempts)
             if res.timed_out:
                 return (False, f"engine timed out (round {rounds})")
             if not res.ok:
-                return (False, f"engine failed after {rounds} round(s): "
-                               f"{res.stderr[:200]}")
-            if _confirmed_done(res.stdout):
+                # An error reported inside the envelope often leaves stderr
+                # empty, which used to produce a failure message with no cause
+                # in it at all.
+                why = (res.outcome.api_error if res.outcome
+                       and res.outcome.api_error else res.stderr[:200])
+                return (False, f"engine failed after {rounds} round(s): {why}")
+            # A code step that leaves the project directory empty did no
+            # usable work, whatever it printed and whatever it exited with.
+            # Two ways to get here, both worth failing on:
+            #   - the workspace was empty all along. The usual cause is a task
+            #     meant for an existing project that named it in prose instead
+            #     of with the @ sigil: nothing resolves, a throwaway workspace
+            #     is created, and the engine opens an empty directory.
+            #   - the engine emptied a project that had files in it.
+            # A project that has files and keeps them never reaches this check,
+            # so a code step that legitimately changes nothing still passes.
+            if _is_empty(proj):
+                return (False,
+                        "engine produced no files — the workspace was empty "
+                        "before this step and is still empty. If this task was "
+                        "meant for an existing project, reference it as @name "
+                        "(send /projects for the registered names).")
+            if _confirmed_done(res.final_text):
                 return (True, f"coded (confirmed done, {rounds} round(s))")
             return (True, f"coded ({rounds} round(s), completion not "
                           f"confirmed — check the step transcript)")

@@ -129,7 +129,7 @@ def build_nim_planner(settings, secrets, hub):
         "and always fails.\n"
         "5. `prompt` is the instruction handed to the coding engine — write it "
         "as a clear, self-contained task, in the language the user used.")
-    async def planner(text: str, tools: list) -> str:
+    async def planner(text: str, context: str = "") -> str:
         if not secrets.nvidia_api_key:
             raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
         client = AsyncOpenAI(base_url=settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
@@ -140,12 +140,19 @@ def build_nim_planner(settings, secrets, hub):
             print(f"MCP tool discovery timed out after {MCP_DISCOVERY_TIMEOUT_S}s; planning without tools")
             discovered = []
         oa_tools = to_openai_tools(discovered)
-        msgs = [{"role": "system", "content": system},
-                {"role": "user", "content": text}]
+        # Project facts ride as their own system message: the rules above are
+        # the law, this is the evidence, and the user's message stays the
+        # user's words. Rules 2-4 are unobeyable without it — nothing else
+        # tells the planner whether this project can produce an APK.
+        msgs = [{"role": "system", "content": system}]
+        if context:
+            msgs.append({"role": "system", "content": context})
+        msgs.append({"role": "user", "content": text})
         for _ in range(MAX_TOOL_ROUNDS):
             resp = await _completion_with_retry(
                 lambda: client.chat.completions.create(
                     model=settings.model, messages=msgs,
+                    temperature=settings.planner_temperature,
                     tools=oa_tools or None))
             m = resp.choices[0].message
             if m.tool_calls:

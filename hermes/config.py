@@ -26,6 +26,11 @@ class McpServer(BaseModel):
 class Settings(BaseModel):
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     model: str = "deepseek-ai/deepseek-v3"
+    # Planning emits JSON that must obey fixed rules; sampling randomness buys
+    # nothing there and makes the same task plan differently run to run. A
+    # setting rather than a literal because a model that rejects the parameter
+    # would otherwise break every plan until a code change shipped.
+    planner_temperature: float = 0.0
     allowed_user_ids: list[int] = Field(default_factory=list)
     default_engine: Literal["claude", "antigravity", "auto"] = "auto"
     # Per-engine tuning ("" = leave that CLI's own default). Model fields are
