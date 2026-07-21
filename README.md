@@ -211,7 +211,31 @@ python -m hermes.evals                 # every case once
 python -m hermes.evals --list          # case ids, no model calls
 python -m hermes.evals --repeat 5      # how steady is a case?
 python -m hermes.evals --only web-fix-detail-page
+python -m hermes.evals --no-context    # ablation, see below
 ```
+
+### Can the set fail?
+
+A scorecard that reads 100% is worthless until you know it *can* read less. `--no-context`
+plans every case with no project context, the way the planner worked before it was given one.
+Cases whose task text pulls toward an APK on a project that has none are expected to fail
+there. If a full run and an ablation run score the same, the set is not measuring the context
+and needs a harder case, not a victory lap.
+
+Baseline, measured 2026-07-21 on `deepseek-ai/deepseek-v4-flash` at temperature 0:
+
+| Run | Result |
+|-----|--------|
+| `python -m hermes.evals` | **10/10** |
+| `python -m hermes.evals --no-context` | **8/10** — `web-build-wording` and `web-apk-wording` fail |
+
+Those two cases are the whole reason the set means anything. Without context they plan
+`['code','build']` and `['code','build','test']` against a project with no Android markers,
+the second reproducing the live failure of task `20260715-104754-5b44a5` exactly. The other
+eight score identically with and without context, so on their own they could not tell a
+planner that reads the project from one that guesses.
+
+The first version of this golden set had only those eight, scored 8/8, and was worth nothing.
 
 It drives the real `build_nim_planner` and the real context assembly — a local copy of either
 would score itself instead of what production runs. It needs your NVIDIA key, and each case

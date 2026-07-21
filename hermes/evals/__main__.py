@@ -11,6 +11,11 @@ and a fork scores itself rather than the thing that runs in production.
 
 Exit codes: 0 all rules held, 1 at least one rule was violated, 2 nothing could
 be measured (missing credentials, or every case errored).
+
+Output is kept ASCII-only. A scorecard exists to be piped into `grep`, `tee` and
+CI logs, and a single non-ASCII byte is enough for those tools to declare the
+stream binary and drop the line — which is exactly how the first ablation run
+lost its own header. Same family as `main._console_safe`.
 """
 from __future__ import annotations
 import argparse, asyncio, sys, tempfile
@@ -55,11 +60,12 @@ def _context_for(case: Case, proj: Path, settings) -> str:
     return orch._plan_context(proj, case.greenfield)
 
 
-async def _run_case(case: Case, planner, settings, root: Path):
+async def _run_case(case: Case, planner, settings, root: Path,
+                    with_context: bool = True):
     """Plan one case. Returns (status, violations, plan-or-error)."""
     proj = _materialise(case, root)
     try:
-        context = _context_for(case, proj, settings)
+        context = _context_for(case, proj, settings) if with_context else ""
         raw = await planner(case.text, context)
         steps = orch_mod.parse_plan(raw)
     except Exception as e:
@@ -90,6 +96,12 @@ async def _main() -> int:
     ap.add_argument("--only", action="append", default=[],
                     help="case id (repeatable)")
     ap.add_argument("--list", action="store_true", help="list case ids and exit")
+    ap.add_argument("--no-context", action="store_true",
+                    help="ablation: plan with no project context, as the "
+                         "planner did before it was given one. Expected to "
+                         "FAIL cases whose task text pulls toward an APK on a "
+                         "project that has none. A set that scores the same "
+                         "either way is not measuring the context.")
     args = ap.parse_args()
 
     cases = [c for c in CASES if not args.only or c.id in args.only]
@@ -104,13 +116,15 @@ async def _main() -> int:
     settings = config.load_settings()
     secrets = config.load_secrets()
     if not secrets.nvidia_api_key:
-        print("No NVIDIA API key configured — evals call the real planner.\n"
+        print("No NVIDIA API key configured - evals call the real planner.\n"
               "Set it in the settings UI at http://127.0.0.1:8799 first.",
               file=sys.stderr)
         return 2
 
+    mode = ("ABLATION - no project context" if args.no_context
+            else "project context on")
     print(f"model: {settings.model}   temperature: {settings.planner_temperature}   "
-          f"cases: {len(cases)}   repeat: {args.repeat}\n")
+          f"cases: {len(cases)}   repeat: {args.repeat}\n{mode}\n")
 
     hub = McpHub(settings.mcp_servers, session_factory=real_mcp_session_factory)
     planner = build_nim_planner(settings, secrets, hub)
@@ -121,7 +135,8 @@ async def _main() -> int:
         for case in cases:
             for n in range(1, args.repeat + 1):
                 status, violations, payload = await _run_case(
-                    case, planner, settings, root / f"{case.id}-{n}")
+                    case, planner, settings, root / f"{case.id}-{n}",
+                    with_context=not args.no_context)
                 tally[status] += 1
                 _print_case(case, status, violations, payload, n, args.repeat)
 

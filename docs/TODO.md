@@ -125,8 +125,25 @@ Design notes worth keeping:
 - **Not in pytest, on purpose.** A stochastic signal in the suite either goes flaky or teaches
   everyone to ignore red.
 
-Not yet run against the live model — that spends NVIDIA quota and needs the operator's key.
-The offline half (fixtures, context assembly, rules, `--list`) is verified.
+**First baseline, 2026-07-21, `deepseek-ai/deepseek-v4-flash` @ temperature 0:**
+`python -m hermes.evals` → **10/10**. `--no-context` → **8/10**.
+
+How that number was earned matters more than the number. The set shipped with 8 cases and
+scored 8/8 on the first run. Ablating the project context — the pre-#3 behaviour — **also
+scored 8/8**, which meant the set could not distinguish the feature from its absence and
+was measuring nothing. Two cases were then written whose task text pulls toward an APK on a
+project that has none (`web-build-wording`, `web-apk-wording`). Without context they plan
+`['code','build']` and `['code','build','test']`; the second is task 20260715-104754-5b44a5
+reproduced. Reproduced identically on three separate runs.
+
+That is the same failure as the vacuous test caught earlier the same day, one layer up: a
+green result that could not have been red. `--no-context` was promoted from a throwaway probe
+to a permanent flag so the question "can this set still fail?" stays cheap to ask.
+
+**Output is ASCII-only, deliberately.** The first ablation run silently lost its own header
+line: the mode string contained an em-dash, and `grep` in the pipeline declared the stream
+binary and dropped the line. Same family as `main._console_safe`. A scorecard is made to be
+piped.
 
 Follow-ups this opens:
 - [ ] Once a baseline exists, `R1-no-apk` failures are the direct argument for adding the same

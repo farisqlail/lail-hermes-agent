@@ -65,6 +65,26 @@ CASES: list[Case] = [
          files=_WEB, name="dashboard", builds_apk=False,
          rules=("R0-schema", "R1-no-apk", "R5-single-code")),
 
+    # The two cases that give the set its teeth. Both name "build" or "APK" on
+    # a project that has neither, so the task text pulls one way and the
+    # project pulls the other. Measured 2026-07-21 on deepseek-v4-flash: with
+    # project context both plan a lone code step; with `--no-context` they plan
+    # ['code','build'] and ['code','build','test'] — the second reproducing the
+    # live failure of task 20260715-104754-5b44a5 exactly. Every other case in
+    # this file passes with or without context, so without these two the set
+    # cannot fail and measures nothing.
+    Case(id="web-build-wording",
+         text="app nya crash pas buka halaman detail transaksi, coba cek dan "
+              "fix, terus build ulang buat mastiin jalan",
+         files=_WEB, name="dashboard", builds_apk=False,
+         rules=("R0-schema", "R0-nonempty", "R1-no-apk")),
+
+    Case(id="web-apk-wording",
+         text="tolong perbaiki halaman detail lalu build APK nya dan test di "
+              "emulator",
+         files=_WEB, name="dashboard", builds_apk=False,
+         rules=("R0-schema", "R0-nonempty", "R1-no-apk")),
+
     Case(id="web-write-tests",
          text="bikin unit test buat modul auth",
          files=_WEB, name="dashboard", builds_apk=False,
