@@ -90,15 +90,43 @@ Fixed before merge (`f0ed344`, `0a4574d`):
   every caller.
 
 Open on the engine loop:
-- [ ] **Does the real `claude` CLI actually emit the sentinel?** The whole design rests on it
-  and it has never been tested against a live engine — only fakes. If it does not comply,
-  every code step silently costs `MAX_ENGINE_ROUNDS` sessions and reports "not confirmed".
-  Settle this in the smoke run before trusting the loop.
-- [ ] **Cost.** Worst case per step is now `MAX_ENGINE_ROUNDS * timeout_code_s`, and an
-  unconfirmed-but-successful step burns all 3 rounds and still returns success.
+- [ ] **Does the real `claude` CLI actually emit the sentinel?** Still unproven against a live
+  engine. What changed 2026-07-21: the sentinel is now read from the JSON envelope's `result`
+  field — the model's own closing message — instead of raw stdout, so the answer is finally
+  observable rather than confounded by tool output and echoed prompts. Smoke step 6 says where
+  to look.
+- [x] ~~**Cost** is invisible~~ — `claude --output-format json` reports `total_cost_usd` per
+  session; `_log_engine_cost` sums the rounds into one log line per code step. Worst case per
+  step is still `MAX_ENGINE_ROUNDS * timeout_code_s`, but it is no longer unmeasured. A budget
+  cap remains unbuilt.
 - [ ] No spec or plan exists. If the loop is kept, write one retroactively.
 
 ---
+
+## Landed 2026-07-21 — structured engine output (`feat/structured-engine-output`)
+
+Author-reviewed only; add to the review backlog above.
+
+- `hermes/engine_result.py` — pure `parse_claude_json` → `EngineOutcome`. Returns `None` for
+  unusable stdout, which is the documented "fall back to text" signal, not an error.
+- `engine_runner` — `claude` now runs `--output-format json`; `RunResult` gained an optional
+  `outcome` plus a `final_text` property (property, not a field, so ~15 existing fakes that
+  build `RunResult` positionally kept working untouched). `ok` now folds in `api_error`:
+  **a session killed by an API error used to exit 0 and be recorded as a success.**
+- Sessions: Hermes issues the UUID (`--session-id`) rather than reading one back, so a round
+  that dies before printing is still resumable. Fix-up rounds use `--resume`.
+  `_resumable_id` returning `""` is the entire fallback story — no separate recovery path.
+- `agy` gained `--print-timeout <timeout_code_s>s`. Its default is 5m, so **every code step
+  longer than five minutes was being killed by agy itself** and reported as an engine failure;
+  `asyncio.wait_for` had never once fired for agy.
+- Corrected a false claim in `docs/design-spec.md`: `agy` has no `--output-format`. Verified
+  against `agy --help`.
+
+Verified by mutation, not just by green: flipping `final_text` back to `stdout` and dropping
+`api_error` from `ok` each turn tests red. The first mutation exposed a **vacuous test** —
+`test_sentinel_only_in_stdout_...` had the sentinel mid-line, so it passed either way. Fixed to
+put the sentinel on its own final stdout line, which is what makes the two sources
+indistinguishable to a raw-stdout reader.
 
 ## Config that must be set before any of this is usable
 

@@ -65,6 +65,105 @@ async def test_run_engine_passes_tuning_flags(tmp_path, monkeypatch):
     assert "--model opus" in res.stdout
     assert "--effort low" in res.stdout
 
+def test_argv_claude_opens_a_named_session():
+    """Hermes names the session itself so a continuation round can resume it
+    even when the first round's output never arrived to be parsed."""
+    argv = engine_runner._argv("claude", "x", session_id="abc-123")
+    assert argv[-2:] == ["--session-id", "abc-123"]
+    assert "--resume" not in argv
+
+
+def test_argv_claude_resumes_and_never_also_opens():
+    argv = engine_runner._argv("claude", "x", resume_id="abc-123")
+    assert argv[-2:] == ["--resume", "abc-123"]
+    assert "--session-id" not in argv
+
+
+def test_argv_resume_wins_when_both_are_supplied():
+    """Belt and braces: passing both would make claude open and resume in one
+    invocation. Resuming is the caller's intent whenever a resume id exists."""
+    argv = engine_runner._argv("claude", "x", session_id="new", resume_id="old")
+    assert "--resume" in argv and "old" in argv
+    assert "--session-id" not in argv
+
+
+def test_argv_antigravity_never_gets_session_flags():
+    """agy has --conversation, not --session-id/--resume, and cannot be handed
+    an id it never issued. It stays on the fresh-session path."""
+    argv = engine_runner._argv("antigravity", "x", session_id="a", resume_id="b")
+    assert "--session-id" not in argv and "--resume" not in argv
+
+
+def test_argv_antigravity_gets_print_timeout_from_the_step_budget():
+    """agy's own --print-timeout defaults to 5m, so a 15m code step was being
+    killed by the engine at minute five and reported as an engine failure —
+    asyncio's wait_for never got to fire."""
+    argv = engine_runner._argv("antigravity", "x", timeout_s=900)
+    assert argv[-2:] == ["--print-timeout", "900s"]
+
+
+def test_argv_claude_has_no_print_timeout_flag():
+    argv = engine_runner._argv("claude", "x", timeout_s=900)
+    assert "--print-timeout" not in argv
+
+
+async def test_run_engine_parses_structured_output(tmp_path, monkeypatch):
+    envelope = ('{"type":"result","subtype":"success","is_error":false,'
+                '"result":"all done","session_id":"sess-9",'
+                '"total_cost_usd":0.5,"num_turns":3}')
+    script = tmp_path / "emit.py"
+    script.write_text("import sys\nsys.stdin.read()\n"
+                      f"print({envelope!r})\n")
+    monkeypatch.setitem(engine_runner.COMMANDS, "claude",
+                        lambda p: [sys.executable, str(script), "-p"])
+    res = await engine_runner.run_engine("claude", "x", tmp_path, timeout_s=30)
+    assert res.ok
+    assert res.outcome.session_id == "sess-9"
+    assert res.outcome.cost_usd == 0.5
+    assert res.final_text == "all done"
+
+
+async def test_api_error_fails_the_run_despite_exit_zero(tmp_path, monkeypatch):
+    """The bug this whole change exists to see: a session killed by an API
+    error still exits 0, so returncode alone called it a success."""
+    envelope = ('{"type":"result","subtype":"success","is_error":true,'
+                '"api_error_status":"overloaded_error","result":""}')
+    script = tmp_path / "emit_err.py"
+    script.write_text("import sys\nsys.stdin.read()\n"
+                      f"print({envelope!r})\n")
+    monkeypatch.setitem(engine_runner.COMMANDS, "claude",
+                        lambda p: [sys.executable, str(script), "-p"])
+    res = await engine_runner.run_engine("claude", "x", tmp_path, timeout_s=30)
+    assert res.returncode == 0
+    assert not res.ok
+    assert res.outcome.api_error == "overloaded_error"
+
+
+async def test_unparseable_stdout_degrades_to_text(tmp_path, fake_echo):
+    """An older CLI, or one whose stdout got polluted, must keep working the
+    way it did before this change existed."""
+    res = await engine_runner.run_engine("claude", "make counter", tmp_path,
+                                         timeout_s=30)
+    assert res.ok
+    assert res.outcome is None
+    assert res.final_text == res.stdout
+
+
+def test_final_text_falls_back_to_stdout_without_an_outcome():
+    r = engine_runner.RunResult(True, "line one\nHERMES_STEP_DONE", "", False, 0)
+    assert r.final_text == "line one\nHERMES_STEP_DONE"
+
+
+def test_final_text_prefers_the_outcome_when_there_is_one():
+    """stdout carries tool output and echoed prompt; the outcome carries only
+    what the model itself said last. That gap is the anti-spoof property."""
+    from hermes.engine_result import EngineOutcome
+    r = engine_runner.RunResult(True, "noisy stdout with HERMES_STEP_DONE in it",
+                                "", False, 0,
+                                outcome=EngineOutcome(final_text="I gave up"))
+    assert r.final_text == "I gave up"
+
+
 def test_resolve_passes_through_real_path():
     argv = engine_runner._resolve([sys.executable, "-c", "pass"])
     assert argv[0].lower().endswith(".exe")

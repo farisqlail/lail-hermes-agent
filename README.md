@@ -89,8 +89,12 @@ flowchart LR
   web UI (`--model` for both, `--effort` for claude only — `agy` has no such flag).
 - **Engine completion contract** — every code step asks the engine to print a completion
   sentinel after verifying its own work; a session that errors or exits without it gets up to
-  two fix-up sessions fed with the previous session's output, and the full transcript is saved
-  as a task artifact.
+  two fix-up sessions, and the full transcript is saved as a task artifact.
+- **Structured engine output** — `claude` runs with `--output-format json`, so Hermes reads the
+  model's own closing message, the session id, the cost and any API error rather than scraping
+  stdout. Fix-up rounds `--resume` that session instead of re-sending the task and the previous
+  output. `agy` has no such flag, so it stays on text and fresh sessions — the same fallback
+  path taken whenever an envelope cannot be parsed.
 - **APK builds** with automatic project-type detection (Flutter / React Native / native Android).
 - **Testing** in a headless browser (Playwright) or an Android emulator (adb), returning screenshots.
 - **Local web UI** (`127.0.0.1:8799`) for settings (engine model/effort dropdowns backed by
@@ -190,8 +194,9 @@ test, MCP transport, and the NIM planner are all injected as fakes.
   but nothing re-drives them yet; resubmitting is manual.
 - **Stale confirm buttons** — after a restart, taps on old ✅/❌ buttons do nothing (pending
   confirmations are in-memory); the restart digest tells the user to resubmit.
-- **End-to-end smoke run** — the engine completion sentinel has only been proven against
-  fakes, never a live `claude`; see [`docs/SMOKE.md`](docs/SMOKE.md).
+- **End-to-end smoke run** — whether a live `claude` honours the completion contract, and
+  whether `--resume` restores a session's context, are both still unproven against fakes only;
+  see [`docs/SMOKE.md`](docs/SMOKE.md).
 
 See [`docs/TODO.md`](docs/TODO.md) for the full backlog history.
 

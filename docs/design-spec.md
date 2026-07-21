@@ -29,7 +29,10 @@ reports.
 | Settings UI | Local web (FastAPI, `127.0.0.1:8799`) | Lightweight, doubles as dashboard |
 | MCP support (v1) | Orchestrator/NIM only (option B) | User choice; engine-level MCP deferred |
 
-**Verified:** Antigravity CLI (`agy`) supports headless `agy -p "prompt" --output-format ...`.
+**Corrected 2026-07-21:** an earlier revision claimed `agy -p "prompt" --output-format ...`.
+It does not — `agy --help` lists no `--output-format` at all. Only `claude` emits structured
+output (`--output-format json`); `agy` is read as plain text. `agy` does have `--print-timeout`,
+which defaults to 5m and must be raised to match the configured step budget.
 Claude Code supports `claude -p "prompt"`. Both drivable via subprocess.
 
 ## 3. Architecture

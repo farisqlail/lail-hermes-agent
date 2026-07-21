@@ -56,7 +56,7 @@ async def test_run_task_executes_steps(hermes_home):
         ]})
 
     events = []
-    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         events.append(("code", engine)); return RunResult(True, "done", "", False, 0)
     async def fake_build(project_dir, ptype, timeout_s, run=None):
@@ -172,7 +172,7 @@ async def test_code_step_failure_halts_task(hermes_home):
         ]})
 
     built = []
-    async def failing_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def failing_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         return RunResult(False, "", "boom", False, 1)
     async def fake_build(project_dir, ptype, timeout_s, run=None):
@@ -195,7 +195,7 @@ async def test_step_crash_marks_task_failed(hermes_home):
     async def planner(text, tools):
         return json.dumps({"steps": [{"type": "code", "prompt": "x"}]})
 
-    async def exploding_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def exploding_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         raise FileNotFoundError("engine executable 'claude' not found on PATH")
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=exploding_engine))
@@ -343,7 +343,7 @@ async def test_code_step_prompt_carries_task_and_project_context(hermes_home):
         return json.dumps({"steps": [{"type": "code", "prompt": "patch the login flow"}]})
 
     prompts = []
-    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         prompts.append(prompt)
         if len(prompts) == 1:
@@ -378,7 +378,7 @@ async def test_unconfirmed_completion_gets_a_fixup_round(hermes_home):
     output and can actually finish and verify."""
     store = Store(hermes_home / "t.db"); store.init_schema()
     prompts = []
-    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None):
+    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         prompts.append(prompt)
         if len(prompts) == 1:
@@ -404,7 +404,7 @@ async def test_confirmed_done_stops_at_one_round(hermes_home):
     must not burn two more engine invocations."""
     store = Store(hermes_home / "t.db"); store.init_schema()
     calls = []
-    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None):
+    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         calls.append(1)
         assert "Completion contract" in prompt      # contract always present
@@ -444,7 +444,7 @@ async def test_echoed_prompt_does_not_confirm_completion(hermes_home):
     from hermes.orchestrator import MAX_ENGINE_ROUNDS
     store = Store(hermes_home / "t.db"); store.init_schema()
     calls = []
-    async def echoing_engine(engine_name, prompt, cwd, timeout_s, extra_env=None):
+    async def echoing_engine(engine_name, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         calls.append(1)
         return RunResult(True, f"[echo] {prompt}\n[end of echo]", "", False, 0)
@@ -466,7 +466,7 @@ async def test_rounds_exhausted_without_sentinel_still_succeeds_with_a_note(herm
     from hermes.orchestrator import MAX_ENGINE_ROUNDS
     store = Store(hermes_home / "t.db"); store.init_schema()
     calls = []
-    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None):
+    async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         calls.append(1)
         return RunResult(True, "did things, never said the magic word", "", False, 0)
@@ -494,7 +494,7 @@ async def test_failed_code_step_saves_full_engine_transcript(hermes_home):
         return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
 
     calls = []
-    async def failing_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def failing_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         calls.append(prompt)
         return RunResult(False, f"long stdout attempt {len(calls)} " + "x" * 500,
@@ -526,7 +526,7 @@ async def test_successful_code_step_saves_transcript_too(hermes_home):
     async def planner(text, tools):
         return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
 
-    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         return RunResult(True, "all good\nHERMES_STEP_DONE", "", False, 0)
 
@@ -549,7 +549,7 @@ async def test_timed_out_code_step_still_saves_transcript(hermes_home):
     async def planner(text, tools):
         return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
 
-    async def timing_out_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def timing_out_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         return RunResult(False, "", "", True, None)
 
@@ -640,7 +640,7 @@ async def test_run_task_uses_supplied_proj(hermes_home):
         return json.dumps({"steps": [{"type": "code", "prompt": "fix it"}]})
 
     seen = []
-    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         seen.append(Path(cwd))
         # Confirms completion, so the engine loop stops at one round and this
@@ -679,7 +679,7 @@ async def test_run_task_threads_engine_tuning_per_engine(hermes_home):
 
     got = []
     async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None,
-                              model="", effort=""):
+                              model="", effort="", **kw):
         from hermes.engine_runner import RunResult
         got.append((engine, model, effort))
         return RunResult(True, f"done\n{_DONE_SENTINEL}", "", False, 0)
@@ -710,7 +710,7 @@ async def test_run_task_never_mkdirs_a_supplied_proj(hermes_home, monkeypatch):
     async def planner(text, tools):
         return json.dumps({"steps": [{"type": "code", "prompt": "fix it"}]})
 
-    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         return RunResult(True, f"done\n{_DONE_SENTINEL}", "", False, 0)
 
@@ -743,7 +743,7 @@ async def test_run_task_without_proj_creates_workspace(hermes_home):
         return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
 
     seen = []
-    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None):
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         seen.append(Path(cwd))
         # Confirms completion: see test_run_task_uses_supplied_proj.
