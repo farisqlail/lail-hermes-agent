@@ -85,6 +85,10 @@ class Ask:
     multi: bool
     future: asyncio.Future
     selected: set[int] = field(default_factory=set)
+    # Set by the Telegram sender once the question message lands, so an ask that
+    # closes unanswered can strip its own dead keyboard. None until sent, and in
+    # any transport that never fills it in.
+    message_id: int | None = None
 
     def labels(self, idxs) -> list[str]:
         """Labels for the given option indices, skipping any that this ask
