@@ -2,7 +2,8 @@
 
 - **Date:** 2026-07-14
 - **Status:** Approved (brainstorming complete)
-- **Target platform:** Windows 10, local PC, install root `E:\Hermes\`
+- **Target platform:** Windows 10, local PC. Data root is `%HERMES_HOME%` (operator's choice);
+  the app runs from the repo checkout.
 
 ## 1. Purpose
 
@@ -25,7 +26,7 @@ reports.
 | Coding engines | Claude Code CLI + Antigravity CLI | Already installed; both have non-interactive print mode (`claude -p`, `agy -p`) |
 | Hermes brain | NVIDIA NIM (build.nvidia.com), OpenAI-compatible | User's API source |
 | Language/stack | Python 3.11+ | Mature Windows libs for all needs |
-| Install location | `E:\Hermes\` | User requirement |
+| Install location | `%HERMES_HOME%\` data root, app from the repo checkout | Originally a fixed absolute path; made configurable so the install is not tied to one machine's drive letters |
 | Settings UI | Local web (FastAPI, `127.0.0.1:8799`) | Lightweight, doubles as dashboard |
 | MCP support (v1) | Orchestrator/NIM only (option B) | User choice; engine-level MCP deferred |
 
@@ -66,7 +67,7 @@ Each unit has one purpose, a defined interface, and is testable in isolation.
 | `build_runner` | Detect project type, build APK | shell (gradle/flutter) |
 | `test_runner` | Browser test (playwright) / emulator test (adb+emulator), capture screenshots | playwright, Android SDK |
 | `mcp_hub` | Connect MCP servers, expose their tools as OpenAI function schemas to NIM, execute `tools/call` | MCP client |
-| `session_store` | Task state, logs, artifact index (SQLite at `E:\Hermes\hermes.db`) | sqlite3 |
+| `session_store` | Task state, logs, artifact index (SQLite at `%HERMES_HOME%\hermes.db`) | sqlite3 |
 | `config` | Load/save settings and secrets | pydantic |
 | `web_ui` | Settings pages + task dashboard | FastAPI + minimal HTML/JS |
 
@@ -84,7 +85,7 @@ Each unit has one purpose, a defined interface, and is testable in isolation.
    }
    ```
 3. `engine_runner` sends the coding prompt to Claude Code / Antigravity in an
-   isolated project dir `E:\Hermes\projects\<task-id>`.
+   isolated project dir `%HERMES_HOME%\projects\<task-id>`.
 4. `build_runner` detects project type and builds (e.g. Flutter → `flutter build apk`).
 5. `test_runner` starts the emulator, `adb install`, runs, captures screenshots.
 6. `telegram_bridge` replies with per-step status, the APK, and screenshots.
@@ -103,7 +104,7 @@ Each unit has one purpose, a defined interface, and is testable in isolation.
 
 ## 6. Web UI (`127.0.0.1:8799`)
 
-### Settings page (persisted to `E:\Hermes\config`)
+### Settings page (persisted to `%HERMES_HOME%\config`)
 
 | Field | Notes |
 |-------|-------|
@@ -113,7 +114,7 @@ Each unit has one purpose, a defined interface, and is testable in isolation.
 | Telegram Bot Token | masked |
 | Allowed Telegram User ID(s) | whitelist — required |
 | Default engine | Claude Code / Antigravity / auto |
-| Projects path | default `E:\Hermes\projects` |
+| Projects path | default `%HERMES_HOME%\projects` |
 | Android SDK path | for adb/emulator/gradle |
 | Emulator AVD | dropdown from `emulator -list-avds` |
 | Default test mode | browser / emulator / none |
@@ -126,7 +127,7 @@ Buttons: **Save**, **Test Connection** (ping NIM + check `claude`/`agy`/`adb` on
 - Add/edit/delete/toggle MCP servers.
 - Fields: name, type (stdio/http), command/url, args, env vars.
 - **Test** button (connect + list tools) before save.
-- Persisted to `E:\Hermes\config\mcp.json`.
+- Persisted to `%HERMES_HOME%\config\mcp.json`.
 - New server → security flag + confirmation prompt.
 
 ### Dashboard
@@ -159,8 +160,8 @@ NIM (orchestrator) ──tools=[mcp functions]──▶ decide tool call
 Hermes runs shell commands on the local PC, so guardrails are mandatory.
 
 - **Telegram user-ID whitelist.** Tasks from non-listed IDs are rejected and logged. Non-negotiable.
-- Secrets stored in `E:\Hermes\config\.env`, masked in UI, never sent to Telegram or logs.
-- Coding engines run inside an isolated project dir (`E:\Hermes\projects\<task-id>`), never the E:\ or C:\ root.
+- Secrets stored in `%HERMES_HOME%\config\.env`, masked in UI, never sent to Telegram or logs.
+- Coding engines run inside an isolated project dir (`%HERMES_HOME%\projects\<task-id>`), never a drive root.
 - **Optional confirmation gate:** tasks that touch files outside the project dir, delete files, or run `git push` prompt for Telegram confirmation first.
 - Web UI binds `127.0.0.1` only (not `0.0.0.0`) — not exposed to LAN.
 - MCP servers execute external code: each new server is flagged and requires confirmation; MCP secrets are masked, never logged.
@@ -171,7 +172,7 @@ Hermes runs shell commands on the local PC, so guardrails are mandatory.
 - Engine failure → capture stderr → NIM analyzes → one corrected retry → if still failing, report to Telegram with an error excerpt.
 - Build/test failure → logs retained; artifact links sent.
 - Hermes crash → task state in SQLite → resumable.
-- All step output logged to `E:\Hermes\artifacts\<task-id>\`.
+- All step output logged to `%HERMES_HOME%\artifacts\<task-id>\`.
 
 ## 10. Testing (of Hermes itself)
 
@@ -182,36 +183,48 @@ Hermes runs shell commands on the local PC, so guardrails are mandatory.
 
 ## 11. Directory Layout
 
+**Corrected 2026-07-21.** This spec originally fixed the install root at one absolute path and
+placed the source *inside* it. Neither holds. The data root is wherever `HERMES_HOME` points,
+and the app runs from the repo checkout — the installer no longer copies source anywhere.
+
 ```
-E:\Hermes\
-├─ app\              # Hermes source
-│  └─ .venv\         # virtualenv
+%HERMES_HOME%\          # data root — operator's choice, named by the env var
 ├─ config\
 │  ├─ config.yaml
-│  ├─ .env           # secrets
-│  └─ mcp.json       # MCP server list
-├─ projects\         # per-task workspaces
-├─ artifacts\        # apk, screenshots, logs
-├─ docs\             # this spec
-├─ hermes.db         # session store
-├─ start.bat         # launch bot + web UI
-└─ install.ps1       # installer
+│  ├─ .env              # secrets
+│  └─ mcp.json          # MCP server list
+├─ projects\            # per-task workspaces
+├─ artifacts\           # apk, screenshots, logs
+├─ hermes.db            # session store
+└─ start.bat            # stub: sets HERMES_HOME, calls the repo's deploy\start.bat
+
+<repo>\                 # checkout — operator's choice, independent of the data root
+├─ hermes\              # package
+├─ tests\
+├─ docs\                # this spec
+├─ deploy\              # install.ps1, start.bat
+└─ .venv\               # virtualenv
 ```
 
 ## 12. Installation
 
-`install.ps1` (PowerShell):
+`deploy\install.ps1` (PowerShell):
 
 1. Check prerequisites: Python 3.11+, `claude`, `agy`, `adb`/`emulator`, `flutter`/`gradle` on PATH → report anything missing.
-2. Create the `E:\Hermes\` structure.
-3. Create venv at `E:\Hermes\app\.venv`, `pip install` deps.
-4. Copy Hermes source to `E:\Hermes\app`.
-5. Create empty `config.yaml` + `.env` (filled via UI).
-6. Register a Windows Task Scheduler entry / startup shortcut → Hermes auto-starts on login.
-7. Open `http://127.0.0.1:8799` for first-time setup.
+2. Create the `%HERMES_HOME%\` structure and persist `HERMES_HOME` for the current user.
+3. Create the venv in the repo checkout and `pip install` deps.
+4. Create empty `config.yaml` + `.env` (filled via UI).
+5. Write a `start.bat` stub into `%HERMES_HOME%` that sets `HERMES_HOME` and delegates to
+   `<repo>\deploy\start.bat`.
+6. Open `http://127.0.0.1:8799` for first-time setup.
+
+**Set `HERMES_HOME` before running the installer.** Its fallback and the one in
+`hermes/paths.py` are different absolute paths left over from the first machine this ran on,
+so an unset variable gives `start.bat` and `python -m hermes.main` two different data roots,
+with no error from either.
 
 Usage:
-- `E:\Hermes\start.bat` → start bot + web UI.
+- `%HERMES_HOME%\start.bat` → start bot + web UI.
 - Send tasks via Telegram chat.
 
 ## 13. Out of Scope (v1)

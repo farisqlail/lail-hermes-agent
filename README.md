@@ -151,17 +151,20 @@ gate saw — never silently.
 
 ## Layout
 
-The app runs from this repo checkout; runtime data lives under `HERMES_HOME`
-(default `C:\Hermes`, override via the `HERMES_HOME` env var):
+Two locations, and they are independent. The app runs from this repo checkout
+(`<repo>` below — wherever you cloned it). Runtime data lives under a separate
+data root named by the `HERMES_HOME` environment variable (`%HERMES_HOME%`
+below). Neither has a required location; put them wherever suits the machine.
 
 ```
-C:\Hermes\               # HERMES_HOME (data root)
+%HERMES_HOME%\           # data root — you choose where
 ├─ config\               # config.yaml, .env (secrets), mcp.json
 ├─ projects\             # per-task workspaces
 ├─ artifacts\            # apk, screenshots, logs
-└─ start.bat             # stub → calls deploy\start.bat in the repo
+├─ hermes.db             # task history
+└─ start.bat             # stub → sets HERMES_HOME, calls deploy\start.bat in the repo
 
-<repo>\                  # app dir (this checkout)
+<repo>\                  # app dir (this checkout) — you choose where
 ├─ hermes\               # package
 ├─ tests\
 └─ deploy\               # install.ps1 + start.bat (banner + auto-restart)
@@ -173,10 +176,26 @@ Prerequisites on PATH: `python` 3.11+, `claude` (Claude Code CLI), `agy` (Antigr
 `adb`/`emulator` (Android SDK). For browser testing, the optional `[browser]` extra installs
 Playwright.
 
+**Set `HERMES_HOME` first, explicitly.** The installer honours it and stores it for your user;
+left unset, different entry points disagree about where the data root is (see below).
+
 ```powershell
+[Environment]::SetEnvironmentVariable("HERMES_HOME", "D:\Hermes", "User")   # your choice
+$env:HERMES_HOME = "D:\Hermes"                                             # this session too
 powershell -ExecutionPolicy Bypass -File <repo>\deploy\install.ps1
-C:\Hermes\start.bat
+& "$env:HERMES_HOME\start.bat"
 ```
+
+### If you do not set it
+
+The fallbacks were written for one particular machine and do not agree with each other:
+`deploy\install.ps1` and `deploy\start.bat` fall back to `C:\Hermes`, while `hermes\paths.py`
+falls back to `E:\Hermes`. Launching through `start.bat` and launching with
+`python -m hermes.main` then read **different** config files, different registries, and
+different task databases — with no error, because both roots are valid.
+
+Setting `HERMES_HOME` explicitly removes the question entirely. Reconciling those defaults is
+tracked in [`docs/TODO.md`](docs/TODO.md).
 
 Then open <http://127.0.0.1:8799> and fill in: NVIDIA API key (build.nvidia.com), model, Telegram bot
 token, your allowed Telegram user ID, Android SDK path, and emulator AVD.

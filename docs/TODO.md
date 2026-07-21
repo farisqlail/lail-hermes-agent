@@ -205,31 +205,40 @@ indistinguishable to a raw-stdout reader.
   there beside `AppData`, `Documents`, and `OneDrive`, and the registry exists precisely so
   those can never become agent-writable targets.
 
-- [ ] **`HERMES_HOME` is unset**, so `hermes/paths.py` falls back to its hardcoded `E:/Hermes`.
-  That works today, but `deploy/install.ps1` now defaults to **`C:\Hermes`** when the variable
-  is missing (commit `8fc062f`). Re-running the installer as-is would create an empty
-  `C:\Hermes`, set `HERMES_HOME` to it permanently for the user, and leave Hermes reading a
-  config/projects/db root that is not yours. Set it first:
-  ```powershell
-  [Environment]::SetEnvironmentVariable("HERMES_HOME", "E:\Hermes", "User")
-  ```
+- [ ] **The `HERMES_HOME` fallbacks disagree, and nothing reports it.** Three entry points, two
+  different defaults, both absolute paths inherited from the machine this was first built on:
 
-- [ ] **`E:\Hermes\start.bat` is the old hardcoded version** — no banner, no auto-restart loop,
-  `cd /d E:\Hermes\app` baked in. `deploy/start.bat` is now the single source of truth, and the
-  installer writes a stub that calls it. Regen via the installer (after setting `HERMES_HOME`),
-  or write the stub by hand:
+  | Entry point | Fallback when `HERMES_HOME` is unset |
+  |---|---|
+  | `hermes/paths.py:5` | `E:/Hermes` |
+  | `deploy/install.ps1:8` | `C:\Hermes` |
+  | `deploy/start.bat:6` | `C:\Hermes` |
+
+  So `%HERMES_HOME%\start.bat` and `python -m hermes.main` read **different** config files,
+  registries and task databases — silently, because both roots are valid directories. Until
+  the defaults are reconciled, set the variable explicitly before installing:
+  ```powershell
+  [Environment]::SetEnvironmentVariable("HERMES_HOME", "<your data root>", "User")
+  ```
+  Fixing this properly means picking one fallback (or refusing to start without the variable)
+  and migrating any data already written under the other. Do not do it in passing: the losing
+  root holds live credentials and real task history.
+
+- [ ] **A stale hand-written `start.bat` may sit in the data root** — no banner, no
+  auto-restart loop, an absolute `cd /d` baked in. `deploy/start.bat` is the single source of
+  truth and the installer writes a stub that calls it. Regenerate via the installer (after
+  setting `HERMES_HOME`), or write the stub by hand:
   ```bat
   @echo off
-  set HERMES_HOME=E:\Hermes
-  call "E:\Hermes\app\deploy\start.bat"
+  set HERMES_HOME=<your data root>
+  call "<repo>\deploy\start.bat"
   ```
 
-- [ ] **Unexplained, never diagnosed:** a config change reported as "just added" never reached
-  disk. `config/config.yaml`, `config/.env`, and `hermes.db` were all last written
-  2026-07-14 ~17:00; the running process started 10:36 the next day — *after* them — and
-  `/api/settings` matched disk exactly. The save failed silently. If it recurs, watch
-  `POST /api/settings` in the browser's DevTools Network tab; the current code returns 422 with
-  a specific message.
+- [x] ~~**Unexplained, never diagnosed:** a config change reported as "just added" never
+  reached disk.~~ **Diagnosed 2026-07-21: it did reach disk, in the other data root.** The
+  files inspected were under one `HERMES_HOME` fallback while the running process, launched
+  via `start.bat`, was writing to the other. `/api/settings` matched the disk it was actually
+  serving. Not a silent save failure — two installations, per the item above.
 
 ---
 
