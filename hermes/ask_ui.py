@@ -59,7 +59,9 @@ def parse_callback(data: str) -> tuple[str, str, int] | None:
     ask_id, tail = parts[1], parts[2]
     if tail == "ok":
         return (ask_id, "ok", -1)
-    if tail.isdigit():
+    # str.isdigit() accepts Unicode digits like the superscript "²" that
+    # int() then refuses, so isdigit() alone can't guard the int() call.
+    if tail.isascii() and tail.isdigit():
         return (ask_id, "opt", int(tail))
     return None
 
@@ -81,11 +83,16 @@ def make_handlers(registry: AskRegistry, sender, edit_markup):
         if kind == "ok":
             if not ask.selected:
                 return "Pilih dulu minimal satu."
-            registry.answer_options(ask_id, sorted(ask.selected))
-            return "Terkirim."
+            landed = registry.answer_options(ask_id, sorted(ask.selected))
+            return "Terkirim." if landed else "Pertanyaan ini sudah tidak aktif."
         if not ask.multi:
-            registry.answer_options(ask_id, [idx])
-            return "Terkirim."
+            # An out-of-range idx would have Ask.labels() silently drop it,
+            # resolving the future with an empty "User chose: " answer that
+            # the engine can never be asked to correct — the ask is one-shot.
+            if not (0 <= idx < len(ask.options)):
+                return "Pertanyaan ini sudah tidak aktif."
+            landed = registry.answer_options(ask_id, [idx])
+            return "Terkirim." if landed else "Pertanyaan ini sudah tidak aktif."
         registry.toggle(ask_id, idx)
         if edit_markup is not None and message_id is not None:
             try:

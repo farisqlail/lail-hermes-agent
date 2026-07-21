@@ -59,7 +59,8 @@ def test_parse_callback_reads_the_send_button():
 
 def test_parse_callback_rejects_junk():
     for bad in ("", "ask", "ask:only-two", "confirm:t1:yes",
-                "ask:a1b2c3d4:notanumber", "ask:a1b2c3d4:1:2"):
+                "ask:a1b2c3d4:notanumber", "ask:a1b2c3d4:1:2",
+                "ask:a1b2c3d4:²"):   # "²": isdigit() but int() raises
         assert ask_ui.parse_callback(bad) is None
 
 
@@ -78,10 +79,16 @@ def test_question_text_says_when_multiple_answers_are_allowed():
 
 
 def test_question_text_has_no_markup_characters_that_telegram_would_parse():
-    """sender() sends without parse_mode; stray markers would render literally,
-    and an unbalanced one in a user-supplied label would look like a bug."""
+    """sender() sends without parse_mode, so question_text must pass
+    user-supplied text through verbatim: no escaping of markup-looking
+    characters (that would leave stray backslashes visible to the operator)
+    and no mangling, and the function must not introduce any markup of its
+    own around the text it assembles."""
     a = _ask([{"label": "*bold*"}], question="pakai `x` atau _y_?")
-    assert "<" not in ask_ui.question_text(a)
+    text = ask_ui.question_text(a)
+    assert "pakai `x` atau _y_?" in text   # question passed through as-is
+    assert "*bold*" in text                # label passed through as-is
+    assert "\\" not in text                # nothing got escaped
 
 
 async def test_free_text_handler_routes_only_while_an_ask_is_pending():
@@ -111,3 +118,52 @@ async def test_free_text_handler_ignores_other_chats():
     assert not await on_text(chat_id=99, text="not mine")
     r.answer(r.pending_for_chat(5), "x")
     await task
+
+
+async def test_out_of_range_single_select_index_leaves_the_ask_pending():
+    """A stale keyboard (or a forged callback payload) can carry an index
+    past the end of ask.options. Ask.labels() would silently drop it, so
+    resolving the future anyway would deliver "User chose: " -- garbage the
+    engine can never ask again for, since each ask has exactly one Future.
+    The tap must be a no-op the operator can recover from by tapping a real
+    option."""
+    r = AskRegistry()
+    async def on_ask(a): pass
+    r.on_ask = on_ask
+    run = r.run_for_token(r.open_run("t1", 5))
+    on_callback, _ = ask_ui.make_handlers(r, sender=None, edit_markup=None)
+    task = asyncio.create_task(
+        r.ask(run, "Q?", [{"label": "A"}, {"label": "B"}]))
+    await asyncio.sleep(0)
+    ask_id = r.pending_for_chat(5)
+
+    toast = await on_callback(ask_id, "opt", 5)
+    assert toast == "Pertanyaan ini sudah tidak aktif."
+    assert not task.done()
+
+    toast = await on_callback(ask_id, "opt", 1)
+    assert toast == "Terkirim."
+    assert await task == "User chose: B"
+
+
+async def test_toast_reports_failure_when_the_answer_did_not_land():
+    """answer_options returns False when the future is already resolved --
+    two taps racing, or a tap landing just after expiry. The toast must
+    reflect that instead of unconditionally claiming success."""
+    r = AskRegistry()
+    async def on_ask(a): pass
+    r.on_ask = on_ask
+    run = r.run_for_token(r.open_run("t1", 5))
+    on_callback, _ = ask_ui.make_handlers(r, sender=None, edit_markup=None)
+    task = asyncio.create_task(
+        r.ask(run, "Q?", [{"label": "A"}, {"label": "B"}]))
+    await asyncio.sleep(0)
+    ask_id = r.pending_for_chat(5)
+
+    first = await on_callback(ask_id, "opt", 0)
+    assert first == "Terkirim."
+    # Second tap races in before `r.ask()` has resumed past the resolved
+    # future, so the ask is still routable -- and must now report failure.
+    second = await on_callback(ask_id, "opt", 1)
+    assert second == "Pertanyaan ini sudah tidak aktif."
+    assert await task == "User chose: A"
