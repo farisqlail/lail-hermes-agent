@@ -143,12 +143,32 @@ def _resolve(argv: list[str]) -> list[str]:
         return ["cmd", "/c", exe, *argv[1:]]
     return [exe, *argv[1:]]
 
+async def _communicate_within(proc, send, deadline, poll_s: float = 1.0):
+    """`proc.communicate`, but bounded by a pausable `Deadline` instead of a
+    fixed timeout. While the engine blocks on `ask_user`, the registry pauses
+    the deadline, so `expired()` stays False and the subprocess is not killed
+    for the length of the operator's think — the whole reason Deadline exists.
+    Raises `asyncio.TimeoutError` on expiry so the caller's kill path is shared
+    with the fixed-timeout branch."""
+    comm = asyncio.ensure_future(proc.communicate(send))
+    try:
+        while True:
+            done, _ = await asyncio.wait({comm}, timeout=poll_s)
+            if comm in done:
+                return comm.result()
+            if deadline.expired():
+                raise asyncio.TimeoutError
+    finally:
+        if not comm.done():
+            comm.cancel()
+
 async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
                      cwd: Path, timeout_s: int,
                      extra_env: dict | None = None,
                      model: str = "", effort: str = "",
                      session_id: str = "", resume_id: str = "",
-                     ask_url: str = "", ask_token: str = "") -> RunResult:
+                     ask_url: str = "", ask_token: str = "",
+                     deadline=None) -> RunResult:
     # A wedged engine must never leave the config behind: it carries the run
     # token, and a stale one on disk would let a later engine reach a closed run.
     mcp_config_path = ""
@@ -166,7 +186,10 @@ async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
             stdin=asyncio.subprocess.PIPE if send is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
-            out, err = await asyncio.wait_for(proc.communicate(send), timeout=timeout_s)
+            if deadline is None:
+                out, err = await asyncio.wait_for(proc.communicate(send), timeout=timeout_s)
+            else:
+                out, err = await _communicate_within(proc, send, deadline)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()

@@ -72,6 +72,71 @@ async def test_second_round_resumes_the_first_rounds_session(hermes_home):
     assert any("confirmed done, 2 round(s)" in m for m in reports)
 
 
+async def test_claude_round_opens_a_run_and_hands_the_engine_a_token(hermes_home):
+    """A registry in deps means the claude round gets a per-round run token, the
+    ask server URL, and a pausable deadline — and the token resolves to a live
+    run *while* the engine is executing, then is closed after."""
+    from hermes.ask import AskRegistry, Deadline
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    reg = AskRegistry()
+    seen, live_during = [], []
+
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        seen.append(kw)
+        live_during.append(reg.run_for_token(kw["ask_token"]) is not None)
+        _worked(cwd)
+        return _structured(f"done\n{_DONE_SENTINEL}", session_id="s1")
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
+    settings = Settings(default_engine="claude",
+                        projects_path=str(hermes_home / "proj"))
+    orch = Orchestrator(settings, store, planner, dict(
+        run_engine=engine, ask_registry=reg,
+        ask_url="http://127.0.0.1:8799/ask-mcp/mcp"))
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", lambda *a, **k: _noop())
+
+    kw = seen[0]
+    assert kw["ask_token"]
+    assert kw["ask_url"].endswith("/ask-mcp/mcp")
+    assert isinstance(kw["deadline"], Deadline)
+    assert live_during == [True]                       # token live during the run
+    assert reg.run_for_token(kw["ask_token"]) is None  # closed after
+    assert store.get_task("t1")["status"] == "done"
+
+
+async def test_antigravity_round_gets_no_ask_wiring(hermes_home):
+    """agy's MCP config shape differs and its ask path is unwired: even with a
+    registry present, an agy round must keep its narrow, ask-free call shape."""
+    from hermes.ask import AskRegistry
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    reg = AskRegistry()
+    seen = []
+
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        seen.append(kw)
+        _worked(cwd)
+        return RunResult(True, f"done\n{_DONE_SENTINEL}", "", False, 0)
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
+    settings = Settings(default_engine="antigravity",
+                        projects_path=str(hermes_home / "proj"))
+    orch = Orchestrator(settings, store, planner, dict(
+        run_engine=engine, ask_registry=reg, ask_url="http://x/ask-mcp/mcp"))
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", lambda *a, **k: _noop())
+
+    assert "ask_token" not in seen[0]
+    assert "deadline" not in seen[0]
+    assert "ask_url" not in seen[0]
+
+
+async def _noop():
+    return None
+
+
 async def test_round_without_an_envelope_falls_back_to_a_fresh_session(hermes_home):
     """No envelope means no session to reopen, so the pre-existing path has to
     carry the round: new session, base prompt re-sent, previous output fed in.

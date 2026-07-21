@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 import pytest
@@ -228,6 +229,46 @@ async def test_run_engine_skips_mcp_config_without_both_url_and_token(tmp_path, 
     res = await engine_runner.run_engine("claude", "x", tmp_path, timeout_s=30,
                                          ask_url="http://x/mcp", ask_token="")
     assert "--mcp-config" not in res.stdout
+
+class _FakeProc:
+    def __init__(self, delay, result=(b"out", b"err")):
+        self._delay, self._result = delay, result
+    async def communicate(self, send=None):
+        await asyncio.sleep(self._delay)
+        return self._result
+
+
+async def test_communicate_within_returns_when_proc_beats_the_deadline():
+    from hermes.ask import Deadline
+    out, err = await engine_runner._communicate_within(
+        _FakeProc(0.01), None, Deadline(100), poll_s=0.005)
+    assert (out, err) == (b"out", b"err")
+
+
+async def test_communicate_within_raises_when_the_deadline_expires():
+    from hermes.ask import Deadline
+    with pytest.raises(asyncio.TimeoutError):
+        await engine_runner._communicate_within(
+            _FakeProc(10), None, Deadline(0), poll_s=0.005)
+
+
+async def test_communicate_within_survives_a_paused_deadline():
+    """The whole reason Deadline exists: a paused clock (operator thinking)
+    must not kill an engine that runs past its budget while blocked on ask."""
+    from hermes.ask import Deadline
+    d = Deadline(0.02)
+    d.pause()
+    out, _ = await engine_runner._communicate_within(
+        _FakeProc(0.05), None, d, poll_s=0.005)
+    assert out == b"out"
+
+
+async def test_run_engine_honours_a_supplied_deadline(tmp_path, fake_echo):
+    from hermes.ask import Deadline
+    res = await engine_runner.run_engine("claude", "hi", tmp_path, timeout_s=30,
+                                         deadline=Deadline(30))
+    assert res.ok and "ECHO:hi" in res.stdout
+
 
 def test_resolve_finds_shim_in_extra_tool_dir_when_path_lacks_it(tmp_path, monkeypatch):
     """The bot-process trap: engine installed, but its dir is not on the

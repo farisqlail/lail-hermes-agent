@@ -272,7 +272,7 @@ class Orchestrator:
             await report(task_id, f"step {i} [{step.get('type')}] started...")
             try:
                 ok, msg = await self._exec_step(task_id, proj, step, i, text,
-                                                send_file)
+                                                send_file, chat_id)
             except Exception as e:
                 ok, msg = False, f"step crashed: {e}"
             self.store.set_step_status(sid, "done" if ok else "failed")
@@ -375,7 +375,7 @@ class Orchestrator:
                 task_id, f"could not send {kind} to chat: {e}")
 
     async def _exec_step(self, task_id, proj: Path, step: dict, idx: int,
-                         text: str = "", send_file=None):
+                         text: str = "", send_file=None, chat_id: int = 0):
         t = step.get("type")
         if t == "code":
             engine = choose_engine(step, self.settings)
@@ -395,14 +395,35 @@ class Orchestrator:
                     tuning["effort"] = self.settings.claude_effort
             elif engine == "antigravity" and self.settings.agy_model:
                 tuning["model"] = self.settings.agy_model
+            # An engine that can call ask_user gets a per-round run token and a
+            # pausable clock: the token maps its tool calls back to this chat,
+            # and the deadline is suspended while the operator thinks so a slow
+            # answer never times the step out. Opt-in — a registry is injected
+            # only in the live app, so the many run_engine-only test doubles
+            # keep their narrow signature (the tuning/session pattern).
+            from .engine_runner import MCP_CONFIG_FLAG
+            ask = self.deps.get("ask_registry")
+            ask_here = ask is not None and engine in MCP_CONFIG_FLAG
             # Hermes names the session rather than reading one back, so a
             # round that dies before printing anything is still resumable.
             session_id, resume_id = str(uuid.uuid4()), ""
             for _ in range(MAX_ENGINE_ROUNDS):
                 session = _session_kwargs(engine, session_id, resume_id)
-                res = await self.deps["run_engine"](
-                    engine, prompt, proj, self.settings.timeout_code_s,
-                    **tuning, **session)
+                ask_kw, token = {}, ""
+                if ask_here:
+                    from .ask import Deadline
+                    deadline = Deadline(self.settings.timeout_code_s)
+                    token = ask.open_run(task_id, chat_id, deadline)
+                    ask_kw = {"deadline": deadline,
+                              "ask_url": self.deps.get("ask_url", ""),
+                              "ask_token": token}
+                try:
+                    res = await self.deps["run_engine"](
+                        engine, prompt, proj, self.settings.timeout_code_s,
+                        **tuning, **session, **ask_kw)
+                finally:
+                    if token:
+                        ask.close_run(token)
                 attempts.append(res)
                 if res.timed_out:
                     break
