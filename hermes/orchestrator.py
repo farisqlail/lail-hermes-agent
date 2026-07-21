@@ -229,6 +229,10 @@ class Orchestrator:
         from . import paths
         self.settings = self.get_settings()
         self.store.set_task_status(task_id, "running")
+        # Captured before the workspace is created: afterwards the two cases are
+        # indistinguishable on disk, and an empty workspace detects as `unknown`
+        # exactly like an unrecognised existing project would.
+        is_new = proj is None
         if proj is None:
             # No registered project: fresh throwaway workspace, named for the task.
             projects_path = self.settings.projects_path or str(paths.projects_dir())
@@ -243,7 +247,7 @@ class Orchestrator:
             snapshot = None
         await report(task_id, "planning...")
         try:
-            raw = await self.planner(text, [])
+            raw = await self.planner(text, self._plan_context(proj, is_new))
             steps = parse_plan(raw)
             validate_plan(steps, self.settings.default_test_mode)
         except Exception as e:
@@ -284,6 +288,22 @@ class Orchestrator:
         # The summary embeds a <pre> table, so it — and only it — goes out as
         # HTML. Every other report is raw engine text that must not be parsed.
         await report(task_id, done_msg, html=summary is not None)
+
+    def _plan_context(self, proj: Path, is_new: bool) -> str:
+        """The project facts handed to the planner.
+
+        Called inside run_task's planning `try`, so a failure here reports as a
+        planning failure rather than needing an error path of its own.
+
+        `detect` is read off deps like every other capability: absent — as in
+        the many tests that inject only `run_engine` — means no type is
+        claimed, not that the type is unknown.
+        """
+        from . import plan_context
+        detect = self.deps.get("detect")
+        ptype = detect(proj) if detect and not is_new else ""
+        summary = "" if is_new else _project_summary(proj)
+        return plan_context.build(summary, ptype or "", is_new, proj.name)
 
     def _save_engine_transcript(self, task_id: str, idx: int, engine: str,
                                 attempts: list) -> None:

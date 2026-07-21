@@ -759,3 +759,81 @@ async def test_run_task_without_proj_creates_workspace(hermes_home):
 
     assert seen == [root / "t1"]
     assert (root / "t1").is_dir()
+
+
+def _capture_context(hermes_home, store, deps_extra, proj=None):
+    """Run one code-step task and return the context string the planner got."""
+    seen = []
+    async def planner(text, context):
+        seen.append(context)
+        return json.dumps({"steps": [{"type": "code", "prompt": "x"}]})
+
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        from hermes.engine_runner import RunResult
+        return RunResult(True, f"done\n{_DONE_SENTINEL}", "", False, 0)
+
+    settings = Settings(default_engine="claude",
+                        projects_path=str(hermes_home / "proj"))
+    orch = Orchestrator(settings, store, planner,
+                        dict(run_engine=engine, **deps_extra))
+
+    async def report(tid, msg, html=False): pass
+    store.create_task("t1", 5, "x")
+    return orch, report, seen, proj
+
+
+async def test_planner_is_told_about_an_existing_typed_project(hermes_home):
+    """Rules 2-4 of the planner prompt forbid an emulator test on a non-Android
+    project. Until the project's type reaches the planner, they are rules it
+    has no way to apply."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    existing = hermes_home / "myprofit"; existing.mkdir()
+    (existing / "pubspec.yaml").write_text("name: app")
+    orch, report, seen, _ = _capture_context(
+        hermes_home, store, dict(detect=lambda d: "flutter"), existing)
+    await orch.run_task("t1", 5, "x", report, proj=existing)
+
+    assert len(seen) == 1
+    assert "myprofit" in seen[0]
+    assert "flutter" in seen[0]
+    assert "pubspec.yaml" in seen[0]          # tree summary rode along
+    assert "do not emit" not in seen[0].lower()
+
+
+async def test_planner_is_told_a_web_project_cannot_build_an_apk(hermes_home):
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    existing = hermes_home / "dashboard"; existing.mkdir()
+    (existing / "package.json").write_text("{}")
+    orch, report, seen, _ = _capture_context(
+        hermes_home, store, dict(detect=lambda d: "unknown"), existing)
+    await orch.run_task("t1", 5, "x", report, proj=existing)
+
+    assert "does NOT produce an APK" in seen[0]
+    assert "browser" in seen[0]
+
+
+async def test_planner_is_told_a_fresh_workspace_is_greenfield(hermes_home):
+    """The workspace is created moments earlier, so on disk it is empty and
+    detects as `unknown` — identical to an unrecognised existing project. Told
+    that, the planner would refuse the build step a greenfield task needs."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    orch, report, seen, _ = _capture_context(
+        hermes_home, store, dict(detect=lambda d: "unknown"))
+    await orch.run_task("t1", 5, "x", report)
+
+    assert "new empty workspace" in seen[0]
+    assert "does NOT produce an APK" not in seen[0]
+
+
+async def test_missing_detect_dependency_claims_no_project_type(hermes_home):
+    """`detect` is optional on deps. Absent, the context must stay silent about
+    the type rather than reporting a type nothing measured."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    existing = hermes_home / "whatever"; existing.mkdir()
+    (existing / "a.txt").write_text("x")
+    orch, report, seen, _ = _capture_context(hermes_home, store, {}, existing)
+    await orch.run_task("t1", 5, "x", report, proj=existing)
+
+    assert store.get_task("t1")["status"] == "done"      # no crash
+    assert "does NOT produce an APK" not in seen[0]
+    assert "a.txt" in seen[0]                            # tree still sent

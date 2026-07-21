@@ -95,6 +95,10 @@ flowchart LR
   stdout. Fix-up rounds `--resume` that session instead of re-sending the task and the previous
   output. `agy` has no such flag, so it stays on text and fresh sessions — the same fallback
   path taken whenever an envelope cannot be parsed.
+- **Planner project context** — before planning, the planner is told what it is planning
+  against: an existing registered project and its detected type, or a fresh empty workspace.
+  For a project with no Android markers it is told outright not to emit a `build` step or an
+  emulator test — the conclusion is drawn in Python rather than left to the model.
 - **APK builds** with automatic project-type detection (Flutter / React Native / native Android).
 - **Testing** in a headless browser (Playwright) or an Android emulator (adb), returning screenshots.
 - **Local web UI** (`127.0.0.1:8799`) for settings (engine model/effort dropdowns backed by

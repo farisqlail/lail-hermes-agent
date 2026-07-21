@@ -103,6 +103,35 @@ Open on the engine loop:
 
 ---
 
+## Landed 2026-07-21 — planner project context
+
+Author-reviewed only; add to the review backlog above.
+
+- `hermes/plan_context.py` — pure `build(summary, ptype, is_new, name)`, four branches.
+- The planner's rules 2–4 (`main.py`) already forbade an emulator test on a non-Android
+  project. **They were unobeyable**: the task text was the planner's only input, so it had to
+  guess the project type from the user's wording. `validate_plan` was not covering a missing
+  rule — it was catching a rule the planner could not apply. It stays, now as a safety net.
+- Context rides as its own system message, after the rules and before the user's text.
+- The dead `tools` parameter on the planner signature became `context`. It was never read:
+  MCP discovery happens inside `build_nim_planner` via `hub.list_tools()`.
+
+Two traps found while building it:
+
+1. **An empty workspace and an unrecognised project both detect as `unknown`.** Deriving
+   "not an Android project" from detection alone would forbid the `build` step that every
+   greenfield task needs — including the smoke-test task. `is_new` is therefore taken from
+   `proj is None` in `run_task`, before the workspace is created, and never inferred from disk.
+2. **`ptype` falsy must claim nothing.** `detect` is an optional dep; absent, the context stays
+   silent about the type instead of reporting a type nothing measured.
+
+Mutation-checked: forcing `build()` to ignore `is_new` turns three tests red. A separate
+mutation (dropping the `not is_new` guard on the `detect` call) surfaced only as a
+`RuntimeWarning` from `test_invalid_plan_fails_task_before_running_any_step`'s `must_not_run`
+sentinel. Worth knowing: `_plan_context` trusts `detect`'s return type, and a non-`str` return
+would fall through to the "does NOT produce an APK" branch. Not reachable in production —
+`main` always injects `project_detect.detect` — but the guard is thin.
+
 ## Landed 2026-07-21 — structured engine output (`feat/structured-engine-output`)
 
 Author-reviewed only; add to the review backlog above.
