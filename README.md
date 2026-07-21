@@ -200,6 +200,38 @@ tracked in [`docs/TODO.md`](docs/TODO.md).
 Then open <http://127.0.0.1:8799> and fill in: NVIDIA API key (build.nvidia.com), model, Telegram bot
 token, your allowed Telegram user ID, Android SDK path, and emulator AVD.
 
+## Planner evals
+
+The unit suite proves the planner is *called* correctly. It cannot prove the planner *plans*
+correctly — that is model behaviour, and it changes whenever the model, the temperature or the
+system prompt changes.
+
+```powershell
+python -m hermes.evals                 # every case once
+python -m hermes.evals --list          # case ids, no model calls
+python -m hermes.evals --repeat 5      # how steady is a case?
+python -m hermes.evals --only web-fix-detail-page
+```
+
+It drives the real `build_nim_planner` and the real context assembly — a local copy of either
+would score itself instead of what production runs. It needs your NVIDIA key, and each case
+costs one planner call.
+
+Scoring is restricted to rules the system prompt already mandates: no `build` or emulator test
+for a project that cannot produce an APK, no emulator test without a build before it, known
+step types, and one code step for a fix task. Nothing scores taste — engine choice and prompt
+wording vary between correct answers, so scoring them would measure noise.
+
+Results are `PASS` / `FAIL` / **`ERROR`**. A model outage is an `ERROR` and never counts as a
+quality regression. Exit codes: 0 clean, 1 a rule was violated, 2 nothing could be measured.
+
+Deliberately not part of `pytest`: the result is a measurement, not a verdict, and a stochastic
+signal wired into the suite either goes flaky or teaches everyone to ignore red. The scoring
+rules themselves are pure functions and *are* unit-tested, in `tests/test_eval_rules.py`.
+
+`Settings.planner_temperature` defaults to `0.0`. Planning emits JSON that must obey fixed
+rules, so sampling randomness buys nothing and makes the same task plan differently run to run.
+
 ## Develop / test
 
 ```bash

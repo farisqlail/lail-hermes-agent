@@ -103,6 +103,38 @@ Open on the engine loop:
 
 ---
 
+## Landed 2026-07-21 — planner eval harness
+
+`python -m hermes.evals`. Outside `testpaths`, so pytest never collects it.
+
+- `hermes/evals/rules.py` — pure predicates, one per rule the system prompt already mandates.
+  Unit-tested in `tests/test_eval_rules.py`; the model call is the only stochastic part.
+- `hermes/evals/cases.py` — 8 cases over web / react-native / flutter / greenfield fixtures,
+  written in Indonesian because that is the language the live task history is in and planning
+  behaviour is not language-invariant.
+- `hermes/evals/__main__.py` — drives the real `build_nim_planner` and the real
+  `Orchestrator._plan_context`. A local reimplementation of either would score a fork.
+- `Settings.planner_temperature` (default `0.0`), threaded into the NIM call. Planning is
+  rule-following JSON; sampling randomness bought nothing and made evals noisy. A setting, not
+  a literal, so a model that rejects the parameter can be worked around without a release.
+
+Design notes worth keeping:
+- **`ERROR` is a third outcome, not a `FAIL`.** A NIM outage must never be read as a quality
+  regression.
+- **Nothing scores taste.** Engine choice and prompt wording differ between correct answers.
+- **Not in pytest, on purpose.** A stochastic signal in the suite either goes flaky or teaches
+  everyone to ignore red.
+
+Not yet run against the live model — that spends NVIDIA quota and needs the operator's key.
+The offline half (fixtures, context assembly, rules, `--list`) is verified.
+
+Follow-ups this opens:
+- [ ] Once a baseline exists, `R1-no-apk` failures are the direct argument for adding the same
+  check to `validate_plan`, where it would be deterministic rather than measured.
+- [ ] No case covers a task naming a project in prose without `@` — the shape that caused
+  20260715-104754-5b44a5. Planning is not where that one is decided, but it is worth a case
+  once resolution feeds the planner.
+
 ## Landed 2026-07-21 — a code step that leaves the project empty now fails
 
 Root-caused from a live failure, task `20260715-104754-5b44a5`. The reported symptom was

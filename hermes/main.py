@@ -152,6 +152,7 @@ def build_nim_planner(settings, secrets, hub):
             resp = await _completion_with_retry(
                 lambda: client.chat.completions.create(
                     model=settings.model, messages=msgs,
+                    temperature=settings.planner_temperature,
                     tools=oa_tools or None))
             m = resp.choices[0].message
             if m.tool_calls:
