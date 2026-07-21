@@ -158,6 +158,14 @@ def _continuation_prompt(base: str, prev) -> str:
             f"--- previous stdout (tail) ---\n{prev.stdout[-800:]}\n"
             f"--- previous stderr (tail) ---\n{prev.stderr[-800:]}")
 
+def _is_empty(proj: Path) -> bool:
+    """True when the directory holds nothing. False if it cannot be read —
+    an unreadable directory is not evidence that no work was done."""
+    try:
+        return not any(proj.iterdir())
+    except OSError:
+        return False
+
 def _outcome_header(res) -> str:
     """Session, cost and turns for a transcript attempt header, if reported.
 
@@ -421,6 +429,22 @@ class Orchestrator:
                 why = (res.outcome.api_error if res.outcome
                        and res.outcome.api_error else res.stderr[:200])
                 return (False, f"engine failed after {rounds} round(s): {why}")
+            # A code step that leaves the project directory empty did no
+            # usable work, whatever it printed and whatever it exited with.
+            # Two ways to get here, both worth failing on:
+            #   - the workspace was empty all along. The usual cause is a task
+            #     meant for an existing project that named it in prose instead
+            #     of with the @ sigil: nothing resolves, a throwaway workspace
+            #     is created, and the engine opens an empty directory.
+            #   - the engine emptied a project that had files in it.
+            # A project that has files and keeps them never reaches this check,
+            # so a code step that legitimately changes nothing still passes.
+            if _is_empty(proj):
+                return (False,
+                        "engine produced no files — the workspace was empty "
+                        "before this step and is still empty. If this task was "
+                        "meant for an existing project, reference it as @name "
+                        "(send /projects for the registered names).")
             if _confirmed_done(res.final_text):
                 return (True, f"coded (confirmed done, {rounds} round(s))")
             return (True, f"coded ({rounds} round(s), completion not "

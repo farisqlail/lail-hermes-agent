@@ -7,6 +7,16 @@ from hermes.config import Settings
 from hermes.session_store import Store
 import pytest
 
+def _worked(cwd):
+    """Leave a trace on disk, as an engine that actually codes does.
+
+    A fake that reports `coded` while touching nothing describes the exact
+    failure of task 20260715-104754-5b44a5, which the orchestrator now rejects
+    — see test_engine_loop.test_empty_workspace_left_empty_fails_the_step.
+    """
+    (Path(cwd) / "touched.txt").write_text("engine output")
+
+
 def test_parse_plan_with_fences():
     raw = "```json\n{\"steps\":[{\"type\":\"code\",\"engine\":\"claude\",\"prompt\":\"x\"}]}\n```"
     steps = parse_plan(raw)
@@ -58,7 +68,8 @@ async def test_run_task_executes_steps(hermes_home):
     events = []
     async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
-        events.append(("code", engine)); return RunResult(True, "done", "", False, 0)
+        events.append(("code", engine)); _worked(cwd)
+        return RunResult(True, "done", "", False, 0)
     async def fake_build(project_dir, ptype, timeout_s, run=None):
         from hermes.build_runner import BuildResult
         events.append(("build", ptype)); return BuildResult(True, "app.apk", "", "")
@@ -382,6 +393,7 @@ async def test_unconfirmed_completion_gets_a_fixup_round(hermes_home):
         from hermes.engine_runner import RunResult
         prompts.append(prompt)
         if len(prompts) == 1:
+            _worked(cwd)
             return RunResult(True, "Waiting on npm install. Will run tests "
                                    "once install lands.", "", False, 0)
         return RunResult(True, "17 tests pass\nHERMES_STEP_DONE", "", False, 0)
@@ -408,6 +420,7 @@ async def test_confirmed_done_stops_at_one_round(hermes_home):
         from hermes.engine_runner import RunResult
         calls.append(1)
         assert "Completion contract" in prompt      # contract always present
+        _worked(cwd)
         return RunResult(True, "done\nHERMES_STEP_DONE", "", False, 0)
 
     orch = _code_plan_orch(hermes_home, store, engine)
@@ -447,6 +460,7 @@ async def test_echoed_prompt_does_not_confirm_completion(hermes_home):
     async def echoing_engine(engine_name, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         calls.append(1)
+        _worked(cwd)
         return RunResult(True, f"[echo] {prompt}\n[end of echo]", "", False, 0)
 
     orch = _code_plan_orch(hermes_home, store, echoing_engine)
@@ -469,6 +483,7 @@ async def test_rounds_exhausted_without_sentinel_still_succeeds_with_a_note(herm
     async def engine(engine_name, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         calls.append(1)
+        _worked(cwd)
         return RunResult(True, "did things, never said the magic word", "", False, 0)
 
     orch = _code_plan_orch(hermes_home, store, engine)
@@ -528,6 +543,7 @@ async def test_successful_code_step_saves_transcript_too(hermes_home):
 
     async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
+        _worked(cwd)
         return RunResult(True, "all good\nHERMES_STEP_DONE", "", False, 0)
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=fake_run_engine))
@@ -682,6 +698,7 @@ async def test_run_task_threads_engine_tuning_per_engine(hermes_home):
                               model="", effort="", **kw):
         from hermes.engine_runner import RunResult
         got.append((engine, model, effort))
+        _worked(cwd)
         return RunResult(True, f"done\n{_DONE_SENTINEL}", "", False, 0)
 
     deps = dict(run_engine=fake_run_engine, build_apk=None,

@@ -21,6 +21,16 @@ def _structured(text, session_id=None, cost=None, api_error=None):
                                    cost_usd=cost, api_error=api_error))
 
 
+def _worked(cwd):
+    """Leave a trace on disk, as an engine that actually codes does.
+
+    Without this a fake is claiming work it never did, and the orchestrator is
+    right to call that a failed step — see
+    test_empty_workspace_left_empty_fails_the_step.
+    """
+    (Path(cwd) / "touched.txt").write_text("engine output")
+
+
 def _orch(hermes_home, store, engine, default_engine="claude"):
     async def planner(text, tools):
         return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
@@ -44,6 +54,7 @@ async def test_second_round_resumes_the_first_rounds_session(hermes_home):
     calls = []
     async def engine(engine_name, prompt, cwd, timeout_s, **kw):
         calls.append((prompt, kw))
+        _worked(cwd)
         if len(calls) == 1:
             return _structured("still installing deps", session_id="sess-1")
         return _structured(f"tests pass\n{_DONE_SENTINEL}", session_id="sess-1")
@@ -106,6 +117,7 @@ async def test_sentinel_only_in_stdout_does_not_confirm_a_structured_run(hermes_
     calls = []
     async def engine(engine_name, prompt, cwd, timeout_s, **kw):
         calls.append(1)
+        _worked(cwd)
         # stdout ends with the sentinel on its own line — indistinguishable
         # from a real confirmation to anything reading raw stdout. Only the
         # envelope knows the model itself said it failed.
@@ -128,6 +140,7 @@ async def test_text_mode_still_confirms_from_stdout(hermes_home):
     calls = []
     async def engine(engine_name, prompt, cwd, timeout_s, **kw):
         calls.append(1)
+        _worked(cwd)
         return RunResult(True, f"built it\n{_DONE_SENTINEL}", "", False, 0)
 
     reports = await _run(_orch(hermes_home, store, engine, "antigravity"), store)
@@ -162,6 +175,99 @@ async def test_reported_cost_is_summed_across_rounds(hermes_home):
     await _run(_orch(hermes_home, store, engine), store)
 
     assert any("2 round(s), $0.7500" in l for l in store.get_logs("t1"))
+
+
+async def test_empty_workspace_left_empty_fails_the_step(hermes_home):
+    """Reproduces task 20260715-104754-5b44a5. The user named a project in
+    prose ("project myprofit-v3") with no @ sigil, so nothing resolved and a
+    fresh empty workspace was created. The engine ran there against nothing,
+    exited 0, and the step was reported as `coded`. The task only fell over one
+    step later, on `build failed: unsupported project type: unknown` — and had
+    the plan carried no build step, the whole run would have reported success
+    while touching no code at all.
+    """
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        return RunResult(True, f"nothing to do here\n{_DONE_SENTINEL}", "",
+                         False, 0)
+
+    reports = await _run(_orch(hermes_home, store, engine), store)
+
+    assert store.get_task("t1")["status"] == "failed"
+    assert any("produced no files" in m for m in reports)
+    assert any("@name" in m for m in reports)      # points at the real cause
+
+
+async def test_empty_workspace_that_gets_files_succeeds(hermes_home):
+    """The guard must key on work done, not on the directory having been empty
+    — a greenfield task legitimately starts from nothing."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        (Path(cwd) / "main.dart").write_text("void main() {}")
+        return RunResult(True, f"scaffolded\n{_DONE_SENTINEL}", "", False, 0)
+
+    await _run(_orch(hermes_home, store, engine), store)
+
+    assert store.get_task("t1")["status"] == "done"
+
+
+async def test_existing_project_left_unchanged_still_succeeds(hermes_home):
+    """Scoped deliberately to workspaces that started empty. In a real project
+    a code step that changes nothing is a legitimate outcome — the engine may
+    have found nothing to fix — and must not be reported as a failure."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    existing = hermes_home / "myprofit"; existing.mkdir()
+    (existing / "marker.txt").write_text("pre-existing work")
+
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        return RunResult(True, f"nothing needed fixing\n{_DONE_SENTINEL}", "",
+                         False, 0)
+
+    orch = _orch(hermes_home, store, engine)
+    async def report(tid, msg, html=False): pass
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report, proj=existing)
+
+    assert store.get_task("t1")["status"] == "done"
+
+
+async def test_engine_that_empties_a_real_project_fails_the_step(hermes_home):
+    """Found by mutation testing: an earlier version scoped the check to
+    workspaces that started empty, which let an engine that deleted every file
+    in a registered project report success. Emptying a project is never a
+    usable outcome for a code step."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    existing = hermes_home / "myprofit"; existing.mkdir()
+    (existing / "marker.txt").write_text("pre-existing work")
+
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        (Path(cwd) / "marker.txt").unlink()
+        return RunResult(True, f"cleaned up\n{_DONE_SENTINEL}", "", False, 0)
+
+    orch = _orch(hermes_home, store, engine)
+    reports = []
+    async def report(tid, msg, html=False): reports.append(msg)
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report, proj=existing)
+
+    assert store.get_task("t1")["status"] == "failed"
+    assert any("produced no files" in m for m in reports)
+
+
+async def test_transcript_is_still_saved_when_no_files_were_produced(hermes_home):
+    """This failure is precisely the one that needs the engine's own words to
+    diagnose — whether it said it could not find the project, or crashed."""
+    from hermes import paths
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        return RunResult(True, "I could not find any project here", "",
+                         False, 0)
+
+    await _run(_orch(hermes_home, store, engine), store)
+
+    body = (paths.artifacts_dir() / "t1" / "step-0-engine.log").read_text(
+        encoding="utf-8")
+    assert "could not find any project" in body
 
 
 async def test_text_mode_engine_logs_no_cost_line(hermes_home):

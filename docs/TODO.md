@@ -103,6 +103,43 @@ Open on the engine loop:
 
 ---
 
+## Landed 2026-07-21 — a code step that leaves the project empty now fails
+
+Root-caused from a live failure, task `20260715-104754-5b44a5`. The reported symptom was
+`step 1 [build]: build failed: unsupported project type: unknown`. That was the messenger.
+
+What actually happened: the task said *"project myprofit-v3"* in prose, with no `@` sigil
+(the registry did not exist yet). `parse_project_ref` found nothing, `proj` stayed `None`,
+`run_task` created `C:\Hermes\projects\20260715-104754-5b44a5` — **still on disk, still
+empty** — and the engine ran there against nothing. Pre-completion-contract code reported
+`step 0 [code]: coded` on exit 0. `detect()` on the real `myprofit-v3` returns
+`react_native`, not `unknown`; the project was never touched.
+
+**Had the plan carried no build step, the run would have reported success while changing no
+code at all.** That is the failure, not the build error.
+
+Fix: a code step whose project directory is empty afterwards fails, with a message naming the
+likely cause and pointing at `@name` / `/projects`.
+
+Mutation testing changed the design. The first version scoped the check to workspaces that
+started empty (`started_empty and _is_empty(proj)`). Removing `started_empty` turned nothing
+red — because a project with files that keeps them never reaches the check at all. The
+conjunct only ever *weakened* the guard, letting an engine that deleted every file in a
+registered project report success. Dropped, and that case is now pinned by
+`test_engine_that_empties_a_real_project_fails_the_step`.
+
+Ten existing tests went red on the fix. All ten had fakes reporting `coded` while touching
+no disk — i.e. describing exactly this bug. They now call a `_worked(cwd)` helper. No
+assertion was weakened to accommodate the change.
+
+Still open, deliberately not bundled:
+- [ ] **A task with no `@project` is still silent.** It creates a throwaway workspace with no
+  warning. Forgetting one character reproduces the whole path; only the new guard catches it,
+  and only after a full engine round.
+- [ ] `validate_plan` still has no rule against a `build` step on a project that cannot build.
+  Now that `_plan_context` computes `ptype` at planning time, that check is cheap and
+  deterministic. It is rule R1 of the planner eval design.
+
 ## Landed 2026-07-21 — planner project context
 
 Author-reviewed only; add to the review backlog above.
