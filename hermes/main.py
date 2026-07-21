@@ -12,6 +12,8 @@ from .orchestrator import Orchestrator
 from .telegram_bridge import Bridge
 from .web_ui import create_app
 from . import build_runner, engine_runner, test_runner, project_detect
+from . import ask_server, ask_ui
+from .ask import AskRegistry
 from .git_status import git_dirty
 from .recovery import group_digests
 
@@ -326,6 +328,17 @@ async def run():
     await hub.connect()
     planner = build_nim_planner(settings, secrets, hub)
 
+    # The engine's channel to the operator. Built before the bot so the
+    # orchestrator can carry it into every code step; its on_ask/on_close are
+    # bound to Telegram inside the bot block below. Unbound (no bot) is a
+    # degradation the tool reports as NO_CHANNEL, never an error. Logging asks
+    # and answers to the task is best-effort — losing a log must never lose an
+    # answer, so append_log is passed as the optional sink.
+    ask_registry = AskRegistry(log=store.append_log)
+    ask_mcp = ask_server.build_ask_server(ask_registry)
+    ask_url = (f"http://127.0.0.1:8799"
+               f"{ask_server.MOUNT_PREFIX}{ask_server.STREAM_PATH}")
+
     adb = Adb(settings)
     deps = dict(
         run_engine=engine_runner.run_engine,
@@ -336,6 +349,8 @@ async def run():
             apk, settings.emulator_avd, out, settings.timeout_test_s, adb=adb, pkg=pkg),
         test_browser=lambda url, out: test_runner.test_browser(
             url, out, settings.timeout_test_s),
+        ask_registry=ask_registry,
+        ask_url=ask_url,
     )
     orch = Orchestrator(settings, store, planner, deps)
 
@@ -388,6 +403,38 @@ async def run():
             bridge = _build_bridge(settings, store, orch, sender, ask_confirm,
                                    send_file=send_file)
 
+            # Bind the ask registry to Telegram: how a question is drawn, how a
+            # closed one strips its dead keyboard, and how a multi-select redraw
+            # edits in place.
+            async def _edit_ask_markup(chat_id, message_id, markup):
+                await app.bot.edit_message_reply_markup(
+                    chat_id=chat_id, message_id=message_id, reply_markup=markup)
+
+            async def _send_ask(a):
+                markup = ask_ui.to_markup(ask_ui.keyboard_rows(a))
+                msg = await _telegram_send_with_retry(lambda: app.bot.send_message(
+                    chat_id=a.chat_id,
+                    text=_clip_for_telegram(ask_ui.question_text(a)),
+                    reply_markup=markup))
+                a.message_id = getattr(msg, "message_id", None)
+
+            async def _close_ask(a, state):
+                # Best-effort: strip the keyboard so the operator cannot tap a
+                # button that will no longer resolve anything. A failure here
+                # must not change what the engine was already told.
+                if a.message_id is None:
+                    return
+                try:
+                    await app.bot.edit_message_reply_markup(
+                        chat_id=a.chat_id, message_id=a.message_id, reply_markup=None)
+                except Exception:
+                    pass
+
+            ask_registry.on_ask = _send_ask
+            ask_registry.on_close = _close_ask
+            on_ask_callback, on_ask_text = ask_ui.make_handlers(
+                ask_registry, sender, _edit_ask_markup)
+
             async def check_auth_and_respond(update: Update) -> bool:
                 u = update.effective_user.id
                 c = update.effective_chat.id
@@ -425,6 +472,22 @@ async def run():
                     bridge.resolve_confirm(q.from_user.id, task_id, ans == "yes"))
                 t.add_done_callback(crash_reporter(c))
 
+            async def on_ask(update: Update, ctx):
+                q = update.callback_query
+                parsed = ask_ui.parse_callback(q.data)
+                if parsed is None:
+                    await q.answer()
+                    return
+                from .telegram_bridge import is_allowed
+                if not is_allowed(q.from_user.id, bridge.get_settings()):
+                    await q.answer()
+                    return
+                ask_id, kind, idx = parsed
+                # message_id lets a multi-select tap redraw its own keyboard.
+                toast = await on_ask_callback(ask_id, kind, idx,
+                                              q.message.message_id)
+                await q.answer(toast or None)
+
             async def on_help(update: Update, ctx):
                 if not await check_auth_and_respond(update):
                     return
@@ -441,13 +504,18 @@ async def run():
             async def on_chat(update: Update, ctx):
                 if not await check_auth_and_respond(update):
                     return
-                from .telegram_bridge import help_text
                 c = update.effective_chat.id
+                # A free-text reply to an open question is the answer, not chat:
+                # consume it before falling through to the greeting.
+                if await on_ask_text(c, update.message.text or ""):
+                    return
+                from .telegram_bridge import help_text
                 await sender(c, "Halo! Saya Hermes, asisten orkestrasi Anda.\n\n"
                                 + help_text())
 
             app.add_handler(CommandHandler("task", on_task))
             app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^confirm:"))
+            app.add_handler(CallbackQueryHandler(on_ask, pattern=r"^ask:"))
             app.add_handler(CommandHandler("start", on_chat))
             app.add_handler(CommandHandler("help", on_help))
             app.add_handler(CommandHandler("projects", on_projects))
@@ -461,7 +529,11 @@ async def run():
     else:
         print("WARNING: TELEGRAM_BOT_TOKEN is not configured. Telegram bot features will be disabled.")
 
-    web = create_app(store)
+    # streamable_http_app() creates the session manager; the parent lifespan
+    # runs it, because Starlette ignores a mounted sub-app's own lifespan.
+    ask_asgi = ask_mcp.streamable_http_app()
+    web = create_app(store, lifespan=lambda _app: ask_mcp.session_manager.run())
+    web.mount(ask_server.MOUNT_PREFIX, ask_asgi)
     web.state.mcp_factory = real_mcp_session_factory
     server = uvicorn.Server(uvicorn.Config(web, host="127.0.0.1", port=8799, log_level="info"))
 

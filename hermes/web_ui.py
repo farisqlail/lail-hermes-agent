@@ -80,8 +80,11 @@ def load_spa_html() -> str:
         return path.read_text(encoding="utf-8")
     return "<h1>Hermes: spa.html not found!</h1>"
 
-def create_app(store: Store) -> FastAPI:
-    app = FastAPI()
+def create_app(store: Store, lifespan=None) -> FastAPI:
+    # lifespan carries the ask MCP server's session manager when main.py mounts
+    # it here: a mounted sub-app's own lifespan is ignored by Starlette, so the
+    # manager has to be started by the parent or the /ask-mcp endpoint is dead.
+    app = FastAPI(lifespan=lifespan)
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():

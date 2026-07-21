@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 import pytest
@@ -168,6 +169,106 @@ def test_resolve_passes_through_real_path():
     argv = engine_runner._resolve([sys.executable, "-c", "pass"])
     assert argv[0].lower().endswith(".exe")
     assert argv[1:] == ["-c", "pass"]
+
+
+def test_mcp_config_dict_carries_the_token_as_a_header():
+    from hermes.ask_server import SERVER_NAME, TOKEN_HEADER
+    cfg = engine_runner.mcp_config_dict("http://127.0.0.1:8799/ask-mcp/mcp", "tok-9")
+    srv = cfg["mcpServers"][SERVER_NAME]
+    assert srv["type"] == "http"
+    assert srv["url"].endswith("/ask-mcp/mcp")
+    assert srv["headers"][TOKEN_HEADER] == "tok-9"
+
+
+def test_argv_claude_appends_mcp_config_when_a_path_is_given():
+    argv = engine_runner._argv("claude", "x", mcp_config_path="C:/tmp/cfg.json")
+    assert argv[-2:] == ["--mcp-config", "C:/tmp/cfg.json"]
+
+
+def test_argv_antigravity_never_gets_mcp_config():
+    """agy's MCP config shape differs and its ask path is unwired; passing the
+    flag would crash the engine on every step."""
+    argv = engine_runner._argv("antigravity", "x", mcp_config_path="C:/tmp/cfg.json")
+    assert "--mcp-config" not in argv
+
+
+def test_argv_no_mcp_config_flag_without_a_path():
+    assert "--mcp-config" not in engine_runner._argv("claude", "x")
+
+
+async def test_run_engine_writes_and_removes_the_mcp_config(tmp_path, monkeypatch):
+    """The temp config carries the run token: it must reach the engine and never
+    outlive the run, or a later engine could reach a closed run through it."""
+    script = tmp_path / "read_cfg.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "argv = sys.argv[1:]\n"
+        "i = argv.index('--mcp-config')\n"
+        "path = argv[i + 1]\n"
+        "print('CFGPATH:' + path)\n"
+        "print('CFGBODY:' + open(path, encoding='utf-8').read())\n"
+    )
+    monkeypatch.setitem(engine_runner.COMMANDS, "claude",
+                        lambda p: [sys.executable, str(script), "-p"])
+    res = await engine_runner.run_engine(
+        "claude", "x", tmp_path, timeout_s=30,
+        ask_url="http://127.0.0.1:8799/ask-mcp/mcp", ask_token="tok-42")
+    assert res.ok
+    path = next(l[len("CFGPATH:"):] for l in res.stdout.splitlines()
+                if l.startswith("CFGPATH:"))
+    assert "tok-42" in res.stdout          # body was readable during the run
+    assert not Path(path).exists()          # cleaned up afterward
+
+
+async def test_run_engine_skips_mcp_config_without_both_url_and_token(tmp_path, monkeypatch):
+    script = tmp_path / "argv_echo.py"
+    script.write_text("import sys\nsys.stdin.read()\nprint(' '.join(sys.argv[1:]))\n")
+    monkeypatch.setitem(engine_runner.COMMANDS, "claude",
+                        lambda p: [sys.executable, str(script), "-p"])
+    res = await engine_runner.run_engine("claude", "x", tmp_path, timeout_s=30,
+                                         ask_url="http://x/mcp", ask_token="")
+    assert "--mcp-config" not in res.stdout
+
+class _FakeProc:
+    def __init__(self, delay, result=(b"out", b"err")):
+        self._delay, self._result = delay, result
+    async def communicate(self, send=None):
+        await asyncio.sleep(self._delay)
+        return self._result
+
+
+async def test_communicate_within_returns_when_proc_beats_the_deadline():
+    from hermes.ask import Deadline
+    out, err = await engine_runner._communicate_within(
+        _FakeProc(0.01), None, Deadline(100), poll_s=0.005)
+    assert (out, err) == (b"out", b"err")
+
+
+async def test_communicate_within_raises_when_the_deadline_expires():
+    from hermes.ask import Deadline
+    with pytest.raises(asyncio.TimeoutError):
+        await engine_runner._communicate_within(
+            _FakeProc(10), None, Deadline(0), poll_s=0.005)
+
+
+async def test_communicate_within_survives_a_paused_deadline():
+    """The whole reason Deadline exists: a paused clock (operator thinking)
+    must not kill an engine that runs past its budget while blocked on ask."""
+    from hermes.ask import Deadline
+    d = Deadline(0.02)
+    d.pause()
+    out, _ = await engine_runner._communicate_within(
+        _FakeProc(0.05), None, d, poll_s=0.005)
+    assert out == b"out"
+
+
+async def test_run_engine_honours_a_supplied_deadline(tmp_path, fake_echo):
+    from hermes.ask import Deadline
+    res = await engine_runner.run_engine("claude", "hi", tmp_path, timeout_s=30,
+                                         deadline=Deadline(30))
+    assert res.ok and "ECHO:hi" in res.stdout
+
 
 def test_resolve_finds_shim_in_extra_tool_dir_when_path_lacks_it(tmp_path, monkeypatch):
     """The bot-process trap: engine installed, but its dir is not on the
