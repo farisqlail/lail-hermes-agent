@@ -36,6 +36,26 @@ async def test_accept_listed(hermes_home):
     assert tid is not None and ran == [tid]
     assert store.get_task(tid)["status"] in ("queued", "running", "done")
 
+async def test_trusted_bypasses_allow_list(hermes_home):
+    """The web UI authenticates by another route (localhost) and passes
+    trusted=True. A disallowed user_id must run when trusted, and must still be
+    rejected when it is not -- proving the bypass is the flag, not user_id==0."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(allowed_user_ids=[1])
+    async def sender(chat, text, html=False): pass
+    ran = []
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            ran.append(task_id)
+    b = Bridge(settings, store, FakeOrch(), sender)
+
+    # user_id 0 was the old magic bypass -- untrusted, it must now be rejected.
+    assert await b.handle_task(user_id=0, chat_id=5, text="build app") is None
+    assert ran == []
+
+    tid = await b.handle_task(user_id=0, chat_id=5, text="build app", trusted=True)
+    assert tid is not None and ran == [tid]
+
 async def test_report_forwards_the_html_flag_to_the_sender(hermes_home):
     """The orchestrator's change-summary table is HTML; the flag has to
     survive the hop through Bridge, or the <pre> tags arrive as literal text."""

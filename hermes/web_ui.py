@@ -1,11 +1,48 @@
 from __future__ import annotations
-import re, subprocess, time
+import asyncio, re, subprocess, time
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
 from . import config, paths
 from .session_store import Store
+from .telegram_bridge import new_task_id
+
+class TaskSubmit(BaseModel):
+    text: str
+
+class TaskConfirm(BaseModel):
+    approved: bool
+
+class TaskAnswer(BaseModel):
+    ask_id: str
+    text: str | None = None
+    options: list[int] | None = None
+
+def _bg_crash_cb(store: Store, task_id: str):
+    """Done-callback for the web UI's fire-and-forget bridge tasks.
+
+    main.py wires crash_reporter onto every Telegram create_task; these two
+    endpoints spawn the same coroutines with no chat to report into, so a raise
+    outside run_task's try/except is otherwise swallowed at GC with no trace.
+    Mark the task failed and record why. backslashreplace, not repr() raw: on a
+    redirected legacy-codepage stdout a bare non-ASCII repr raises inside the
+    callback, and asyncio drops that into the loop handler -- losing the report.
+    """
+    def _cb(t: asyncio.Task):
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is None:
+            return
+        safe = repr(exc).encode("ascii", "backslashreplace").decode("ascii")
+        print(f"Background task crashed: {safe}")
+        try:
+            store.append_log(task_id, f"error: background task crashed: {exc}")
+            store.set_task_status(task_id, "failed")
+        except Exception:
+            pass
+    return _cb
 
 # Claude CLI model choices (aliases + full ids, per Anthropic docs 2026-07).
 # Static on purpose: `claude` has no list-models subcommand, and the select
@@ -80,11 +117,13 @@ def load_spa_html() -> str:
         return path.read_text(encoding="utf-8")
     return "<h1>Hermes: spa.html not found!</h1>"
 
-def create_app(store: Store, lifespan=None) -> FastAPI:
+def create_app(store: Store, bridge=None, ask_registry=None, lifespan=None) -> FastAPI:
     # lifespan carries the ask MCP server's session manager when main.py mounts
     # it here: a mounted sub-app's own lifespan is ignored by Starlette, so the
     # manager has to be started by the parent or the /ask-mcp endpoint is dead.
     app = FastAPI(lifespan=lifespan)
+    app.state.bridge = bridge
+    app.state.ask_registry = ask_registry
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
@@ -118,13 +157,114 @@ def create_app(store: Store, lifespan=None) -> FastAPI:
         return FileResponse(str(resolved), media_type=media_type)
 
     @app.get("/api/tasks")
-    def tasks(): return store.list_tasks()
+    def tasks():
+        # chat_id is a display sentinel here, not a real Telegram chat:
+        #   >0  a real Telegram chat        (shown)
+        #    0  a web-submitted /task       (shown)
+        #   -1  a web conversational stub    (/help, /projects, small talk -- hidden)
+        # The list is the orchestration queue, so the -1 stubs are filtered out;
+        # they are still fetchable by id for the chat pane that created them.
+        all_tasks = store.list_tasks()
+        return [t for t in all_tasks if t.get("chat_id", 0) >= 0]
 
     @app.get("/api/tasks/{task_id}")
     def task(task_id: str):
         t = store.get_task(task_id) or {}
-        return {"task": t, "logs": store.get_logs(task_id),
-                "artifacts": store.get_artifacts(task_id)}
+
+        pending_confirm = None
+        bridge = getattr(app.state, "bridge", None)
+        if bridge and task_id in bridge.confirm_reasons:
+            pending_confirm = bridge.confirm_reasons[task_id]
+
+        pending_ask = None
+        ask_registry = getattr(app.state, "ask_registry", None)
+        if ask_registry:
+            active_ask = ask_registry.active_for_task(task_id)
+            if active_ask:
+                pending_ask = {
+                    "ask_id": active_ask.ask_id,
+                    "question": active_ask.question,
+                    "options": active_ask.options,
+                    "multi": active_ask.multi
+                }
+
+        return {
+            "task": t,
+            "logs": store.get_logs(task_id),
+            "artifacts": store.get_artifacts(task_id),
+            "pending_confirm": pending_confirm,
+            "pending_ask": pending_ask
+        }
+
+    @app.post("/api/tasks")
+    async def post_task(body: TaskSubmit):
+        bridge = getattr(app.state, "bridge", None)
+        if not bridge:
+            raise HTTPException(status_code=503, detail="Bridge not configured")
+
+        text = body.text.strip()
+        task_id = new_task_id()
+
+        # chat_id sentinels below: /task -> 0 (a real queued task, listed);
+        # every other branch is a synchronous stub answered inline and stored
+        # with chat_id=-1 so it stays out of the task list. See /api/tasks.
+        if text.lower().startswith("/task"):
+            prompt = text[5:].strip()
+            t = asyncio.create_task(bridge.handle_task(user_id=0, chat_id=0, text=prompt, task_id=task_id, trusted=True))
+            t.add_done_callback(_bg_crash_cb(store, task_id))
+            return {"task_id": task_id, "status": "queued"}
+        elif text.lower().startswith("/help"):
+            from .telegram_bridge import help_text
+            store.create_task(task_id, -1, text)
+            store.set_task_status(task_id, "done")
+            store.append_log(task_id, f"ask: Bantuan Penggunaan")
+            store.append_log(task_id, f"answer: {help_text()}")
+            return {"task_id": task_id, "status": "done"}
+        elif text.lower().startswith("/projects"):
+            from .telegram_bridge import projects_overview
+            store.create_task(task_id, -1, text)
+            store.set_task_status(task_id, "done")
+            store.append_log(task_id, f"ask: Proyek Terdaftar")
+            store.append_log(task_id, f"answer: {projects_overview(bridge.get_settings())}")
+            return {"task_id": task_id, "status": "done"}
+        else:
+            store.create_task(task_id, -1, text)
+            store.set_task_status(task_id, "done")
+            store.append_log(task_id, f"ask: Chat Conversation")
+            reply = (
+                "Halo! Saya Hermes, asisten orkestrasi Anda.\n\n"
+                "Untuk menjalankan tugas orkestrasi, silakan gunakan perintah `/task <deskripsi>`.\n"
+                "Contoh: `/task @myproject jalankan pengujian`.\n\n"
+                "Gunakan `/projects` untuk melihat daftar proyek, atau `/help` untuk bantuan lengkap."
+            )
+            store.append_log(task_id, f"answer: {reply}")
+            return {"task_id": task_id, "status": "done"}
+
+    @app.post("/api/tasks/{task_id}/confirm")
+    async def confirm_task(task_id: str, body: TaskConfirm):
+        bridge = getattr(app.state, "bridge", None)
+        if not bridge:
+            raise HTTPException(status_code=503, detail="Bridge not configured")
+        t = asyncio.create_task(bridge.resolve_confirm(user_id=0, task_id=task_id, approved=body.approved, trusted=True))
+        t.add_done_callback(_bg_crash_cb(store, task_id))
+        return {"ok": True}
+
+    @app.post("/api/tasks/{task_id}/answer")
+    async def answer_task(task_id: str, body: TaskAnswer):
+        ask_registry = getattr(app.state, "ask_registry", None)
+        if not ask_registry:
+            raise HTTPException(status_code=503, detail="Ask Registry not configured")
+
+        ask = ask_registry.get(body.ask_id)
+        if not ask or ask.task_id != task_id:
+            raise HTTPException(status_code=404, detail="Ask not found or does not belong to this task")
+
+        if body.options is not None:
+            ok = ask_registry.answer_options(body.ask_id, body.options)
+        else:
+            ok = ask_registry.answer(body.ask_id, body.text or "")
+
+        return {"ok": ok}
 
     @app.get("/api/settings")
     def get_settings(): return config.load_settings().model_dump()

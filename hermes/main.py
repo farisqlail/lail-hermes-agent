@@ -356,6 +356,7 @@ async def run():
 
     bot_token = secrets.telegram_bot_token
     app = None
+    bridge = None
     if bot_token and bot_token.strip():
         try:
             app = (Application.builder().token(bot_token)
@@ -529,10 +530,24 @@ async def run():
     else:
         print("WARNING: TELEGRAM_BOT_TOKEN is not configured. Telegram bot features will be disabled.")
 
+    if not bridge:
+        async def dummy_sender(chat_id, text, html=False):
+            print(f"[Web UI Chat] {text}")
+        async def dummy_ask_confirm(chat_id, task_id, reasons):
+            print(f"[Web UI Confirm Required] Task {task_id}: {reasons}")
+        bridge = _build_bridge(settings, store, orch, dummy_sender, dummy_ask_confirm)
+
+        async def dummy_on_ask(a):
+            print(f"[Web UI Ask Required] {a.question}")
+        async def dummy_on_close(a, state):
+            print(f"[Web UI Ask Closed] {a.question} -> {state}")
+        ask_registry.on_ask = dummy_on_ask
+        ask_registry.on_close = dummy_on_close
+
     # streamable_http_app() creates the session manager; the parent lifespan
     # runs it, because Starlette ignores a mounted sub-app's own lifespan.
     ask_asgi = ask_mcp.streamable_http_app()
-    web = create_app(store, lifespan=lambda _app: ask_mcp.session_manager.run())
+    web = create_app(store, bridge=bridge, ask_registry=ask_registry, lifespan=lambda _app: ask_mcp.session_manager.run())
     web.mount(ask_server.MOUNT_PREFIX, ask_asgi)
     web.state.mcp_factory = real_mcp_session_factory
     server = uvicorn.Server(uvicorn.Config(web, host="127.0.0.1", port=8799, log_level="info"))

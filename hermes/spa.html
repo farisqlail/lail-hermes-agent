@@ -290,6 +290,8 @@
             display: flex;
             flex-direction: column;
             gap: 1rem;
+            height: calc(100vh - 12rem);
+            min-height: 600px;
         }
 
         .panel-title {
@@ -305,7 +307,7 @@
             display: flex;
             flex-direction: column;
             gap: 0.75rem;
-            max-height: 550px;
+            flex: 1;
             overflow-y: auto;
             padding-right: 4px;
         }
@@ -1033,6 +1035,87 @@
             visibility: visible;
             opacity: 1;
         }
+
+        /* Conversational Chat Styles */
+        .chat-bubble {
+            max-width: 80%;
+            padding: 12px 16px;
+            border-radius: 16px;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            position: relative;
+            animation: bubble-entrance 0.2s ease-out forwards;
+        }
+        .chat-bubble.user {
+            background: hsl(262, 50%, 20%);
+            border: 1px solid hsl(262, 50%, 30%);
+            color: var(--text-main);
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
+            box-shadow: 0 4px 12px hsla(262, 50%, 20%, 0.2);
+        }
+        .chat-bubble.assistant {
+            background: var(--card-bg-solid);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            align-self: flex-start;
+            border-bottom-left-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+        .chat-bubble.system-card {
+            max-width: 100%;
+            width: 100%;
+            align-self: center;
+            background: transparent;
+            padding: 0;
+            border: none;
+            box-shadow: none;
+        }
+        @keyframes bubble-entrance {
+            from { transform: translateY(8px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        /* Web Chat Interactive Components */
+        .confirm-banner-web, .ask-widget-web {
+            animation: slide-in-top 0.3s ease forwards;
+        }
+        .confirm-banner-web {
+            background: hsla(38, 92%, 50%, 0.1) !important;
+            border-color: var(--warning) !important;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 12px;
+        }
+        .ask-widget-web {
+            background: hsla(217, 100%, 61%, 0.1) !important;
+            border-color: var(--primary) !important;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 12px;
+        }
+        .ask-options-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+        .ask-text-reply {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+            width: 100%;
+        }
+        @keyframes slide-in-top {
+            from { transform: translateY(-10px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -1079,6 +1162,7 @@
             <section class="task-list-panel glass-panel">
                 <div class="panel-title">
                     <span>Task History</span>
+                    <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem; border-radius: 6px;" onclick="createNewTaskUI()">+ New</button>
                     <div class="stats-summary">
                         <div class="stat-card" style="padding: 4px 8px; border-radius: 6px;">
                             <span id="stat-total" class="stat-num" style="font-size: 1rem;">0</span>
@@ -1092,67 +1176,78 @@
                 </div>
             </section>
 
-            <!-- Main Area: Task Details -->
-            <section class="glass-panel">
-                <div id="task-detail-content" class="task-detail-panel" style="display: none;">
-                    <div class="detail-header-block">
-                        <div class="detail-title-group">
-                            <h2 id="det-text">Task details</h2>
-                            <p id="det-id">Task ID: -</p>
+            <!-- Main Area: Chat Console -->
+            <section class="glass-panel" style="display: flex; flex-direction: column; height: calc(100vh - 12rem); min-height: 600px; padding: 0; overflow: hidden;">
+                <div id="task-detail-content" class="task-detail-panel" style="display: none; flex-direction: column; height: 100%;">
+                    <!-- Chat Header -->
+                    <div class="detail-header-block" style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: hsla(224, 25%, 4%, 0.2);">
+                        <div class="detail-title-group" style="flex: 1; min-width: 0;">
+                            <h2 id="det-text" style="font-size: 1.15rem; font-family: var(--font-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px;">Task details</h2>
+                            <p id="det-id" style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">Task ID: -</p>
                         </div>
-                        <span id="det-status" class="badge queued">queued</span>
-                    </div>
-
-                    <div class="detail-meta-grid">
-                        <div class="meta-item">
-                            <span class="meta-label">Chat ID</span>
-                            <span id="det-chat-id" class="meta-val">-</span>
-                        </div>
-                        <span style="border-right: 1px solid var(--border);"></span>
-                        <div class="meta-item">
-                            <span class="meta-label">Created Time</span>
-                            <span id="det-created" class="meta-val">-</span>
-                        </div>
-                    </div>
-
-                    <!-- Steps Timeline -->
-                    <div class="timeline-container">
-                        <h3>Execution Steps</h3>
-                        <div id="det-steps" style="display: flex; flex-direction: column; gap: 0.5rem;">
-                            <!-- Dynamic steps -->
-                        </div>
-                    </div>
-
-                    <!-- Console Logs -->
-                    <div class="console-container">
-                        <div class="console-header">
-                            <h3>Console Output</h3>
-                            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <!-- Steps Progress dots -->
+                            <div id="det-steps-progress" style="display: flex; gap: 6px; align-items: center;"></div>
+                            
+                            <span id="det-status" class="badge queued">queued</span>
+                            
+                            <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 0.75rem; color: var(--text-muted); margin-left: 0.5rem; user-select: none;">
                                 <input type="checkbox" id="auto-scroll-logs" checked> Auto-scroll
                             </label>
                         </div>
-                        <div id="console-logs" class="console-body">
-                            <!-- Dynamic logs -->
-                        </div>
                     </div>
 
-                    <!-- Artifacts -->
-                    <div class="artifacts-container">
-                        <h3>Artifacts</h3>
-                        <div id="det-artifacts" class="artifacts-grid">
-                            <!-- Dynamic artifacts -->
+                    <!-- Chat Messages Flow -->
+                    <div id="chat-messages-flow" style="flex: 1; overflow-y: auto; padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem;">
+                        <!-- Dynamic Chat Bubbles -->
+                    </div>
+
+                    <!-- Interactive Input / Widgets Area -->
+                    <div style="padding: 1rem 1.5rem; border-top: 1px solid var(--border); background: hsla(224, 25%, 4%, 0.4); display: flex; flex-direction: column; gap: 0.75rem;">
+                        <!-- Confirmation Widget (inline) -->
+                        <div id="confirm-banner" class="confirm-banner-web" style="display: none; margin-bottom: 0;">
+                            <div style="display: flex; align-items: center; gap: 0.5rem; color: var(--warning); font-weight: 600;">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                                <span>Task needs confirmation before running:</span>
+                            </div>
+                            <ul id="confirm-reasons" style="padding-left: 1.5rem; font-size: 0.85rem; color: var(--text-muted); list-style-type: disc;">
+                                <!-- Reasons -->
+                            </ul>
+                            <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                                <button class="btn" onclick="resolveConfirmation(true)" style="background-color: var(--success); font-size: 0.85rem; padding: 6px 16px;">✅ Run</button>
+                                <button class="btn btn-danger" onclick="resolveConfirmation(false)" style="font-size: 0.85rem; padding: 6px 16px;">❌ Cancel</button>
+                            </div>
+                        </div>
+
+                        <!-- Ask Options (inline) -->
+                        <div id="ask-options-container" class="ask-options-grid" style="display: none;">
+                            <!-- options -->
+                        </div>
+
+                        <!-- Chat Input Box -->
+                        <div style="display: flex; gap: 0.5rem; width: 100%;">
+                            <input type="text" id="chat-inline-input" placeholder="Type a message..." style="flex: 1;" onkeydown="if(event.key==='Enter') handleChatInputSubmit()">
+                            <button class="btn" onclick="handleChatInputSubmit()">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                            </button>
                         </div>
                     </div>
                 </div>
                 
-                <div id="no-task-chosen" class="no-task-selected">
-                    <div class="no-task-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                <!-- Empty Chat State -->
+                <div id="no-task-chosen" class="no-task-selected" style="height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem;">
+                    <div class="no-task-icon" style="margin-bottom: 1rem;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width: 80px; height: 80px; opacity: 0.35;">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                         </svg>
                     </div>
-                    <h3>No Task Selected</h3>
-                    <p>Select a task from history to see execution details, steps, and logs.</p>
+                    <h2 style="font-family: var(--font-title); font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem; background: linear-gradient(135deg, #ffffff 0%, var(--text-muted) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Tanya Hermes</h2>
+                    <p style="color: var(--text-muted); margin-bottom: 2rem; text-align: center; max-width: 440px; font-size: 0.95rem;">Mulai percakapan baru atau berikan tugas orkestrasi untuk proyek Anda.</p>
+                    
+                    <div style="width: 100%; max-width: 600px; display: flex; gap: 0.5rem; background: hsla(224, 25%, 4%, 0.4); border: 1px solid var(--border); padding: 6px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+                        <input type="text" id="new-task-prompt" placeholder="Contoh: @myproject perbaiki bug login..." style="flex: 1; border: none; background: transparent; padding: 10px 12px; color: white; outline: none; font-size: 0.95rem;" onkeydown="if(event.key==='Enter') submitNewTask('new-task-prompt')">
+                        <button class="btn" onclick="submitNewTask('new-task-prompt')">Kirim</button>
+                    </div>
                 </div>
             </section>
         </div>
@@ -1622,91 +1717,156 @@
                 statusBadge.innerText = task.status;
                 statusBadge.className = `badge ${task.status}`;
 
-                document.getElementById('det-chat-id').innerText = task.chat_id;
-                document.getElementById('det-created').innerText = new Date(task.created * 1000).toLocaleString();
-
-                // Steps
-                const stepsContainer = document.getElementById('det-steps');
+                // Steps progress dots
+                const stepsProgress = document.getElementById('det-steps-progress');
                 if (task.steps && task.steps.length > 0) {
-                    stepsContainer.innerHTML = task.steps.map((st, i) => {
-                        let detailObj = {};
-                        try { detailObj = JSON.parse(st.detail); } catch(e){}
-                        const detailStr = detailObj.prompt || detailObj.target || detailObj.mode || st.detail;
+                    stepsProgress.innerHTML = task.steps.map((st, i) => {
+                        let title = `${st.kind.toUpperCase()}: ${st.status}`;
+                        let colorClass = st.status === 'done' ? 'var(--success)' : 
+                                         st.status === 'failed' ? 'var(--danger)' : 
+                                         st.status === 'running' ? 'var(--primary)' : 'var(--border)';
                         return `
-                            <div class="step-row ${st.status}">
-                                <div class="step-num">${st.idx + 1}</div>
-                                <div class="step-info">
-                                    <div class="step-name">${st.kind.toUpperCase()} <span class="badge ${st.status}" style="font-size: 0.65rem;">${st.status}</span></div>
-                                    <div class="step-desc">${escapeHtml(detailStr)}</div>
-                                </div>
+                            <div class="tooltip" style="width: 12px; height: 12px; border-radius: 3px; background-color: ${colorClass}; display: inline-block;">
+                                <span class="tooltiptext" style="bottom: 150%; width: 120px; font-size: 0.7rem;">${escapeHtml(title)}</span>
                             </div>
                         `;
                     }).join('');
                 } else {
-                    stepsContainer.innerHTML = '<div style="font-size: 0.85rem; color: var(--text-muted);">No steps generated yet.</div>';
+                    stepsProgress.innerHTML = '';
                 }
 
-                // Logs
-                const consoleLogs = document.getElementById('console-logs');
-                const previousHeight = consoleLogs.scrollHeight;
-                
-                if (data.logs && data.logs.length > 0) {
-                    consoleLogs.innerHTML = data.logs.map(line => {
-                        let cls = '';
-                        if (line.toLowerCase().includes('error') || line.toLowerCase().includes('fail')) {
-                            cls = 'error';
-                        } else if (line.startsWith('[')) {
-                            cls = 'system';
-                        }
-                        return `<div class="console-line ${cls}">${escapeHtml(line)}</div>`;
-                    }).join('');
+                // Chat Messages Flow parsing and rendering
+                const chatFlow = document.getElementById('chat-messages-flow');
+                const previousScrollHeight = chatFlow.scrollHeight;
+                const messages = parseLogsToMessages(task, data.logs || [], data.artifacts || []);
+
+                if (messages.length === 0) {
+                    chatFlow.innerHTML = '<div style="text-align: center; color: var(--text-muted); font-size: 0.9rem;">No messages yet.</div>';
                 } else {
-                    consoleLogs.innerHTML = '<div class="console-line system">Waiting for execution logs...</div>';
-                }
-
-                // Auto-scroll logs
-                const autoScroll = document.getElementById('auto-scroll-logs').checked;
-                if (autoScroll && (isInitialSelect || consoleLogs.scrollHeight > previousHeight)) {
-                    consoleLogs.scrollTop = consoleLogs.scrollHeight;
-                }
-
-                // Artifacts
-                const artifactsContainer = document.getElementById('det-artifacts');
-                if (data.artifacts && data.artifacts.length > 0) {
-                    artifactsContainer.innerHTML = data.artifacts.map(art => {
-                        const isImage = art.path.endsWith('.png') || art.path.endsWith('.jpg') || art.path.endsWith('.jpeg');
-                        
-                        if (isImage) {
+                    chatFlow.innerHTML = messages.map(msg => {
+                        if (msg.type === 'logs') {
                             return `
-                                <div style="display: flex; flex-direction: column; gap: 0.5rem; grid-column: span 2;">
-                                    <div class="artifact-card" style="margin-bottom: 0;">
-                                        <div class="artifact-icon">
-                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                                <div class="chat-bubble system-card">
+                                    <div class="chat-bubble-logs" style="background: hsla(224, 25%, 4%, 0.5); border: 1px solid var(--border); border-radius: 8px;">
+                                        <div onclick="toggleCollapse(this)" style="padding: 0.5rem 1rem; display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 0.8rem; color: var(--text-muted); user-select: none;">
+                                            <span>⚙️ System Logs (${msg.logs.length} lines)</span>
+                                            <span class="collapse-icon">▶</span>
                                         </div>
-                                        <div class="artifact-details">
-                                            <div class="artifact-name">${art.kind.toUpperCase()} Screenshot</div>
-                                            <div class="artifact-meta">${escapeHtml(art.path)}</div>
+                                        <div class="log-content" style="display: none; max-height: 250px; overflow-y: auto; background: #05070a; font-family: var(--font-mono); font-size: 0.75rem; color: hsl(120, 60%, 75%); padding: 0.75rem 1rem; border-top: 1px solid var(--border);">
+                                            ${msg.logs.map(line => {
+                                                let cls = '';
+                                                if (line.toLowerCase().includes('error') || line.toLowerCase().includes('fail')) {
+                                                    cls = 'color: var(--danger);';
+                                                } else if (line.startsWith('[')) {
+                                                    cls = 'color: var(--info);';
+                                                }
+                                                return `<div style="margin-bottom: 2px; ${cls}">${escapeHtml(line)}</div>`;
+                                            }).join('')}
                                         </div>
                                     </div>
-                                    <img src="/api/artifacts/view?path=${encodeURIComponent(art.path)}" class="screenshot-preview" alt="Test Screenshot">
                                 </div>
                             `;
                         }
                         
+                        if (msg.type === 'artifacts') {
+                            return `
+                                <div class="chat-bubble assistant">
+                                    <div style="margin-bottom: 0.5rem; font-weight: 500;">${escapeHtml(msg.text)}</div>
+                                    <div class="artifacts-grid" style="margin-top: 0.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                                        ${msg.artifacts.map(art => {
+                                            const isImage = art.path.endsWith('.png') || art.path.endsWith('.jpg') || art.path.endsWith('.jpeg');
+                                            if (isImage) {
+                                                return `
+                                                    <div style="display: flex; flex-direction: column; gap: 0.5rem; grid-column: span 2;">
+                                                        <div class="artifact-card" style="margin-bottom: 0;">
+                                                            <div class="artifact-icon">
+                                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                                                            </div>
+                                                            <div class="artifact-details">
+                                                                <div class="artifact-name">Screenshot</div>
+                                                                <div class="artifact-meta">${escapeHtml(art.path)}</div>
+                                                            </div>
+                                                        </div>
+                                                        <img src="/api/artifacts/view?path=${encodeURIComponent(art.path)}" class="screenshot-preview" alt="Test Screenshot" style="max-width: 100%; border-radius: 8px; border: 1px solid var(--border);">
+                                                    </div>
+                                                `;
+                                            }
+                                            return `
+                                                <a href="/api/artifacts/download?path=${encodeURIComponent(art.path)}" class="artifact-card" target="_blank" style="margin-bottom: 0;">
+                                                    <div class="artifact-icon">
+                                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                                                    </div>
+                                                    <div class="artifact-details">
+                                                        <div class="artifact-name">${escapeHtml(art.path.split(/[\\/]/).pop())}</div>
+                                                        <div class="artifact-meta">Artifact File</div>
+                                                    </div>
+                                                </a>
+                                            `;
+                                        }).join('')}
+                                    </div>
+                                </div>
+                            `;
+                        }
+                        
+                        const bubbleClass = msg.sender === 'user' ? 'user' : 'assistant';
                         return `
-                            <a href="/api/artifacts/download?path=${encodeURIComponent(art.path)}" class="artifact-card" target="_blank">
-                                <div class="artifact-icon">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                                </div>
-                                <div class="artifact-details">
-                                    <div class="artifact-name">${escapeHtml(art.path.split(/[\\/]/).pop())}</div>
-                                    <div class="artifact-meta">${art.kind.toUpperCase()} File</div>
-                                </div>
-                            </a>
+                            <div class="chat-bubble ${bubbleClass}">
+                                ${escapeHtml(msg.text)}
+                            </div>
                         `;
                     }).join('');
+                }
+
+                // Auto-scroll chat window
+                const autoScroll = document.getElementById('auto-scroll-logs').checked;
+                if (autoScroll && (isInitialSelect || chatFlow.scrollHeight > previousScrollHeight)) {
+                    chatFlow.scrollTop = chatFlow.scrollHeight;
+                }
+
+                // Handle Pending Confirm
+                const confirmBanner = document.getElementById('confirm-banner');
+                const confirmReasons = document.getElementById('confirm-reasons');
+                if (data.pending_confirm && data.pending_confirm.length > 0) {
+                    confirmBanner.style.display = 'block';
+                    confirmReasons.innerHTML = data.pending_confirm.map(r => `<li>${escapeHtml(r)}</li>`).join('');
                 } else {
-                    artifactsContainer.innerHTML = '<div style="font-size: 0.85rem; color: var(--text-muted); grid-column: 1/-1;">No artifacts produced yet.</div>';
+                    confirmBanner.style.display = 'none';
+                }
+
+                // Handle Pending Ask
+                const askOptions = document.getElementById('ask-options-container');
+                const inlineInput = document.getElementById('chat-inline-input');
+                
+                if (data.pending_ask) {
+                    // Retain current selections if we're in multi-select mode to avoid wiping them during polling
+                    if (!state.activeAsk || state.activeAsk.ask_id !== data.pending_ask.ask_id) {
+                        state.activeAsk = { ...data.pending_ask, selected: [] };
+                    } else {
+                        state.activeAsk.question = data.pending_ask.question;
+                        state.activeAsk.options = data.pending_ask.options;
+                        state.activeAsk.multi = data.pending_ask.multi;
+                    }
+                    
+                    inlineInput.placeholder = `Hermes asks: "${data.pending_ask.question}" - Type your reply...`;
+                    
+                    if (data.pending_ask.options && data.pending_ask.options.length > 0) {
+                        askOptions.style.display = 'flex';
+                        askOptions.innerHTML = data.pending_ask.options.map((opt, idx) => {
+                            const isSelected = state.activeAsk.selected && state.activeAsk.selected.includes(idx);
+                            const activeClass = isSelected ? 'active' : '';
+                            return `<button class="btn btn-secondary ${activeClass}" style="margin-right: 0.25rem; margin-bottom: 0.25rem;" onclick="toggleAskOption(${idx})">${escapeHtml(opt.label || opt)}</button>`;
+                        }).join('');
+                        
+                        if (data.pending_ask.multi) {
+                            askOptions.innerHTML += `<button class="btn" onclick="submitAskSelection()" style="margin-top: 0.5rem; width: 100%;">Submit Selection</button>`;
+                        }
+                    } else {
+                        askOptions.style.display = 'none';
+                    }
+                } else {
+                    askOptions.style.display = 'none';
+                    state.activeAsk = null;
+                    inlineInput.placeholder = "Start a new task/conversation (e.g. @sayur fix typo)...";
                 }
 
             }
@@ -2274,6 +2434,284 @@
         } finally {
             btnTest.disabled = false;
             btnTest.innerText = 'Test Server';
+        }
+    }
+
+    // Web Chat Functions
+    async function submitNewTask(inputId) {
+        const input = document.getElementById(inputId);
+        const text = input.value.trim();
+        if (!text) return;
+        
+        try {
+            const res = await fetch('/api/tasks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                showToast(`Task ${data.task_id} successfully queued`, 'success');
+                input.value = '';
+                state.currentTaskId = data.task_id;
+                await loadTasks();
+            } else {
+                showToast('Failed to submit task', 'error');
+            }
+        } catch (err) {
+            showToast('Network error while submitting task', 'error');
+        }
+    }
+
+    function createNewTaskUI() {
+        state.currentTaskId = null;
+        renderTaskList();
+        document.getElementById('no-task-chosen').style.display = 'flex';
+        document.getElementById('task-detail-content').style.display = 'none';
+        
+        // Auto focus the input field
+        setTimeout(() => {
+            const input = document.getElementById('new-task-prompt');
+            if (input) input.focus();
+        }, 100);
+    }
+
+    async function resolveConfirmation(approved) {
+        const taskId = state.currentTaskId;
+        if (!taskId) return;
+        
+        try {
+            const res = await fetch(`/api/tasks/${taskId}/confirm`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ approved })
+            });
+            if (res.ok) {
+                showToast(approved ? 'Task confirmed and queued' : 'Task cancelled', 'success');
+                document.getElementById('confirm-banner').style.display = 'none';
+                await loadTasks();
+            } else {
+                showToast('Failed to send confirmation', 'error');
+            }
+        } catch (err) {
+            showToast('Network error during confirmation', 'error');
+        }
+    }
+
+    async function toggleAskOption(idx) {
+        if (!state.activeAsk) return;
+        
+        if (!state.activeAsk.multi) {
+            // Single choice: answer immediately
+            try {
+                const res = await fetch(`/api/tasks/${state.currentTaskId}/answer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ask_id: state.activeAsk.ask_id,
+                        options: [idx]
+                    })
+                });
+                if (res.ok) {
+                    showToast('Response submitted', 'success');
+                    document.getElementById('ask-options-container').style.display = 'none';
+                    state.activeAsk = null;
+                    await loadTasks();
+                } else {
+                    showToast('Failed to submit response', 'error');
+                }
+            } catch (err) {
+                showToast('Network error while submitting response', 'error');
+            }
+        } else {
+            // Multi-select: toggle selection locally
+            if (!state.activeAsk.selected) {
+                state.activeAsk.selected = [];
+            }
+            const selectedIdx = state.activeAsk.selected.indexOf(idx);
+            if (selectedIdx > -1) {
+                state.activeAsk.selected.splice(selectedIdx, 1);
+            } else {
+                state.activeAsk.selected.push(idx);
+            }
+            
+            // Re-render only options buttons (to avoid wiping focus or causing full reload)
+            const askOptions = document.getElementById('ask-options-container');
+            askOptions.innerHTML = state.activeAsk.options.map((opt, i) => {
+                const isSelected = state.activeAsk.selected.includes(i);
+                const activeClass = isSelected ? 'active' : '';
+                return `<button class="btn btn-secondary ${activeClass}" style="margin-right: 0.25rem; margin-bottom: 0.25rem;" onclick="toggleAskOption(${i})">${escapeHtml(opt.label || opt)}</button>`;
+            }).join('');
+            
+            askOptions.innerHTML += `<button class="btn" onclick="submitAskSelection()" style="margin-top: 0.5rem; width: 100%;">Submit Selection</button>`;
+        }
+    }
+
+    async function submitAskSelection() {
+        if (!state.activeAsk || !state.activeAsk.selected || state.activeAsk.selected.length === 0) {
+            showToast('Please select at least one option', 'warning');
+            return;
+        }
+        
+        try {
+            const res = await fetch(`/api/tasks/${state.currentTaskId}/answer`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ask_id: state.activeAsk.ask_id,
+                    options: state.activeAsk.selected
+                })
+            });
+            if (res.ok) {
+                showToast('Response submitted', 'success');
+                document.getElementById('ask-options-container').style.display = 'none';
+                state.activeAsk = null;
+                await loadTasks();
+            } else {
+                showToast('Failed to submit response', 'error');
+            }
+        } catch (err) {
+            showToast('Network error while submitting response', 'error');
+        }
+    }
+
+    async function handleChatInputSubmit() {
+        const input = document.getElementById('chat-inline-input');
+        const text = input.value.trim();
+        if (!text) return;
+        
+        if (state.activeAsk) {
+            // Submit as textual answer to pending question
+            try {
+                const res = await fetch(`/api/tasks/${state.currentTaskId}/answer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ask_id: state.activeAsk.ask_id,
+                        text: text
+                    })
+                });
+                if (res.ok) {
+                    showToast('Response submitted', 'success');
+                    input.value = '';
+                    state.activeAsk = null;
+                    await loadTasks();
+                } else {
+                    showToast('Failed to submit response', 'error');
+                }
+            } catch (err) {
+                showToast('Network error while submitting response', 'error');
+            }
+        } else {
+            // Submit as a brand new task / prompt
+            try {
+                const res = await fetch('/api/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    showToast(`Task ${data.task_id} successfully queued`, 'success');
+                    input.value = '';
+                    state.currentTaskId = data.task_id;
+                    await loadTasks();
+                } else {
+                    showToast('Failed to submit task', 'error');
+                }
+            } catch (err) {
+                showToast('Network error while submitting task', 'error');
+            }
+        }
+    }
+
+    function parseLogsToMessages(task, logs, artifacts) {
+        const messages = [];
+        
+        // 1. Initial User Message
+        messages.push({
+            sender: 'user',
+            text: task.text,
+            ts: task.created,
+            type: 'prompt'
+        });
+        
+        // 2. Scan logs to build subsequent bubbles
+        let currentSystemLogs = [];
+        
+        for (const line of logs) {
+            if (line.startsWith('ask: ')) {
+                // Flush system logs
+                if (currentSystemLogs.length > 0) {
+                    messages.push({
+                        sender: 'system',
+                        logs: [...currentSystemLogs],
+                        type: 'logs'
+                    });
+                    currentSystemLogs = [];
+                }
+                messages.push({
+                    sender: 'assistant',
+                    text: line.substring(5),
+                    type: 'ask'
+                });
+            } else if (line.startsWith('answer: ')) {
+                // Flush system logs
+                if (currentSystemLogs.length > 0) {
+                    messages.push({
+                        sender: 'system',
+                        logs: [...currentSystemLogs],
+                        type: 'logs'
+                    });
+                    currentSystemLogs = [];
+                }
+                let ansText = line.substring(8);
+                if (ansText.startsWith('User replied (free text): ')) {
+                    ansText = ansText.substring(26);
+                } else if (ansText.startsWith('User chose: ')) {
+                    ansText = ansText.substring(12);
+                }
+                messages.push({
+                    sender: 'user',
+                    text: ansText,
+                    type: 'answer'
+                });
+            } else {
+                currentSystemLogs.push(line);
+            }
+        }
+        
+        if (currentSystemLogs.length > 0) {
+            messages.push({
+                sender: 'system',
+                logs: [...currentSystemLogs],
+                type: 'logs'
+            });
+        }
+        
+        // 3. Append artifacts if any
+        if (artifacts && artifacts.length > 0) {
+            messages.push({
+                sender: 'assistant',
+                text: 'Hermes produced the following files/artifacts:',
+                artifacts: artifacts,
+                type: 'artifacts'
+            });
+        }
+        
+        return messages;
+    }
+
+    function toggleCollapse(header) {
+        const content = header.nextElementSibling;
+        const icon = header.querySelector('.collapse-icon');
+        if (content.style.display === 'none') {
+            content.style.display = 'block';
+            icon.innerText = '▼';
+            content.scrollTop = content.scrollHeight;
+        } else {
+            content.style.display = 'none';
+            icon.innerText = '▶';
         }
     }
 
