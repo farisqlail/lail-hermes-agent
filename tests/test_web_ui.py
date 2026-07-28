@@ -458,6 +458,47 @@ def test_chat_without_agent_falls_back_to_canned_reply(hermes_home):
     assert any("/task" in line for line in store.get_logs(r.json()["task_id"]))
 
 
+def test_chat_stream_sse_streams_and_persists(hermes_home):
+    """T3: /api/chat/stream emits SSE token deltas, a usage event, and a done
+    event, and persists the full assembled reply once at the end."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    async def fake_chat(history, tools=None, dispatch=None):
+        return "unused"
+    async def fake_stream(history, tools=None, dispatch=None):
+        for tok in ["Ha", "lo", " dunia"]:
+            yield ("token", tok)
+        yield ("usage", {"prompt": 3, "completion": 3, "total": 6})
+    fake_chat.stream = fake_stream
+
+    client = TestClient(create_app(store, chat=fake_chat))
+    with client.stream("POST", "/api/chat/stream", json={"text": "hai"}) as r:
+        assert r.status_code == 200
+        body = "".join(r.iter_text())
+
+    assert '"delta": "Ha"' in body
+    assert "dunia" in body
+    assert '"usage"' in body and '"total": 6' in body
+    assert '"done": true' in body
+
+    msgs = store.get_messages("web", 10)
+    assert msgs[0]["content"] == "hai" and msgs[0]["role"] == "user"
+    assert msgs[-1]["role"] == "assistant" and msgs[-1]["content"] == "Halo dunia"
+
+
+def test_chat_stream_without_agent_streams_canned(hermes_home):
+    """chat=None still streams a usable canned reply, never a dead pane."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))  # no chat
+    with client.stream("POST", "/api/chat/stream", json={"text": "hai"}) as r:
+        assert r.status_code == 200
+        body = "".join(r.iter_text())
+    assert "/task" in body and '"done": true' in body
+    assert store.get_messages("web", 10)[-1]["role"] == "assistant"
+
+
 async def test_chat_tools_query_state_and_propose_task(hermes_home):
     """T4: the agent's tools read real state (projects, tasks) and start_task
     only QUEUES a task held for the operator's confirm — never runs it."""

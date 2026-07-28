@@ -231,6 +231,72 @@ def build_nim_chat(settings, secrets):
                 continue
             return m.content or ""
         return "Maaf, terlalu banyak putaran alat tanpa jawaban akhir."
+
+    async def stream(history: list[dict], tools=None, dispatch=None):
+        """Token-streaming twin of chat(): yields ("token", str) as the model
+        emits, ("usage", {...}) once at the end. Tool rounds run inline — their
+        content is not the final answer, so the loop resolves them and only the
+        final round's prose reaches the caller as tokens.
+
+        Not wrapped in _completion_with_retry: a retry cannot resume a stream
+        mid-flight, so a transient NIM error surfaces to the SSE handler, which
+        renders it as the assistant's turn rather than silently retrying.
+        """
+        if not secrets.nvidia_api_key:
+            raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
+        client = AsyncOpenAI(base_url=settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
+                             timeout=PLANNER_REQUEST_TIMEOUT_S)
+        msgs = [{"role": "system", "content": system}, *history]
+        use_tools = bool(tools and dispatch)
+        for _ in range(MAX_TOOL_ROUNDS):
+            kwargs = dict(model=settings.chat_model or settings.model, messages=msgs,
+                          temperature=settings.chat_temperature, stream=True,
+                          stream_options={"include_usage": True})
+            if use_tools:
+                kwargs["tools"] = tools
+            resp = await client.chat.completions.create(**kwargs)
+            content_buf = ""
+            tool_acc: dict = {}   # index -> {id, name, args}
+            usage = None
+            async for chunk in resp:
+                if getattr(chunk, "usage", None):
+                    u = chunk.usage
+                    usage = {"prompt": u.prompt_tokens, "completion": u.completion_tokens,
+                             "total": u.total_tokens}
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    content_buf += delta.content
+                    yield ("token", delta.content)
+                for tcd in (getattr(delta, "tool_calls", None) or []):
+                    slot = tool_acc.setdefault(tcd.index, {"id": "", "name": "", "args": ""})
+                    if tcd.id:
+                        slot["id"] = tcd.id
+                    if tcd.function and tcd.function.name:
+                        slot["name"] += tcd.function.name
+                    if tcd.function and tcd.function.arguments:
+                        slot["args"] += tcd.function.arguments
+            if tool_acc:
+                msgs.append({"role": "assistant", "content": content_buf or None,
+                             "tool_calls": [
+                                 {"id": s["id"], "type": "function",
+                                  "function": {"name": s["name"], "arguments": s["args"] or "{}"}}
+                                 for s in tool_acc.values()]})
+                for s in tool_acc.values():
+                    try:
+                        args = json.loads(s["args"] or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = await dispatch(s["name"], args)
+                    msgs.append({"role": "tool", "tool_call_id": s["id"], "content": result})
+                continue
+            if usage:
+                yield ("usage", usage)
+            return
+        yield ("token", "Maaf, terlalu banyak putaran alat tanpa jawaban akhir.")
+
+    chat.stream = stream
     return chat
 
 def real_mcp_session_factory(srv):

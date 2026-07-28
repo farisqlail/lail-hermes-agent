@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio, json, re, subprocess, time
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
 from . import config, paths
@@ -390,6 +390,53 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     def chat_reset():
         store.clear_messages(CONV_WEB)
         return {"ok": True}
+
+    @app.post("/api/chat/stream")
+    async def chat_stream(body: TaskSubmit):
+        # Server-Sent Events: the assistant's reply streams token-by-token so the
+        # pane fills live instead of waiting for the whole completion. The user
+        # turn is recorded before streaming (history must include it); the
+        # assistant turn is persisted once, after the stream ends, from the text
+        # actually delivered — a client that disconnects mid-stream still leaves
+        # a coherent thread on the next load.
+        text = body.text.strip()
+        store.add_message(CONV_WEB, "user", text)
+        chat = getattr(app.state, "chat", None)
+
+        def sse(obj: dict) -> str:
+            return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+        async def gen():
+            acc = ""
+            usage = None
+            if chat is None or not hasattr(chat, "stream"):
+                acc = ("Halo! Saya Hermes. Untuk menjalankan tugas gunakan "
+                       "`/task <deskripsi>`; `/projects` untuk daftar proyek, "
+                       "`/help` untuk bantuan.")
+                yield sse({"delta": acc})
+            else:
+                history = store.get_messages(CONV_WEB, limit=CHAT_HISTORY_LIMIT)
+                try:
+                    async for kind, payload in chat.stream(
+                            history, tools=CHAT_TOOLS, dispatch=chat_dispatch):
+                        if kind == "token":
+                            acc += payload
+                            yield sse({"delta": payload})
+                        elif kind == "usage":
+                            usage = payload
+                            yield sse({"usage": payload})
+                except Exception as e:
+                    safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
+                    note = f"\n\n(Maaf, chat gagal: {safe})"
+                    acc += note
+                    yield sse({"delta": note})
+            # Persist whatever was actually produced (empty stays empty, not a lie).
+            store.add_message(CONV_WEB, "assistant", acc)
+            yield sse({"done": True, "usage": usage})
+
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
 
     @app.get("/api/settings")
     def get_settings(): return config.load_settings().model_dump()

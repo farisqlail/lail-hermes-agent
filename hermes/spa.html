@@ -1062,6 +1062,28 @@
             border-bottom-left-radius: 4px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
         }
+        .chat-bubble .md-code {
+            font-family: var(--font-mono);
+            font-size: 0.85em;
+            background: hsla(224, 25%, 4%, 0.5);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 1px 5px;
+        }
+        .chat-bubble .md-pre {
+            margin: 0.5rem 0;
+            padding: 0.75rem 1rem;
+            background: #05070a;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+        .chat-bubble .md-pre code {
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            color: hsl(120, 60%, 78%);
+            white-space: pre;
+        }
         .chat-bubble.system-card {
             max-width: 100%;
             width: 100%;
@@ -1254,8 +1276,11 @@
                     <div style="padding: 1rem 1.5rem; border-top: 1px solid var(--border); background: hsla(224, 25%, 4%, 0.4);">
                         <div style="display: flex; gap: 0.5rem; width: 100%;">
                             <input type="text" id="new-task-prompt" placeholder="Tulis pesan, atau /task @proyek perbaiki bug..." style="flex: 1;" onkeydown="if(event.key==='Enter') submitNewTask('new-task-prompt')">
-                            <button class="btn" onclick="submitNewTask('new-task-prompt')">
+                            <button class="btn" id="chat-send-btn" onclick="submitNewTask('new-task-prompt')" title="Kirim">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                            </button>
+                            <button class="btn btn-danger" id="chat-stop-btn" onclick="stopChatStream()" title="Hentikan" style="display: none;">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>
                             </button>
                         </div>
                     </div>
@@ -2458,47 +2483,138 @@
         const input = document.getElementById(inputId);
         const text = input.value.trim();
         if (!text) return;
+        if (state.chatStreaming) return;   // a reply is still streaming
         input.value = '';
 
-        // /task queues real work (shown in the task list + detail view);
-        // everything else is a conversational turn rendered in the chat thread.
-        const isTaskCmd = /^\/task\b/i.test(text);
-        if (!isTaskCmd) {
-            appendChatBubble('user', text);
-            appendTypingIndicator();
-        }
-
-        try {
-            const res = await fetch('/api/tasks', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text })
-            });
-            if (res.ok) {
-                const data = await res.json();
-                if (data.status === 'queued') {
+        const lower = text.toLowerCase();
+        // /task queues real work (task list + detail view).
+        if (lower.startsWith('/task')) {
+            try {
+                const res = await fetch('/api/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text })
+                });
+                if (res.ok) {
+                    const data = await res.json();
                     showToast(`Task ${data.task_id} successfully queued`, 'success');
                     state.currentTaskId = data.task_id;
                     await loadTasks();
                 } else {
-                    // Conversational reply already persisted server-side; pull
-                    // the authoritative thread (this also drops the typing bubble).
-                    await loadChatThread();
+                    showToast('Failed to submit task', 'error');
                 }
-            } else {
-                removeTypingIndicator();
-                showToast('Failed to submit message', 'error');
+            } catch (err) {
+                showToast('Network error while submitting task', 'error');
             }
-        } catch (err) {
-            removeTypingIndicator();
-            showToast('Network error while submitting message', 'error');
+            return;
         }
+        // /help and /projects are inline command stubs (also recorded to the
+        // thread server-side) — post, then pull the authoritative thread.
+        if (lower.startsWith('/help') || lower.startsWith('/projects')) {
+            appendChatBubble('user', text);
+            try {
+                await fetch('/api/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text })
+                });
+                await loadChatThread();
+            } catch (err) {
+                showToast('Network error', 'error');
+            }
+            return;
+        }
+        // Plain conversation streams token-by-token.
+        await streamChat(text);
+    }
+
+    // --- Streaming conversation (T3) ---
+    async function streamChat(text) {
+        const thread = document.getElementById('chat-thread');
+        if (!thread) return;
+        const empty = thread.querySelector('.chat-empty');
+        if (empty) thread.innerHTML = '';
+        appendChatBubble('user', text);
+
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble assistant';
+        bubble.innerHTML = '<span style="opacity: 0.55;">…</span>';
+        thread.appendChild(bubble);
+        thread.scrollTop = thread.scrollHeight;
+
+        state.chatStreaming = true;
+        state.chatAbort = new AbortController();
+        setChatSending(true);
+        let acc = '', usage = null;
+        try {
+            const res = await fetch('/api/chat/stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text }),
+                signal: state.chatAbort.signal
+            });
+            if (!res.ok || !res.body) throw new Error('stream unavailable');
+            const reader = res.body.getReader();
+            const dec = new TextDecoder();
+            let buf = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buf += dec.decode(value, { stream: true });
+                let idx;
+                while ((idx = buf.indexOf('\n\n')) >= 0) {
+                    const raw = buf.slice(0, idx); buf = buf.slice(idx + 2);
+                    const line = raw.replace(/^data:\s?/, '');
+                    if (!line) continue;
+                    let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
+                    if (ev.delta) {
+                        acc += ev.delta;
+                        bubble.innerHTML = renderMarkdown(acc);
+                        const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 120;
+                        if (nearBottom) thread.scrollTop = thread.scrollHeight;
+                    }
+                    if (ev.usage) usage = ev.usage;
+                }
+            }
+            if (!acc) bubble.innerHTML = '<span style="opacity: 0.55;">(tak ada balasan)</span>';
+            else bubble.innerHTML = renderMarkdown(acc);
+            if (usage && usage.total) appendUsage(bubble, `${usage.total} token`);
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                bubble.innerHTML = acc ? renderMarkdown(acc) : '<span style="opacity: 0.55;">(dihentikan)</span>';
+                appendUsage(bubble, 'dihentikan');
+            } else {
+                bubble.innerHTML = '<span style="color: var(--danger);">Gagal menyambung ke chat.</span>';
+            }
+        } finally {
+            state.chatStreaming = false;
+            state.chatAbort = null;
+            setChatSending(false);
+        }
+    }
+
+    function stopChatStream() {
+        if (state.chatAbort) state.chatAbort.abort();
+    }
+
+    function setChatSending(sending) {
+        const send = document.getElementById('chat-send-btn');
+        const stop = document.getElementById('chat-stop-btn');
+        if (send) send.style.display = sending ? 'none' : '';
+        if (stop) stop.style.display = sending ? '' : 'none';
+    }
+
+    function appendUsage(bubble, label) {
+        const f = document.createElement('div');
+        f.style.cssText = 'font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;';
+        f.textContent = label;
+        bubble.appendChild(f);
     }
 
     // --- Live conversation thread (default pane) ---
     async function loadChatThread() {
         const thread = document.getElementById('chat-thread');
-        if (!thread) return;
+        if (!thread || state.chatStreaming) return;  // never clobber a live stream
         try {
             const res = await fetch('/api/chat');
             if (!res.ok) return;
@@ -2514,13 +2630,39 @@
             // Only auto-stick to the bottom if the user is already near it, so a
             // poll refresh does not yank them up while scrolling back.
             const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
-            thread.innerHTML = msgs.map(m =>
-                `<div class="chat-bubble ${m.role === 'user' ? 'user' : 'assistant'}" style="white-space: pre-wrap;">${escapeHtml(m.content)}</div>`
-            ).join('');
+            thread.innerHTML = msgs.map(m => {
+                // User text is literal (never markup); assistant text is rendered
+                // as light markdown, matching the streamed bubble so a poll
+                // refresh does not strip formatting.
+                const body = m.role === 'user' ? escapeHtml(m.content) : renderMarkdown(m.content);
+                const ws = m.role === 'user' ? 'pre-wrap' : 'normal';
+                return `<div class="chat-bubble ${m.role === 'user' ? 'user' : 'assistant'}" style="white-space: ${ws};">${body}</div>`;
+            }).join('');
             if (nearBottom) thread.scrollTop = thread.scrollHeight;
         } catch (err) {
             // A transient fetch failure just leaves the last render in place.
         }
+    }
+
+    // Minimal, safe markdown: escape first, then re-introduce a small set of
+    // formatting. Code fences are stashed behind placeholders so their contents
+    // never get <br>-mangled. No external library (offline + strict CSP).
+    function renderMarkdown(src) {
+        let s = escapeHtml(src || '');
+        const blocks = [];
+        const SENT = String.fromCharCode(0);   // sentinel that user text cannot contain
+        s = s.replace(/```([\s\S]*?)```/g, (m, code) => {
+            blocks.push(`<pre class="md-pre"><code>${code.replace(/^\n+|\n+$/g, '')}</code></pre>`);
+            return SENT + (blocks.length - 1) + SENT;
+        });
+        s = s.replace(/`([^`\n]+)`/g, '<code class="md-code">$1</code>');
+        s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+        s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+            '<a href="$2" target="_blank" rel="noopener">$1</a>');
+        s = s.replace(/^(\s*)[-*] +(.+)$/gm, '$1&bull; $2');
+        s = s.replace(/\n/g, '<br>');
+        s = s.replace(new RegExp(SENT + '(\\d+)' + SENT, 'g'), (m, i) => blocks[+i]);
+        return s;
     }
 
     function appendChatBubble(role, content) {
