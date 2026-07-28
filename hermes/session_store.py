@@ -42,6 +42,9 @@ class Store:
                 CREATE TABLE IF NOT EXISTS artifacts(
                   id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
                   kind TEXT, path TEXT);
+                CREATE TABLE IF NOT EXISTS messages(
+                  id INTEGER PRIMARY KEY AUTOINCREMENT, conv_id TEXT,
+                  role TEXT, content TEXT, ts REAL);
                 """
             )
 
@@ -116,3 +119,30 @@ class Store:
             rows = c.execute(
                 "SELECT kind,path FROM artifacts WHERE task_id=? ORDER BY id", (task_id,)).fetchall()
             return [dict(r) for r in rows]
+
+    # --- conversational chat (web UI chat pane) ---
+    # A conversation is a flat, ordered message log keyed by conv_id, separate
+    # from tasks: the operator holds one continuous thread, while each task is a
+    # discrete unit of work. The chat agent is fed the tail of this log so it
+    # remembers the exchange across turns.
+
+    def add_message(self, conv_id, role, content):
+        with self._conn() as c:
+            c.execute("INSERT INTO messages(conv_id,role,content,ts) VALUES(?,?,?,?)",
+                      (conv_id, role, content, time.time()))
+
+    def get_messages(self, conv_id, limit=20):
+        """The last `limit` messages for a conversation, oldest-first.
+
+        Fetched newest-first so the LIMIT keeps the *recent* tail, then
+        reversed back into reading order for the model.
+        """
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT role, content FROM messages WHERE conv_id=? "
+                "ORDER BY id DESC LIMIT ?", (conv_id, limit)).fetchall()
+            return [dict(r) for r in reversed(rows)]
+
+    def clear_messages(self, conv_id):
+        with self._conn() as c:
+            c.execute("DELETE FROM messages WHERE conv_id=?", (conv_id,))

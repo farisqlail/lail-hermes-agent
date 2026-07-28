@@ -397,3 +397,62 @@ async def test_web_task_crash_marks_failed(hermes_home):
             break
     assert (store.get_task(task_id) or {}).get("status") == "failed"
     assert any("background task crashed" in line for line in store.get_logs(task_id))
+
+
+def test_chat_conversation_uses_llm_with_memory(hermes_home):
+    """The non-command branch calls the chat agent with the running history
+    (T1) and remembers prior turns (T2), and its reply is persisted."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    seen_histories = []
+    async def fake_chat(history):
+        seen_histories.append([m["content"] for m in history])
+        return f"echo:{history[-1]['content']}"
+
+    client = TestClient(create_app(store, chat=fake_chat))
+
+    # Turn 1
+    r = client.post("/api/tasks", json={"text": "halo hermes"})
+    assert r.status_code == 200 and r.json()["status"] == "done"
+    # The history handed to the model includes the message it replies to.
+    assert seen_histories[0] == ["halo hermes"]
+    # Reply persisted to the task and the conversation thread.
+    assert any("echo:halo hermes" in line for line in store.get_logs(r.json()["task_id"]))
+
+    # Turn 2 — memory: turn 1 (both roles) precedes the new user message.
+    r = client.post("/api/tasks", json={"text": "lanjut"})
+    assert seen_histories[1] == ["halo hermes", "echo:halo hermes", "lanjut"]
+
+    # GET history mirrors the thread; reset clears it.
+    got = client.get("/api/chat").json()["messages"]
+    assert [m["content"] for m in got] == ["halo hermes", "echo:halo hermes",
+                                           "lanjut", "echo:lanjut"]
+    assert client.post("/api/chat/reset").status_code == 200
+    assert client.get("/api/chat").json()["messages"] == []
+
+
+def test_chat_llm_failure_becomes_assistant_turn(hermes_home):
+    """A raising chat agent must not 500 the pane; the error is recorded as the
+    assistant's reply so the thread stays coherent."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    async def boom_chat(history):
+        raise RuntimeError("nim down")
+
+    client = TestClient(create_app(store, chat=boom_chat))
+    r = client.post("/api/tasks", json={"text": "halo"})
+    assert r.status_code == 200 and r.json()["status"] == "done"
+    logs = store.get_logs(r.json()["task_id"])
+    assert any("chat gagal" in line and "nim down" in line for line in logs)
+
+
+def test_chat_without_agent_falls_back_to_canned_reply(hermes_home):
+    """chat=None (no NIM wired) still answers, so the pane is never dead."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))  # no chat
+    r = client.post("/api/tasks", json={"text": "halo"})
+    assert r.status_code == 200
+    assert any("/task" in line for line in store.get_logs(r.json()["task_id"]))

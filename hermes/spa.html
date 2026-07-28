@@ -1234,19 +1234,30 @@
                     </div>
                 </div>
                 
-                <!-- Empty Chat State -->
-                <div id="no-task-chosen" class="no-task-selected" style="height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem;">
-                    <div class="no-task-icon" style="margin-bottom: 1rem;">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width: 80px; height: 80px; opacity: 0.35;">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                        </svg>
+                <!-- Live Conversation With Hermes (default view) -->
+                <div id="no-task-chosen" style="height: 100%; display: flex; flex-direction: column;">
+                    <!-- Chat Header -->
+                    <div style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: hsla(224, 25%, 4%, 0.2);">
+                        <div style="min-width: 0;">
+                            <h2 style="font-size: 1.15rem; font-family: var(--font-title); margin-bottom: 2px;">Tanya Hermes</h2>
+                            <p style="font-size: 0.75rem; color: var(--text-muted);">Percakapan langsung · ketik <code>/task</code> untuk orkestrasi</p>
+                        </div>
+                        <button class="btn btn-secondary" onclick="resetChat()" style="font-size: 0.8rem; padding: 6px 12px;">Reset</button>
                     </div>
-                    <h2 style="font-family: var(--font-title); font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem; background: linear-gradient(135deg, #ffffff 0%, var(--text-muted) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Tanya Hermes</h2>
-                    <p style="color: var(--text-muted); margin-bottom: 2rem; text-align: center; max-width: 440px; font-size: 0.95rem;">Mulai percakapan baru atau berikan tugas orkestrasi untuk proyek Anda.</p>
-                    
-                    <div style="width: 100%; max-width: 600px; display: flex; gap: 0.5rem; background: hsla(224, 25%, 4%, 0.4); border: 1px solid var(--border); padding: 6px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
-                        <input type="text" id="new-task-prompt" placeholder="Contoh: @myproject perbaiki bug login..." style="flex: 1; border: none; background: transparent; padding: 10px 12px; color: white; outline: none; font-size: 0.95rem;" onkeydown="if(event.key==='Enter') submitNewTask('new-task-prompt')">
-                        <button class="btn" onclick="submitNewTask('new-task-prompt')">Kirim</button>
+
+                    <!-- Conversation Thread -->
+                    <div id="chat-thread" style="flex: 1; overflow-y: auto; padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem;">
+                        <!-- Dynamic bubbles from /api/chat -->
+                    </div>
+
+                    <!-- Chat Input -->
+                    <div style="padding: 1rem 1.5rem; border-top: 1px solid var(--border); background: hsla(224, 25%, 4%, 0.4);">
+                        <div style="display: flex; gap: 0.5rem; width: 100%;">
+                            <input type="text" id="new-task-prompt" placeholder="Tulis pesan, atau /task @proyek perbaiki bug..." style="flex: 1;" onkeydown="if(event.key==='Enter') submitNewTask('new-task-prompt')">
+                            <button class="btn" onclick="submitNewTask('new-task-prompt')">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                            </button>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -1598,6 +1609,7 @@
         loadSettingsData();
         loadSecretsStatus();
         loadTasks();
+        loadChatThread();
 
         // Start polling tasks
         setInterval(loadTasks, 3000);
@@ -1655,6 +1667,10 @@
                 updateTaskCounts();
                 if (state.currentTaskId) {
                     loadTaskDetail(state.currentTaskId, false);
+                } else {
+                    // No task selected -> the default pane is the live chat
+                    // thread; keep it fresh on the same poll.
+                    loadChatThread();
                 }
             }
         } catch (err) {
@@ -2442,7 +2458,16 @@
         const input = document.getElementById(inputId);
         const text = input.value.trim();
         if (!text) return;
-        
+        input.value = '';
+
+        // /task queues real work (shown in the task list + detail view);
+        // everything else is a conversational turn rendered in the chat thread.
+        const isTaskCmd = /^\/task\b/i.test(text);
+        if (!isTaskCmd) {
+            appendChatBubble('user', text);
+            appendTypingIndicator();
+        }
+
         try {
             const res = await fetch('/api/tasks', {
                 method: 'POST',
@@ -2451,15 +2476,91 @@
             });
             if (res.ok) {
                 const data = await res.json();
-                showToast(`Task ${data.task_id} successfully queued`, 'success');
-                input.value = '';
-                state.currentTaskId = data.task_id;
-                await loadTasks();
+                if (data.status === 'queued') {
+                    showToast(`Task ${data.task_id} successfully queued`, 'success');
+                    state.currentTaskId = data.task_id;
+                    await loadTasks();
+                } else {
+                    // Conversational reply already persisted server-side; pull
+                    // the authoritative thread (this also drops the typing bubble).
+                    await loadChatThread();
+                }
             } else {
-                showToast('Failed to submit task', 'error');
+                removeTypingIndicator();
+                showToast('Failed to submit message', 'error');
             }
         } catch (err) {
-            showToast('Network error while submitting task', 'error');
+            removeTypingIndicator();
+            showToast('Network error while submitting message', 'error');
+        }
+    }
+
+    // --- Live conversation thread (default pane) ---
+    async function loadChatThread() {
+        const thread = document.getElementById('chat-thread');
+        if (!thread) return;
+        try {
+            const res = await fetch('/api/chat');
+            if (!res.ok) return;
+            const msgs = (await res.json()).messages || [];
+            if (msgs.length === 0) {
+                thread.innerHTML = `
+                    <div class="chat-empty" style="margin: auto; text-align: center; color: var(--text-muted); max-width: 460px;">
+                        <h2 style="font-family: var(--font-title); font-size: 1.8rem; font-weight: 700; margin-bottom: 0.5rem; background: linear-gradient(135deg, #ffffff 0%, var(--text-muted) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Tanya Hermes</h2>
+                        <p style="font-size: 0.95rem;">Mulai percakapan, atau beri tugas dengan <code>/task @proyek perbaiki bug login</code>. Ketik <code>/help</code> untuk bantuan.</p>
+                    </div>`;
+                return;
+            }
+            // Only auto-stick to the bottom if the user is already near it, so a
+            // poll refresh does not yank them up while scrolling back.
+            const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
+            thread.innerHTML = msgs.map(m =>
+                `<div class="chat-bubble ${m.role === 'user' ? 'user' : 'assistant'}" style="white-space: pre-wrap;">${escapeHtml(m.content)}</div>`
+            ).join('');
+            if (nearBottom) thread.scrollTop = thread.scrollHeight;
+        } catch (err) {
+            // A transient fetch failure just leaves the last render in place.
+        }
+    }
+
+    function appendChatBubble(role, content) {
+        const thread = document.getElementById('chat-thread');
+        if (!thread) return;
+        const empty = thread.querySelector('.chat-empty');
+        if (empty) thread.innerHTML = '';
+        const div = document.createElement('div');
+        div.className = `chat-bubble ${role === 'user' ? 'user' : 'assistant'}`;
+        div.style.whiteSpace = 'pre-wrap';
+        div.textContent = content;   // textContent, not innerHTML: user text is not markup
+        thread.appendChild(div);
+        thread.scrollTop = thread.scrollHeight;
+    }
+
+    function appendTypingIndicator() {
+        const thread = document.getElementById('chat-thread');
+        if (!thread || document.getElementById('chat-typing')) return;
+        const div = document.createElement('div');
+        div.id = 'chat-typing';
+        div.className = 'chat-bubble assistant';
+        div.style.opacity = '0.6';
+        div.textContent = 'Hermes mengetik…';
+        thread.appendChild(div);
+        thread.scrollTop = thread.scrollHeight;
+    }
+
+    function removeTypingIndicator() {
+        const t = document.getElementById('chat-typing');
+        if (t) t.remove();
+    }
+
+    async function resetChat() {
+        if (!confirm('Hapus seluruh percakapan?')) return;
+        try {
+            await fetch('/api/chat/reset', { method: 'POST' });
+            await loadChatThread();
+            showToast('Percakapan direset', 'success');
+        } catch (err) {
+            showToast('Gagal mereset percakapan', 'error');
         }
     }
 
@@ -2468,7 +2569,8 @@
         renderTaskList();
         document.getElementById('no-task-chosen').style.display = 'flex';
         document.getElementById('task-detail-content').style.display = 'none';
-        
+        loadChatThread();
+
         // Auto focus the input field
         setTimeout(() => {
             const input = document.getElementById('new-task-prompt');

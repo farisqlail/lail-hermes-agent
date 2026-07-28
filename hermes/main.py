@@ -168,6 +168,44 @@ def build_nim_planner(settings, secrets, hub):
         raise ValueError(f"planner exceeded {MAX_TOOL_ROUNDS} tool-call rounds without a final answer")
     return planner
 
+def build_nim_chat(settings, secrets):
+    """The conversational agent behind the web UI chat pane.
+
+    Deliberately tool-free, unlike build_nim_planner: the MCP hub exposes
+    ask_user, which only means something inside a live engine run (it needs a
+    Run token and a deadline to suspend). A plain chat turn calling it would
+    block on a question nobody can answer. Tools in chat are a later tier; this
+    one just talks. It also never executes work — running a task stays an
+    explicit /task command, so the agent cannot silently spend money or touch a
+    repo, and cannot invent a result it never produced.
+    """
+    system = (
+        "Kamu adalah Hermes, asisten orkestrasi rekayasa perangkat lunak. "
+        "Jawab ringkas dan membantu, dalam bahasa yang dipakai pengguna "
+        "(default Bahasa Indonesia). Kamu menjelaskan cara kerja Hermes, "
+        "membantu menyusun instruksi, dan menjawab pertanyaan teknis.\n"
+        "Kamu TIDAK mengeksekusi pekerjaan sendiri. Untuk menjalankan tugas "
+        "(mengubah kode, build, test) pengguna harus mengetik `/task "
+        "<deskripsi>` — mis. `/task @myproject jalankan pengujian`. Jika "
+        "diminta menjalankan sesuatu, bantu rumuskan kalimat `/task` yang "
+        "tepat dan sebutkan `@nama-proyek` bila relevan; jangan pernah mengaku "
+        "sudah menjalankannya atau mengarang hasil eksekusi. Gunakan "
+        "`/projects` untuk daftar proyek dan `/help` untuk bantuan."
+    )
+
+    async def chat(history: list[dict]) -> str:
+        if not secrets.nvidia_api_key:
+            raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
+        client = AsyncOpenAI(base_url=settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
+                             timeout=PLANNER_REQUEST_TIMEOUT_S)
+        msgs = [{"role": "system", "content": system}, *history]
+        resp = await _completion_with_retry(
+            lambda: client.chat.completions.create(
+                model=settings.chat_model or settings.model, messages=msgs,
+                temperature=settings.chat_temperature))
+        return resp.choices[0].message.content or ""
+    return chat
+
 def real_mcp_session_factory(srv):
     return RealMcpSession(srv)
 
@@ -327,6 +365,7 @@ async def run():
     hub = McpHub(settings.mcp_servers, session_factory=real_mcp_session_factory)
     await hub.connect()
     planner = build_nim_planner(settings, secrets, hub)
+    chat = build_nim_chat(settings, secrets)
 
     # The engine's channel to the operator. Built before the bot so the
     # orchestrator can carry it into every code step; its on_ask/on_close are
@@ -547,7 +586,7 @@ async def run():
     # streamable_http_app() creates the session manager; the parent lifespan
     # runs it, because Starlette ignores a mounted sub-app's own lifespan.
     ask_asgi = ask_mcp.streamable_http_app()
-    web = create_app(store, bridge=bridge, ask_registry=ask_registry, lifespan=lambda _app: ask_mcp.session_manager.run())
+    web = create_app(store, bridge=bridge, ask_registry=ask_registry, chat=chat, lifespan=lambda _app: ask_mcp.session_manager.run())
     web.mount(ask_server.MOUNT_PREFIX, ask_asgi)
     web.state.mcp_factory = real_mcp_session_factory
     server = uvicorn.Server(uvicorn.Config(web, host="127.0.0.1", port=8799, log_level="info"))

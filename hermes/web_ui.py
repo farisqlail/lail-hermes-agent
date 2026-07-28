@@ -19,6 +19,12 @@ class TaskAnswer(BaseModel):
     text: str | None = None
     options: list[int] | None = None
 
+# The web operator holds one continuous conversation. Localhost, single user,
+# so a fixed id is enough; a per-browser session id is only needed once the
+# dashboard is multi-user.
+CONV_WEB = "web"
+CHAT_HISTORY_LIMIT = 20   # turns fed back to the model — caps prompt cost
+
 def _bg_crash_cb(store: Store, task_id: str):
     """Done-callback for the web UI's fire-and-forget bridge tasks.
 
@@ -117,13 +123,16 @@ def load_spa_html() -> str:
         return path.read_text(encoding="utf-8")
     return "<h1>Hermes: spa.html not found!</h1>"
 
-def create_app(store: Store, bridge=None, ask_registry=None, lifespan=None) -> FastAPI:
+def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan=None) -> FastAPI:
     # lifespan carries the ask MCP server's session manager when main.py mounts
     # it here: a mounted sub-app's own lifespan is ignored by Starlette, so the
     # manager has to be started by the parent or the /ask-mcp endpoint is dead.
     app = FastAPI(lifespan=lifespan)
     app.state.bridge = bridge
     app.state.ask_registry = ask_registry
+    # async (history: list[{role,content}]) -> str; None when no NIM chat is
+    # wired (the conversational branch then falls back to a canned reply).
+    app.state.chat = chat
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
@@ -199,44 +208,70 @@ def create_app(store: Store, bridge=None, ask_registry=None, lifespan=None) -> F
     @app.post("/api/tasks")
     async def post_task(body: TaskSubmit):
         bridge = getattr(app.state, "bridge", None)
-        if not bridge:
-            raise HTTPException(status_code=503, detail="Bridge not configured")
-
         text = body.text.strip()
         task_id = new_task_id()
 
         # chat_id sentinels below: /task -> 0 (a real queued task, listed);
         # every other branch is a synchronous stub answered inline and stored
         # with chat_id=-1 so it stays out of the task list. See /api/tasks.
+        # Only /task needs the bridge (it queues real work); /help, /projects
+        # and conversation answer inline, so they must still work bridge-less.
         if text.lower().startswith("/task"):
+            if not bridge:
+                raise HTTPException(status_code=503, detail="Bridge not configured")
             prompt = text[5:].strip()
             t = asyncio.create_task(bridge.handle_task(user_id=0, chat_id=0, text=prompt, task_id=task_id, trusted=True))
             t.add_done_callback(_bg_crash_cb(store, task_id))
             return {"task_id": task_id, "status": "queued"}
         elif text.lower().startswith("/help"):
             from .telegram_bridge import help_text
+            answer = help_text()
             store.create_task(task_id, -1, text)
             store.set_task_status(task_id, "done")
-            store.append_log(task_id, f"ask: Bantuan Penggunaan")
-            store.append_log(task_id, f"answer: {help_text()}")
+            store.append_log(task_id, "ask: Bantuan Penggunaan")
+            store.append_log(task_id, f"answer: {answer}")
+            # Record in the thread too: /help and /projects are conversational
+            # Q&A, so they belong in the chat log the pane renders, unlike /task
+            # which is real work tracked in the task list.
+            store.add_message(CONV_WEB, "user", text)
+            store.add_message(CONV_WEB, "assistant", answer)
             return {"task_id": task_id, "status": "done"}
         elif text.lower().startswith("/projects"):
             from .telegram_bridge import projects_overview
+            answer = projects_overview(config.load_settings())
             store.create_task(task_id, -1, text)
             store.set_task_status(task_id, "done")
-            store.append_log(task_id, f"ask: Proyek Terdaftar")
-            store.append_log(task_id, f"answer: {projects_overview(bridge.get_settings())}")
+            store.append_log(task_id, "ask: Proyek Terdaftar")
+            store.append_log(task_id, f"answer: {answer}")
+            store.add_message(CONV_WEB, "user", text)
+            store.add_message(CONV_WEB, "assistant", answer)
             return {"task_id": task_id, "status": "done"}
         else:
             store.create_task(task_id, -1, text)
+            store.append_log(task_id, "ask: Chat Conversation")
+            # Record the user's turn first, so the history handed to the model
+            # includes the message it is replying to.
+            store.add_message(CONV_WEB, "user", text)
+            chat = getattr(app.state, "chat", None)
+            if chat is None:
+                reply = (
+                    "Halo! Saya Hermes, asisten orkestrasi Anda.\n\n"
+                    "Untuk menjalankan tugas, gunakan `/task <deskripsi>` — "
+                    "mis. `/task @myproject jalankan pengujian`.\n"
+                    "Gunakan `/projects` untuk daftar proyek atau `/help` untuk bantuan."
+                )
+            else:
+                try:
+                    history = store.get_messages(CONV_WEB, limit=CHAT_HISTORY_LIMIT)
+                    reply = await chat(history)
+                except Exception as e:
+                    # A NIM outage or missing key must not 500 the chat pane;
+                    # surface it as the assistant's turn so the thread stays
+                    # coherent and the operator sees the cause.
+                    safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
+                    reply = f"(Maaf, chat gagal: {safe})"
+            store.add_message(CONV_WEB, "assistant", reply)
             store.set_task_status(task_id, "done")
-            store.append_log(task_id, f"ask: Chat Conversation")
-            reply = (
-                "Halo! Saya Hermes, asisten orkestrasi Anda.\n\n"
-                "Untuk menjalankan tugas orkestrasi, silakan gunakan perintah `/task <deskripsi>`.\n"
-                "Contoh: `/task @myproject jalankan pengujian`.\n\n"
-                "Gunakan `/projects` untuk melihat daftar proyek, atau `/help` untuk bantuan lengkap."
-            )
             store.append_log(task_id, f"answer: {reply}")
             return {"task_id": task_id, "status": "done"}
 
@@ -265,6 +300,17 @@ def create_app(store: Store, bridge=None, ask_registry=None, lifespan=None) -> F
             ok = ask_registry.answer(body.ask_id, body.text or "")
 
         return {"ok": ok}
+
+    @app.get("/api/chat")
+    def chat_history():
+        # The whole conversational thread, oldest-first, for the chat pane to
+        # render on load. Slash-command tasks live in /api/tasks, not here.
+        return {"messages": store.get_messages(CONV_WEB, limit=CHAT_HISTORY_LIMIT)}
+
+    @app.post("/api/chat/reset")
+    def chat_reset():
+        store.clear_messages(CONV_WEB)
+        return {"ok": True}
 
     @app.get("/api/settings")
     def get_settings(): return config.load_settings().model_dump()
