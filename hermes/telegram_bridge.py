@@ -117,7 +117,8 @@ class Bridge:
         return config.load_settings()
 
     async def handle_task(self, user_id: int, chat_id: int, text: str,
-                          task_id: str | None = None, trusted: bool = False):
+                          task_id: str | None = None, trusted: bool = False,
+                          force_confirm: bool = False):
         # trusted skips the Telegram allow-list for a caller that has already
         # authenticated by another route (the localhost web UI). It is NOT
         # inferable from user_id -- a Telegram id is never 0, so the old
@@ -162,7 +163,22 @@ class Bridge:
                 reasons.append(
                     f"@{name} has uncommitted changes that could be lost")
 
-        if reasons and gate_live:
+        # A chat-initiated task (the conversational agent's start_task tool) is
+        # ALWAYS held for a one-tap operator confirm, regardless of
+        # confirm_risky: the assistant proposes, the human disposes, so the LLM
+        # can never spend engine budget or touch a repo on its own judgment.
+        # It needs a confirm channel to be answerable — refuse rather than run
+        # silently if none is wired.
+        if force_confirm and not self.ask_confirm:
+            await self.sender(
+                chat_id, f"Task {task_id} tidak dijalankan: tidak ada kanal konfirmasi.")
+            self.store.set_task_status(task_id, "cancelled")
+            return task_id
+        must_confirm = force_confirm and bool(self.ask_confirm)
+        if must_confirm and not reasons:
+            reasons = ["dimulai oleh asisten chat — konfirmasi sebelum menjalankan"]
+
+        if reasons and (gate_live or must_confirm):
             self.confirm_reasons[task_id] = reasons
             self.store.set_task_status(task_id, "awaiting_confirm")
             self.pending[task_id] = (user_id, chat_id, text, proj)

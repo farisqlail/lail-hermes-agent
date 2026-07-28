@@ -406,7 +406,7 @@ def test_chat_conversation_uses_llm_with_memory(hermes_home):
     store = Store(paths.db_path()); store.init_schema()
 
     seen_histories = []
-    async def fake_chat(history):
+    async def fake_chat(history, tools=None, dispatch=None):
         seen_histories.append([m["content"] for m in history])
         return f"echo:{history[-1]['content']}"
 
@@ -438,7 +438,7 @@ def test_chat_llm_failure_becomes_assistant_turn(hermes_home):
     paths.ensure_dirs()
     store = Store(paths.db_path()); store.init_schema()
 
-    async def boom_chat(history):
+    async def boom_chat(history, tools=None, dispatch=None):
         raise RuntimeError("nim down")
 
     client = TestClient(create_app(store, chat=boom_chat))
@@ -456,3 +456,65 @@ def test_chat_without_agent_falls_back_to_canned_reply(hermes_home):
     r = client.post("/api/tasks", json={"text": "halo"})
     assert r.status_code == 200
     assert any("/task" in line for line in store.get_logs(r.json()["task_id"]))
+
+
+async def test_chat_tools_query_state_and_propose_task(hermes_home):
+    """T4: the agent's tools read real state (projects, tasks) and start_task
+    only QUEUES a task held for the operator's confirm — never runs it."""
+    import json as _json, asyncio
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    proj_dir = hermes_home / "myprofit"; proj_dir.mkdir()
+    config.save_settings(config.Settings(projects={"myprofit": str(proj_dir)}))
+
+    store.create_task("seed1", 0, "build seed")
+    store.set_task_status("seed1", "done")
+    store.append_log("seed1", "step 0 [code]: ok")
+
+    class FakeBridge:
+        def __init__(self):
+            self.confirm_reasons = {}
+            self.calls = []
+        async def handle_task(self, user_id, chat_id, text, task_id=None,
+                              trusted=False, force_confirm=False):
+            self.calls.append((text, trusted, force_confirm))
+            store.create_task(task_id, chat_id, text)
+            if force_confirm:
+                self.confirm_reasons[task_id] = ["chat"]
+                store.set_task_status(task_id, "awaiting_confirm")
+    bridge = FakeBridge()
+
+    out = {}
+    async def tool_chat(history, tools=None, dispatch=None):
+        out["tool_names"] = [t["function"]["name"] for t in tools]
+        out["projects"] = _json.loads(await dispatch("list_projects", {}))
+        out["recent"] = _json.loads(await dispatch("recent_tasks", {"limit": 5}))
+        out["detail"] = _json.loads(await dispatch("get_task_detail", {"task_id": "seed1"}))
+        out["missing"] = _json.loads(await dispatch("get_task_detail", {"task_id": "nope"}))
+        out["start"] = _json.loads(await dispatch("start_task", {"description": "@myprofit test"}))
+        return "Task diusulkan, menunggu konfirmasi."
+
+    client = TestClient(create_app(store, bridge=bridge, chat=tool_chat))
+    r = client.post("/api/tasks", json={"text": "cek proyek lalu jalankan test"})
+    assert r.status_code == 200
+
+    assert out["tool_names"] == ["list_projects", "recent_tasks",
+                                 "get_task_detail", "start_task"]
+    assert out["projects"] == [{"name": "myprofit", "path": str(proj_dir), "exists": True}]
+    assert any(t["task_id"] == "seed1" for t in out["recent"])
+    assert out["detail"]["status"] == "done"
+    assert "step 0 [code]: ok" in out["detail"]["logs"]
+    assert "error" in out["missing"]
+
+    # start_task queues, held for confirm; bridge saw trusted + force_confirm
+    assert out["start"]["status"] == "awaiting_confirm"
+    assert bridge.calls and bridge.calls[0][1] is True and bridge.calls[0][2] is True
+
+    # the fire-and-forget handle_task settles the task to awaiting_confirm
+    new_id = out["start"]["task_id"]
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if (store.get_task(new_id) or {}).get("status") == "awaiting_confirm":
+            break
+    assert (store.get_task(new_id) or {}).get("status") == "awaiting_confirm"

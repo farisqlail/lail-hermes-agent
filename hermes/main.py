@@ -184,26 +184,53 @@ def build_nim_chat(settings, secrets):
         "Jawab ringkas dan membantu, dalam bahasa yang dipakai pengguna "
         "(default Bahasa Indonesia). Kamu menjelaskan cara kerja Hermes, "
         "membantu menyusun instruksi, dan menjawab pertanyaan teknis.\n"
-        "Kamu TIDAK mengeksekusi pekerjaan sendiri. Untuk menjalankan tugas "
-        "(mengubah kode, build, test) pengguna harus mengetik `/task "
-        "<deskripsi>` — mis. `/task @myproject jalankan pengujian`. Jika "
-        "diminta menjalankan sesuatu, bantu rumuskan kalimat `/task` yang "
-        "tepat dan sebutkan `@nama-proyek` bila relevan; jangan pernah mengaku "
-        "sudah menjalankannya atau mengarang hasil eksekusi. Gunakan "
-        "`/projects` untuk daftar proyek dan `/help` untuk bantuan."
+        "Kamu punya alat: `list_projects` (proyek terdaftar), `recent_tasks` "
+        "(task terakhir + status), `get_task_detail` (rincian satu task), dan "
+        "`start_task` (antre task orkestrasi baru). Pakai alat baca untuk "
+        "menjawab pertanyaan soal proyek/status secara akurat — jangan menebak "
+        "atau mengarang status.\n"
+        "PENTING soal `start_task`: alat ini hanya MENGANTRE task; task TIDAK "
+        "berjalan sampai operator menekan tombol Run. Jadi kamu tidak pernah "
+        "benar-benar menjalankan kode sendiri. Panggil `start_task` hanya bila "
+        "pengguna jelas meminta menjalankan sesuatu; sertakan `@nama-proyek` "
+        "bila relevan, lalu beri tahu bahwa task menunggu konfirmasi. Jangan "
+        "pernah mengaku sudah menjalankan atau mengarang hasil eksekusi."
     )
 
-    async def chat(history: list[dict]) -> str:
+    async def chat(history: list[dict], tools=None, dispatch=None) -> str:
         if not secrets.nvidia_api_key:
             raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
         client = AsyncOpenAI(base_url=settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
                              timeout=PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
-        resp = await _completion_with_retry(
-            lambda: client.chat.completions.create(
-                model=settings.chat_model or settings.model, messages=msgs,
-                temperature=settings.chat_temperature))
-        return resp.choices[0].message.content or ""
+        # tools + dispatch are a curated, safe set supplied by the web layer
+        # (list_projects, recent_tasks, get_task_detail, start_task) — NOT the
+        # MCP hub, which carries ask_user and would deadlock a chat turn. Absent,
+        # the agent is a plain talker (the fallback for a bad key or no wiring).
+        if not (tools and dispatch):
+            resp = await _completion_with_retry(
+                lambda: client.chat.completions.create(
+                    model=settings.chat_model or settings.model, messages=msgs,
+                    temperature=settings.chat_temperature))
+            return resp.choices[0].message.content or ""
+        for _ in range(MAX_TOOL_ROUNDS):
+            resp = await _completion_with_retry(
+                lambda: client.chat.completions.create(
+                    model=settings.chat_model or settings.model, messages=msgs,
+                    temperature=settings.chat_temperature, tools=tools))
+            m = resp.choices[0].message
+            if m.tool_calls:
+                msgs.append(m.model_dump())
+                for tc in m.tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = await dispatch(tc.function.name, args)
+                    msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                continue
+            return m.content or ""
+        return "Maaf, terlalu banyak putaran alat tanpa jawaban akhir."
     return chat
 
 def real_mcp_session_factory(srv):

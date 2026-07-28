@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, re, subprocess, time
+import asyncio, json, re, subprocess, time
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pathlib import Path
@@ -24,6 +24,35 @@ class TaskAnswer(BaseModel):
 # dashboard is multi-user.
 CONV_WEB = "web"
 CHAT_HISTORY_LIMIT = 20   # turns fed back to the model — caps prompt cost
+
+# Tools the conversational agent may call. A curated, safe set — read-only
+# system queries plus start_task, which only ever QUEUES a task held for the
+# operator's one-tap confirm (bridge.handle_task force_confirm). Deliberately
+# not the MCP hub: that exposes ask_user, which would deadlock a chat turn.
+CHAT_TOOLS = [
+    {"type": "function", "function": {
+        "name": "list_projects",
+        "description": "Daftar proyek terdaftar beserta path dan apakah foldernya ada di disk.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "recent_tasks",
+        "description": "Beberapa task orkestrasi terakhir beserta status dan teksnya.",
+        "parameters": {"type": "object", "properties": {
+            "limit": {"type": "integer", "description": "jumlah maksimal, default 5"}}}}},
+    {"type": "function", "function": {
+        "name": "get_task_detail",
+        "description": "Status dan potongan log terakhir sebuah task, berdasarkan task_id.",
+        "parameters": {"type": "object", "properties": {
+            "task_id": {"type": "string"}}, "required": ["task_id"]}}},
+    {"type": "function", "function": {
+        "name": "start_task",
+        "description": ("Antre task orkestrasi baru. Task TIDAK berjalan sampai operator "
+                        "menekan Run — kamu hanya mengusulkan. Sertakan @nama-proyek bila relevan."),
+        "parameters": {"type": "object", "properties": {
+            "description": {"type": "string",
+                            "description": "instruksi task, mis. '@myprofit jalankan pengujian'"}},
+            "required": ["description"]}}},
+]
 
 def _bg_crash_cb(store: Store, task_id: str):
     """Done-callback for the web UI's fire-and-forget bridge tasks.
@@ -130,9 +159,59 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     app = FastAPI(lifespan=lifespan)
     app.state.bridge = bridge
     app.state.ask_registry = ask_registry
-    # async (history: list[{role,content}]) -> str; None when no NIM chat is
-    # wired (the conversational branch then falls back to a canned reply).
+    # async (history, tools=, dispatch=) -> str; None when no NIM chat is wired
+    # (the conversational branch then falls back to a canned reply).
     app.state.chat = chat
+
+    async def chat_dispatch(name: str, args: dict) -> str:
+        """Execute one chat tool call and return a JSON string for the model.
+
+        Every tool is read-only except start_task, which only queues a task
+        held for the operator's one-tap confirm — the LLM never runs work or
+        mutates a repo directly. Errors are returned as data, never raised, so
+        one bad call cannot abort the whole chat turn.
+        """
+        try:
+            if name == "list_projects":
+                s = config.load_settings()
+                return json.dumps(
+                    [{"name": n, "path": p, "exists": Path(p).exists()}
+                     for n, p in s.projects.items()], ensure_ascii=False)
+            if name == "recent_tasks":
+                limit = int(args.get("limit") or 5)
+                rows = [t for t in store.list_tasks() if t.get("chat_id", 0) >= 0][:limit]
+                return json.dumps(
+                    [{"task_id": t["task_id"], "status": t["status"], "text": t["text"]}
+                     for t in rows], ensure_ascii=False)
+            if name == "get_task_detail":
+                tid = str(args.get("task_id") or "")
+                t = store.get_task(tid)
+                if not t:
+                    return json.dumps({"error": "task tidak ditemukan"}, ensure_ascii=False)
+                return json.dumps(
+                    {"task_id": tid, "status": t["status"], "text": t["text"],
+                     "logs": store.get_logs(tid)[-8:]}, ensure_ascii=False)
+            if name == "start_task":
+                bridge = getattr(app.state, "bridge", None)
+                if not bridge:
+                    return json.dumps({"error": "bridge tidak tersedia — tidak bisa antre task"},
+                                      ensure_ascii=False)
+                desc = str(args.get("description") or "").strip()
+                if not desc:
+                    return json.dumps({"error": "deskripsi task kosong"}, ensure_ascii=False)
+                new_id = new_task_id()
+                t = asyncio.create_task(bridge.handle_task(
+                    user_id=0, chat_id=0, text=desc, task_id=new_id,
+                    trusted=True, force_confirm=True))
+                t.add_done_callback(_bg_crash_cb(store, new_id))
+                return json.dumps(
+                    {"task_id": new_id, "status": "awaiting_confirm",
+                     "note": "Task diantre; menunggu operator menekan Run sebelum berjalan."},
+                    ensure_ascii=False)
+            return json.dumps({"error": f"tool tak dikenal: {name}"}, ensure_ascii=False)
+        except Exception as e:  # a tool failure is data for the model, not a 500
+            safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
+            return json.dumps({"error": f"tool gagal: {safe}"}, ensure_ascii=False)
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
@@ -263,7 +342,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             else:
                 try:
                     history = store.get_messages(CONV_WEB, limit=CHAT_HISTORY_LIMIT)
-                    reply = await chat(history)
+                    reply = await chat(history, tools=CHAT_TOOLS, dispatch=chat_dispatch)
                 except Exception as e:
                     # A NIM outage or missing key must not 500 the chat pane;
                     # surface it as the assistant's turn so the thread stays

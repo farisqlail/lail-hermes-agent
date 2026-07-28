@@ -169,6 +169,46 @@ async def test_risky_task_cancelled_on_deny(hermes_home):
     assert ran == []
     assert store.get_task(tid)["status"] == "cancelled"
 
+async def test_force_confirm_holds_a_nonrisky_task(hermes_home):
+    """A chat-initiated task (start_task tool) is always held for confirmation,
+    even when it carries no risky verbs and would otherwise run directly."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(allowed_user_ids=[1])
+    ran, asked = [], []
+    async def sender(chat, text, html=False): pass
+    async def ask_confirm(chat, task_id, reasons): asked.append((task_id, reasons))
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None): ran.append(task_id)
+    b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm)
+
+    tid = await b.handle_task(user_id=0, chat_id=5, text="build app",
+                              trusted=True, force_confirm=True)
+    assert tid is not None
+    assert ran == []                                        # not run on its own
+    assert store.get_task(tid)["status"] == "awaiting_confirm"
+    assert tid in b.confirm_reasons and tid in b.pending
+    assert asked and asked[0][0] == tid
+
+    assert await b.resolve_confirm(user_id=0, task_id=tid, approved=True, trusted=True)
+    assert ran == [tid]                                     # runs only after Run
+
+
+async def test_force_confirm_refuses_without_a_confirm_channel(hermes_home):
+    """force_confirm with no ask_confirm wired must NOT run silently — refuse."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(allowed_user_ids=[1])
+    ran = []
+    async def sender(chat, text, html=False): pass
+    class FakeOrch:
+        async def run_task(self, *a, **k): ran.append(1)
+    b = Bridge(settings, store, FakeOrch(), sender)  # no ask_confirm
+
+    tid = await b.handle_task(user_id=0, chat_id=5, text="build app",
+                              trusted=True, force_confirm=True)
+    assert ran == []
+    assert store.get_task(tid)["status"] == "cancelled"
+
+
 async def test_confirm_gate_disabled_runs_directly(hermes_home):
     store = Store(hermes_home / "t.db"); store.init_schema()
     settings = Settings(allowed_user_ids=[1], confirm_risky=False)
