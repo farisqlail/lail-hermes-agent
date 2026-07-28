@@ -144,6 +144,16 @@ class AskRegistry:
     def get(self, ask_id: str) -> Ask | None:
         return self._asks.get(ask_id)
 
+    def active_for_task(self, task_id: str) -> Ask | None:
+        """The outstanding ask belonging to a task, or None.
+
+        For a transport that polls by task rather than by chat (the web UI):
+        it holds a task_id, not the chat_id `_by_chat` is keyed on. A run asks
+        one question at a time, so the first match is the current one.
+        """
+        return next((a for a in self._asks.values() if a.task_id == task_id),
+                    None)
+
     def toggle(self, ask_id: str, idx: int) -> Ask | None:
         a = self._asks.get(ask_id)
         if a is None or not (0 <= idx < len(a.options)):

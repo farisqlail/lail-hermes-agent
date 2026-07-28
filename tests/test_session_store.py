@@ -18,6 +18,32 @@ def test_task_lifecycle(tmp_path):
     assert s.list_tasks()[0]["task_id"] == "t1"
 
 
+def test_messages_roundtrip_order_and_limit(tmp_path):
+    s = Store(tmp_path / "t.db")
+    s.init_schema()
+    for i in range(5):
+        s.add_message("web", "user", f"u{i}")
+        s.add_message("web", "assistant", f"a{i}")
+
+    # oldest-first reading order
+    all_msgs = s.get_messages("web", limit=100)
+    assert [m["content"] for m in all_msgs][:3] == ["u0", "a0", "u1"]
+    assert all_msgs[0]["role"] == "user"
+
+    # limit keeps the recent tail (last 3 inserted: a3, u4, a4), oldest-first
+    tail = s.get_messages("web", limit=3)
+    assert [m["content"] for m in tail] == ["a3", "u4", "a4"]
+
+    # conversations are isolated by id
+    s.add_message("other", "user", "x")
+    assert [m["content"] for m in s.get_messages("other", 10)] == ["x"]
+    assert len(s.get_messages("web", 100)) == 10
+
+    s.clear_messages("web")
+    assert s.get_messages("web", 100) == []
+    assert [m["content"] for m in s.get_messages("other", 10)] == ["x"]
+
+
 def _task(s, tid, status, chat=99, text="t"):
     s.create_task(tid, chat_id=chat, text=text)
     s.set_task_status(tid, status)

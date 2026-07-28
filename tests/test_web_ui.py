@@ -274,3 +274,288 @@ def test_settings_post_rejects_bad_project_registry(hermes_home):
     assert r.status_code == 422
     r = client.post("/api/settings", json={"projects": {"..": "C:\\Windows"}})
     assert r.status_code == 422
+
+
+async def test_web_chat_endpoints(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    # Create mock bridge and ask registry
+    class FakeBridge:
+        def __init__(self):
+            self.confirm_reasons = {}
+            self.pending = {}
+            self.tasks_handled = []
+            self.confirms_resolved = []
+            
+        async def handle_task(self, user_id, chat_id, text, task_id=None, trusted=False):
+            self.tasks_handled.append((user_id, chat_id, text, task_id))
+            store.create_task(task_id, chat_id, text)
+
+        async def resolve_confirm(self, user_id, task_id, approved, trusted=False):
+            self.confirms_resolved.append((user_id, task_id, approved))
+
+    from hermes.ask import AskRegistry
+    ask_registry = AskRegistry()
+    bridge = FakeBridge()
+
+    app = create_app(store, bridge=bridge, ask_registry=ask_registry)
+    client = TestClient(app)
+
+    # 1. Test POST /api/tasks
+    r = client.post("/api/tasks", json={"text": "/task hello from web"})
+    assert r.status_code == 200
+    task_id = r.json()["task_id"]
+    assert task_id is not None
+    assert len(bridge.tasks_handled) == 1
+    assert bridge.tasks_handled[0][2] == "hello from web"
+    assert bridge.tasks_handled[0][3] == task_id
+
+    # 2. Test GET /api/tasks/{task_id} with pending confirm
+    bridge.confirm_reasons[task_id] = ["test risky action"]
+    r = client.get(f"/api/tasks/{task_id}")
+    assert r.status_code == 200
+    assert r.json()["pending_confirm"] == ["test risky action"]
+
+    # 3. Test POST /api/tasks/{task_id}/confirm
+    r = client.post(f"/api/tasks/{task_id}/confirm", json={"approved": True})
+    assert r.status_code == 200
+    assert len(bridge.confirms_resolved) == 1
+    assert bridge.confirms_resolved[0] == (0, task_id, True)
+
+    # 4. Test GET /api/tasks/{task_id} with pending ask
+    from hermes.ask import Deadline
+    import asyncio
+    run_token = ask_registry.open_run(task_id, 0, Deadline(10))
+    run = ask_registry.run_for_token(run_token)
+    
+    # We must mock on_ask to not raise
+    async def dummy_on_ask(a): pass
+    ask_registry.on_ask = dummy_on_ask
+    
+    # Create the ask task
+    ask_fut = asyncio.create_task(ask_registry.ask(run, "Which model?", [{"label": "Model A"}]))
+    await asyncio.sleep(0)
+    
+    r = client.get(f"/api/tasks/{task_id}")
+    assert r.status_code == 200
+    assert r.json()["pending_ask"]["question"] == "Which model?"
+    assert r.json()["pending_ask"]["options"] == [{"label": "Model A"}]
+    
+    # 5. Test POST /api/tasks/{task_id}/answer (option selection)
+    ask_id = r.json()["pending_ask"]["ask_id"]
+    r = client.post(f"/api/tasks/{task_id}/answer", json={"ask_id": ask_id, "options": [0]})
+    assert r.status_code == 200
+    
+    # Wait for the future to finish to prevent warnings
+    await ask_fut
+
+    # 6. Test casual conversation
+    r = client.post("/api/tasks", json={"text": "halo"})
+    assert r.status_code == 200
+    chat_task_id = r.json()["task_id"]
+    assert r.json()["status"] == "done"
+    
+    r = client.get(f"/api/tasks/{chat_task_id}")
+    assert r.status_code == 200
+    assert any("Chat Conversation" in line for line in r.json()["logs"])
+
+    # 7. Test task list filtering (casual conversation should be excluded, /task included)
+    r = client.get("/api/tasks")
+    assert r.status_code == 200
+    task_ids_list = [t["task_id"] for t in r.json()]
+    assert task_id in task_ids_list
+    assert chat_task_id not in task_ids_list
+
+
+async def test_web_task_crash_marks_failed(hermes_home):
+    """A raising handle_task must not be swallowed at GC: the done-callback
+    marks the task failed and records why, the way crash_reporter does on the
+    Telegram side."""
+    import asyncio
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    class BoomBridge:
+        confirm_reasons: dict = {}
+        async def handle_task(self, user_id, chat_id, text, task_id=None, trusted=False):
+            store.create_task(task_id, chat_id, text)
+            raise RuntimeError("boom")
+
+    app = create_app(store, bridge=BoomBridge())
+    client = TestClient(app)
+
+    r = client.post("/api/tasks", json={"text": "/task will explode"})
+    assert r.status_code == 200
+    task_id = r.json()["task_id"]
+
+    # The background task and its done-callback run inside the endpoint's loop;
+    # give it ticks to complete, then assert the crash surfaced.
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if (store.get_task(task_id) or {}).get("status") == "failed":
+            break
+    assert (store.get_task(task_id) or {}).get("status") == "failed"
+    assert any("background task crashed" in line for line in store.get_logs(task_id))
+
+
+def test_chat_conversation_uses_llm_with_memory(hermes_home):
+    """The non-command branch calls the chat agent with the running history
+    (T1) and remembers prior turns (T2), and its reply is persisted."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    seen_histories = []
+    async def fake_chat(history, tools=None, dispatch=None):
+        seen_histories.append([m["content"] for m in history])
+        return f"echo:{history[-1]['content']}"
+
+    client = TestClient(create_app(store, chat=fake_chat))
+
+    # Turn 1
+    r = client.post("/api/tasks", json={"text": "halo hermes"})
+    assert r.status_code == 200 and r.json()["status"] == "done"
+    # The history handed to the model includes the message it replies to.
+    assert seen_histories[0] == ["halo hermes"]
+    # Reply persisted to the task and the conversation thread.
+    assert any("echo:halo hermes" in line for line in store.get_logs(r.json()["task_id"]))
+
+    # Turn 2 — memory: turn 1 (both roles) precedes the new user message.
+    r = client.post("/api/tasks", json={"text": "lanjut"})
+    assert seen_histories[1] == ["halo hermes", "echo:halo hermes", "lanjut"]
+
+    # GET history mirrors the thread; reset clears it.
+    got = client.get("/api/chat").json()["messages"]
+    assert [m["content"] for m in got] == ["halo hermes", "echo:halo hermes",
+                                           "lanjut", "echo:lanjut"]
+    assert client.post("/api/chat/reset").status_code == 200
+    assert client.get("/api/chat").json()["messages"] == []
+
+
+def test_chat_llm_failure_becomes_assistant_turn(hermes_home):
+    """A raising chat agent must not 500 the pane; the error is recorded as the
+    assistant's reply so the thread stays coherent."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    async def boom_chat(history, tools=None, dispatch=None):
+        raise RuntimeError("nim down")
+
+    client = TestClient(create_app(store, chat=boom_chat))
+    r = client.post("/api/tasks", json={"text": "halo"})
+    assert r.status_code == 200 and r.json()["status"] == "done"
+    logs = store.get_logs(r.json()["task_id"])
+    assert any("chat gagal" in line and "nim down" in line for line in logs)
+
+
+def test_chat_without_agent_falls_back_to_canned_reply(hermes_home):
+    """chat=None (no NIM wired) still answers, so the pane is never dead."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))  # no chat
+    r = client.post("/api/tasks", json={"text": "halo"})
+    assert r.status_code == 200
+    assert any("/task" in line for line in store.get_logs(r.json()["task_id"]))
+
+
+def test_chat_stream_sse_streams_and_persists(hermes_home):
+    """T3: /api/chat/stream emits SSE token deltas, a usage event, and a done
+    event, and persists the full assembled reply once at the end."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    async def fake_chat(history, tools=None, dispatch=None):
+        return "unused"
+    async def fake_stream(history, tools=None, dispatch=None):
+        for tok in ["Ha", "lo", " dunia"]:
+            yield ("token", tok)
+        yield ("usage", {"prompt": 3, "completion": 3, "total": 6})
+    fake_chat.stream = fake_stream
+
+    client = TestClient(create_app(store, chat=fake_chat))
+    with client.stream("POST", "/api/chat/stream", json={"text": "hai"}) as r:
+        assert r.status_code == 200
+        body = "".join(r.iter_text())
+
+    assert '"delta": "Ha"' in body
+    assert "dunia" in body
+    assert '"usage"' in body and '"total": 6' in body
+    assert '"done": true' in body
+
+    msgs = store.get_messages("web", 10)
+    assert msgs[0]["content"] == "hai" and msgs[0]["role"] == "user"
+    assert msgs[-1]["role"] == "assistant" and msgs[-1]["content"] == "Halo dunia"
+
+
+def test_chat_stream_without_agent_streams_canned(hermes_home):
+    """chat=None still streams a usable canned reply, never a dead pane."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))  # no chat
+    with client.stream("POST", "/api/chat/stream", json={"text": "hai"}) as r:
+        assert r.status_code == 200
+        body = "".join(r.iter_text())
+    assert "/task" in body and '"done": true' in body
+    assert store.get_messages("web", 10)[-1]["role"] == "assistant"
+
+
+async def test_chat_tools_query_state_and_propose_task(hermes_home):
+    """T4: the agent's tools read real state (projects, tasks) and start_task
+    only QUEUES a task held for the operator's confirm — never runs it."""
+    import json as _json, asyncio
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    proj_dir = hermes_home / "myprofit"; proj_dir.mkdir()
+    config.save_settings(config.Settings(projects={"myprofit": str(proj_dir)}))
+
+    store.create_task("seed1", 0, "build seed")
+    store.set_task_status("seed1", "done")
+    store.append_log("seed1", "step 0 [code]: ok")
+
+    class FakeBridge:
+        def __init__(self):
+            self.confirm_reasons = {}
+            self.calls = []
+        async def handle_task(self, user_id, chat_id, text, task_id=None,
+                              trusted=False, force_confirm=False):
+            self.calls.append((text, trusted, force_confirm))
+            store.create_task(task_id, chat_id, text)
+            if force_confirm:
+                self.confirm_reasons[task_id] = ["chat"]
+                store.set_task_status(task_id, "awaiting_confirm")
+    bridge = FakeBridge()
+
+    out = {}
+    async def tool_chat(history, tools=None, dispatch=None):
+        out["tool_names"] = [t["function"]["name"] for t in tools]
+        out["projects"] = _json.loads(await dispatch("list_projects", {}))
+        out["recent"] = _json.loads(await dispatch("recent_tasks", {"limit": 5}))
+        out["detail"] = _json.loads(await dispatch("get_task_detail", {"task_id": "seed1"}))
+        out["missing"] = _json.loads(await dispatch("get_task_detail", {"task_id": "nope"}))
+        out["start"] = _json.loads(await dispatch("start_task", {"description": "@myprofit test"}))
+        return "Task diusulkan, menunggu konfirmasi."
+
+    client = TestClient(create_app(store, bridge=bridge, chat=tool_chat))
+    r = client.post("/api/tasks", json={"text": "cek proyek lalu jalankan test"})
+    assert r.status_code == 200
+
+    assert out["tool_names"] == ["list_projects", "recent_tasks",
+                                 "get_task_detail", "start_task"]
+    assert out["projects"] == [{"name": "myprofit", "path": str(proj_dir), "exists": True}]
+    assert any(t["task_id"] == "seed1" for t in out["recent"])
+    assert out["detail"]["status"] == "done"
+    assert "step 0 [code]: ok" in out["detail"]["logs"]
+    assert "error" in out["missing"]
+
+    # start_task queues, held for confirm; bridge saw trusted + force_confirm
+    assert out["start"]["status"] == "awaiting_confirm"
+    assert bridge.calls and bridge.calls[0][1] is True and bridge.calls[0][2] is True
+
+    # the fire-and-forget handle_task settles the task to awaiting_confirm
+    new_id = out["start"]["task_id"]
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if (store.get_task(new_id) or {}).get("status") == "awaiting_confirm":
+            break
+    assert (store.get_task(new_id) or {}).get("status") == "awaiting_confirm"

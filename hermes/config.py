@@ -31,6 +31,12 @@ class Settings(BaseModel):
     # setting rather than a literal because a model that rejects the parameter
     # would otherwise break every plan until a code change shipped.
     planner_temperature: float = 0.0
+    # The conversational chat agent (web UI chat pane) is a different job from
+    # the planner: prose, not rule-bound JSON, so a little sampling reads more
+    # naturally. chat_model "" reuses `model` — one endpoint, one key, until a
+    # reason to split them appears.
+    chat_model: str = ""
+    chat_temperature: float = 0.3
     allowed_user_ids: list[int] = Field(default_factory=list)
     default_engine: Literal["claude", "antigravity", "auto"] = "auto"
     # Per-engine tuning ("" = leave that CLI's own default). Model fields are

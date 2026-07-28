@@ -108,6 +108,7 @@ class Bridge:
         self.send_file = send_file      # async (chat_id, kind, path)
         # task_id -> (user, chat, text, proj)
         self.pending: dict[str, tuple[int, int, str, Path | None]] = {}
+        self.confirm_reasons: dict[str, list[str]] = {}
 
     def get_settings(self):
         from . import config, paths
@@ -115,9 +116,16 @@ class Bridge:
             return self.settings
         return config.load_settings()
 
-    async def handle_task(self, user_id: int, chat_id: int, text: str):
+    async def handle_task(self, user_id: int, chat_id: int, text: str,
+                          task_id: str | None = None, trusted: bool = False,
+                          force_confirm: bool = False):
+        # trusted skips the Telegram allow-list for a caller that has already
+        # authenticated by another route (the localhost web UI). It is NOT
+        # inferable from user_id -- a Telegram id is never 0, so the old
+        # `user_id != 0` sentinel worked, but any future caller passing 0 would
+        # silently inherit a bypass. The trust must be stated, not encoded.
         settings = self.get_settings()
-        if not is_allowed(user_id, settings):
+        if not trusted and not is_allowed(user_id, settings):
             await self.sender(chat_id, f"You are not authorized to use this bot. Your Telegram User ID is: {user_id}\n\nPlease add this ID to the allowed user list in the settings UI at http://127.0.0.1:8799")
             return None
 
@@ -132,7 +140,8 @@ class Bridge:
                 await self.sender(chat_id, str(e))
                 return None
 
-        task_id = new_task_id()
+        if task_id is None:
+            task_id = new_task_id()
         self.store.create_task(task_id, chat_id, text)
         if proj is not None:
             self.store.append_log(task_id, f"project: {proj}")
@@ -154,7 +163,23 @@ class Bridge:
                 reasons.append(
                     f"@{name} has uncommitted changes that could be lost")
 
-        if reasons and gate_live:
+        # A chat-initiated task (the conversational agent's start_task tool) is
+        # ALWAYS held for a one-tap operator confirm, regardless of
+        # confirm_risky: the assistant proposes, the human disposes, so the LLM
+        # can never spend engine budget or touch a repo on its own judgment.
+        # It needs a confirm channel to be answerable — refuse rather than run
+        # silently if none is wired.
+        if force_confirm and not self.ask_confirm:
+            await self.sender(
+                chat_id, f"Task {task_id} tidak dijalankan: tidak ada kanal konfirmasi.")
+            self.store.set_task_status(task_id, "cancelled")
+            return task_id
+        must_confirm = force_confirm and bool(self.ask_confirm)
+        if must_confirm and not reasons:
+            reasons = ["dimulai oleh asisten chat — konfirmasi sebelum menjalankan"]
+
+        if reasons and (gate_live or must_confirm):
+            self.confirm_reasons[task_id] = reasons
             self.store.set_task_status(task_id, "awaiting_confirm")
             self.pending[task_id] = (user_id, chat_id, text, proj)
             await self.ask_confirm(chat_id, task_id, reasons)
@@ -172,12 +197,14 @@ class Bridge:
         await self._run(task_id, chat_id, text, proj)
         return task_id
 
-    async def resolve_confirm(self, user_id: int, task_id: str, approved: bool) -> bool:
+    async def resolve_confirm(self, user_id: int, task_id: str, approved: bool,
+                              trusted: bool = False) -> bool:
+        self.confirm_reasons.pop(task_id, None)
         pend = self.pending.pop(task_id, None)
         if pend is None:
             return False
         _, chat_id, text, proj = pend
-        if not is_allowed(user_id, self.get_settings()):
+        if not trusted and not is_allowed(user_id, self.get_settings()):
             self.pending[task_id] = pend  # keep waiting for an authorized user
             return False
         if not approved:
