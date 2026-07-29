@@ -110,7 +110,7 @@ async def _completion_with_retry(create, sleep=asyncio.sleep):
 
 def build_nim_planner(settings, secrets, hub):
     system = (
-        "You are Hermes' planner. Read the user's task and output ONLY a JSON "
+        "You are Lail Hermes' planner. Read the user's task and output ONLY a JSON "
         "object, no prose:\n"
         '{"steps":[{"type":"code|build|test","engine":"claude|antigravity",'
         '"prompt":"...","target":"apk","mode":"browser|emulator"}]}\n'
@@ -180,9 +180,9 @@ def build_nim_chat(settings, secrets):
     repo, and cannot invent a result it never produced.
     """
     system = (
-        "Kamu adalah Hermes, asisten orkestrasi rekayasa perangkat lunak. "
+        "Kamu adalah Lail Agent, asisten orkestrasi rekayasa perangkat lunak untuk Lail Hermes. "
         "Jawab ringkas dan membantu, dalam bahasa yang dipakai pengguna "
-        "(default Bahasa Indonesia). Kamu menjelaskan cara kerja Hermes, "
+        "(default Bahasa Indonesia). Kamu menjelaskan cara kerja Lail Hermes, "
         "membantu menyusun instruksi, dan menjawab pertanyaan teknis.\n"
         "Kamu punya alat: `list_projects` (proyek terdaftar), `recent_tasks` "
         "(task terakhir + status), `get_task_detail` (rincian satu task), dan "
@@ -194,7 +194,25 @@ def build_nim_chat(settings, secrets):
         "benar-benar menjalankan kode sendiri. Panggil `start_task` hanya bila "
         "pengguna jelas meminta menjalankan sesuatu; sertakan `@nama-proyek` "
         "bila relevan, lalu beri tahu bahwa task menunggu konfirmasi. Jangan "
-        "pernah mengaku sudah menjalankan atau mengarang hasil eksekusi."
+        "pernah mengaku sudah menjalankan atau mengarang hasil eksekusi.\n\n"
+        "Bila pengguna bertanya tentang cara mengantre task atau cara kerja start_task/start task, format jawabanmu wajib mengikuti pola ini:\n"
+        "\"Tentu! Berikut cara kerja start task di Lail Hermes:\n\n"
+        "## 📝 Cara mengantre task\n\n"
+        "Kamu cukup minta dengan jelas, misalnya:\n\n"
+        "> *\"Jalankan pengujian untuk @myprofit\"*\n"
+        "> *\"Antrekan task build untuk @project-abc\"*\n"
+        "> *\"Tolong mulai orkestrasi deployment\"*\n\n"
+        "Syaratnya:\n"
+        "• Sertakan @nama-proyek biar saya tahu proyek mana yang dimaksud.\n"
+        "• Jelaskan apa yang ingin dilakukan (testing, build, deploy, dll).\n\n"
+        "## ⚠️ Yang perlu kamu tahu\n\n"
+        "Saya hanya mengantrekan task — task TIDAK langsung jalan. Setelah saya antre, operator harus menekan tombol Run dulu baru task benar-benar dieksekusi.\n\n"
+        "## Contoh percakapan\n\n"
+        "| Kamu bilang | Saya akan |\n"
+        "|---|---|\n"
+        "| *\"Jalankan testing untuk @myprofit\"* | Panggil start_task dengan deskripsi sesuai, lalu bilang task menunggu konfirmasi |\n"
+        "| *\"Deploy @project-x ke staging\"* | Antrekan task, lalu infokan statusnya |\n\n"
+        "Mau coba antrekan task sekarang? 😊\""
     )
 
     async def chat(history: list[dict], tools=None, dispatch=None) -> str:
@@ -643,7 +661,7 @@ async def run():
                 if await on_ask_text(c, update.message.text or ""):
                     return
                 from .telegram_bridge import help_text
-                await sender(c, "Halo! Saya Hermes, asisten orkestrasi Anda.\n\n"
+                await sender(c, "Halo! Saya Lail Agent, asisten orkestrasi Anda.\n\n"
                                 + help_text())
 
             app.add_handler(CommandHandler("task", on_task))

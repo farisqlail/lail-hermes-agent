@@ -16,7 +16,7 @@ def help_text() -> str:
     # Plain text on purpose: sender() sends without parse_mode, so Markdown
     # markers would render literally.
     return (
-        "🤖 Hermes — panduan perintah\n"
+        "🤖 Lail Hermes — panduan perintah\n"
         "\n"
         "Perintah:\n"
         "/task <deskripsi> — buat tugas baru di workspace baru\n"
@@ -36,7 +36,7 @@ def help_text() -> str:
         "Konfirmasi tugas berisiko:\n"
         "Tugas yang push/hapus file/menyentuh path luar, atau menarget "
         "project dengan perubahan uncommitted, menunggu tombol konfirmasi "
-        "dulu. Tombol lama mati setelah Hermes restart — kirim ulang "
+        "dulu. Tombol lama mati setelah Lail Hermes restart — kirim ulang "
         "tugasnya.\n"
         "\n"
         "Hasil:\n"
@@ -44,7 +44,7 @@ def help_text() -> str:
         "dikirim langsung sebagai file.\n"
         "\n"
         "Pengaturan (model, engine, project, timeout): web UI di "
-        "http://127.0.0.1:8799 (hanya dari PC yang menjalankan Hermes)."
+        "http://127.0.0.1:8799 (hanya dari PC yang menjalankan Lail Hermes)."
     )
 
 def projects_overview(settings: Settings) -> str:

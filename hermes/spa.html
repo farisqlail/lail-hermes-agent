@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hermes Orchestrator Dashboard</title>
+    <title>Lail Hermes Orchestrator Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
@@ -1151,7 +1151,7 @@
                     <path d="M19,8H17.73A6.16,6.16,0,0,0,12,4,6.16,6.16,0,0,0,6.27,8H5a3,3,0,0,0-3,3v3a3,3,0,0,0,3,3H6.27A6.16,6.16,0,0,0,12,20a6.16,6.16,0,0,0,5.73-4H19a3,3,0,0,0,3-3V11A3,3,0,0,0,19,8ZM12,18a4,4,0,1,1,4-4A4,4,0,0,1,12,18ZM9,14a1,1,0,1,0-1-1A1,1,0,0,0,9,14Zm6,0a1,1,0,1,0-1-1A1,1,0,0,0,15,14Z"/>
                 </svg>
             </div>
-            <span class="logo-text">HERMES</span>
+            <span class="logo-text">Lail Hermes</span>
         </a>
 
         <div class="nav-tabs">
@@ -1261,7 +1261,7 @@
                     <!-- Chat Header -->
                     <div style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: hsla(224, 25%, 4%, 0.2);">
                         <div style="min-width: 0;">
-                            <h2 style="font-size: 1.15rem; font-family: var(--font-title); margin-bottom: 2px;">Tanya Hermes</h2>
+                            <h2 style="font-size: 1.15rem; font-family: var(--font-title); margin-bottom: 2px;">Lail Agent</h2>
                             <p style="font-size: 0.75rem; color: var(--text-muted);">Percakapan langsung · ketik <code>/task</code> untuk orkestrasi</p>
                         </div>
                         <button class="btn btn-secondary" onclick="resetChat()" style="font-size: 0.8rem; padding: 6px 12px;">Reset</button>
@@ -1617,7 +1617,8 @@
         secretsStatus: {
             nvidia_api_key_set: false,
             telegram_bot_token_set: false
-        }
+        },
+        lastChatMessagesJson: ""
     };
 
     // Initialize
@@ -1636,8 +1637,8 @@
         loadTasks();
         loadChatThread();
 
-        // Start polling tasks
-        setInterval(loadTasks, 3000);
+        // Start listening to realtime task events
+        setupTaskEvents();
         setInterval(loadSecretsStatus, 10000);
     });
 
@@ -1679,6 +1680,37 @@
             toast.classList.add('toast-fade-out');
             setTimeout(() => toast.remove(), 300);
         }, 4000);
+    }
+
+    let loadTasksTimeout = null;
+    function triggerLoadTasks() {
+        if (loadTasksTimeout) return;
+        loadTasksTimeout = setTimeout(async () => {
+            loadTasksTimeout = null;
+            await loadTasks();
+        }, 300);
+    }
+
+    function setupTaskEvents() {
+        if (window.taskEventSource) {
+            window.taskEventSource.close();
+        }
+
+        const source = new EventSource('/api/tasks/events');
+        window.taskEventSource = source;
+
+        source.onmessage = function(event) {
+            if (!event.data) return;
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'keep-alive') return;
+            } catch (e) {}
+            triggerLoadTasks();
+        };
+
+        source.onerror = function(err) {
+            console.error('Task EventSource failed, will reconnect automatically...', err);
+        };
     }
 
     // Load tasks
@@ -2619,10 +2651,14 @@
             const res = await fetch('/api/chat');
             if (!res.ok) return;
             const msgs = (await res.json()).messages || [];
+            const msgsJson = JSON.stringify(msgs);
+            if (msgsJson === state.lastChatMessagesJson) return; // skip if nothing changed
+            state.lastChatMessagesJson = msgsJson;
+
             if (msgs.length === 0) {
                 thread.innerHTML = `
                     <div class="chat-empty" style="margin: auto; text-align: center; color: var(--text-muted); max-width: 460px;">
-                        <h2 style="font-family: var(--font-title); font-size: 1.8rem; font-weight: 700; margin-bottom: 0.5rem; background: linear-gradient(135deg, #ffffff 0%, var(--text-muted) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Tanya Hermes</h2>
+                        <h2 style="font-family: var(--font-title); font-size: 1.8rem; font-weight: 700; margin-bottom: 0.5rem; background: linear-gradient(135deg, #ffffff 0%, var(--text-muted) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Lail Agent</h2>
                         <p style="font-size: 0.95rem;">Mulai percakapan, atau beri tugas dengan <code>/task @proyek perbaiki bug login</code>. Ketik <code>/help</code> untuk bantuan.</p>
                     </div>`;
                 return;

@@ -15,6 +15,20 @@ _IN_INTERRUPTIBLE = f"({','.join('?' * len(INTERRUPTIBLE))})"
 class Store:
     def __init__(self, db: Path):
         self.db = str(db)
+        self.listeners = set()
+
+    def subscribe(self, listener):
+        self.listeners.add(listener)
+
+    def unsubscribe(self, listener):
+        self.listeners.discard(listener)
+
+    def publish(self, event):
+        for listener in list(self.listeners):
+            try:
+                listener(event)
+            except Exception:
+                pass
 
     @contextmanager
     def _conn(self):
@@ -52,10 +66,12 @@ class Store:
         with self._conn() as c:
             c.execute("INSERT INTO tasks VALUES(?,?,?,?,?)",
                       (task_id, chat_id, text, "queued", time.time()))
+        self.publish({"type": "task_created", "task_id": task_id})
 
     def set_task_status(self, task_id, status):
         with self._conn() as c:
             c.execute("UPDATE tasks SET status=? WHERE task_id=?", (status, task_id))
+        self.publish({"type": "task_status", "task_id": task_id, "status": status})
 
     def sweep_interrupted(self) -> list[dict]:
         """Retire tasks that only look alive. Returns the swept rows, each
@@ -81,21 +97,28 @@ class Store:
             cur = c.execute(
                 "INSERT INTO steps(task_id,idx,kind,detail,status) VALUES(?,?,?,?,?)",
                 (task_id, index, kind, detail, "queued"))
-            return cur.lastrowid
+            last_id = cur.lastrowid
+        self.publish({"type": "step_added", "task_id": task_id, "step_id": last_id, "idx": index, "kind": kind, "detail": detail})
+        return last_id
 
     def set_step_status(self, step_id, status):
         with self._conn() as c:
             c.execute("UPDATE steps SET status=? WHERE id=?", (status, step_id))
+            r = c.execute("SELECT task_id FROM steps WHERE id=?", (step_id,)).fetchone()
+            task_id = r["task_id"] if r else None
+        self.publish({"type": "step_status", "task_id": task_id, "step_id": step_id, "status": status})
 
     def append_log(self, task_id, line):
         with self._conn() as c:
             c.execute("INSERT INTO logs(task_id,ts,line) VALUES(?,?,?)",
                       (task_id, time.time(), line))
+        self.publish({"type": "log_appended", "task_id": task_id, "line": line})
 
     def add_artifact(self, task_id, kind, path):
         with self._conn() as c:
             c.execute("INSERT INTO artifacts(task_id,kind,path) VALUES(?,?,?)",
                       (task_id, kind, path))
+        self.publish({"type": "artifact_added", "task_id": task_id, "kind": kind, "path": path})
 
     def get_task(self, task_id):
         with self._conn() as c:

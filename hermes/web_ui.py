@@ -1,6 +1,6 @@
 from __future__ import annotations
 import asyncio, json, re, subprocess, time
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
@@ -255,6 +255,51 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         all_tasks = store.list_tasks()
         return [t for t in all_tasks if t.get("chat_id", 0) >= 0]
 
+    @app.get("/api/tasks/events")
+    async def tasks_events(request: Request):
+        print("API: tasks_events called")
+        queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def listener(event):
+            print("API: listener called with event:", event)
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, event)
+                print("API: event queued in loop")
+            except Exception as e:
+                print("API: listener exception:", e)
+
+        store.subscribe(listener)
+
+        async def event_generator():
+            print("API: event_generator started")
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        print("API: client disconnected")
+                        break
+                    try:
+                        print("API: waiting for queue...")
+                        event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                        print("API: got event from queue:", event)
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    except asyncio.TimeoutError:
+                        print("API: timeout, yielding keep-alive")
+                        yield "data: {\"type\": \"keep-alive\"}\n\n"
+            finally:
+                print("API: event_generator finally, unsubscribing")
+                store.unsubscribe(listener)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive"
+            }
+        )
+
     @app.get("/api/tasks/{task_id}")
     def task(task_id: str):
         t = store.get_task(task_id) or {}
@@ -334,7 +379,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             chat = getattr(app.state, "chat", None)
             if chat is None:
                 reply = (
-                    "Halo! Saya Hermes, asisten orkestrasi Anda.\n\n"
+                    "Halo! Saya Lail Agent, asisten orkestrasi Anda.\n\n"
                     "Untuk menjalankan tugas, gunakan `/task <deskripsi>` — "
                     "mis. `/task @myproject jalankan pengujian`.\n"
                     "Gunakan `/projects` untuk daftar proyek atau `/help` untuk bantuan."
@@ -410,7 +455,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             acc = ""
             usage = None
             if chat is None or not hasattr(chat, "stream"):
-                acc = ("Halo! Saya Hermes. Untuk menjalankan tugas gunakan "
+                acc = ("Halo! Saya Lail Agent. Untuk menjalankan tugas gunakan "
                        "`/task <deskripsi>`; `/projects` untuk daftar proyek, "
                        "`/help` untuk bantuan.")
                 yield sse({"delta": acc})

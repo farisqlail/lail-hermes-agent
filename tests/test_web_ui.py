@@ -559,3 +559,43 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
         if (store.get_task(new_id) or {}).get("status") == "awaiting_confirm":
             break
     assert (store.get_task(new_id) or {}).get("status") == "awaiting_confirm"
+
+
+async def test_tasks_events_sse_streams_live_updates(hermes_home):
+    """Test that /api/tasks/events correctly streams events as they occur in the store."""
+    import json, asyncio
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    app = create_app(store)
+    route = next(r for r in app.routes if r.path == "/api/tasks/events")
+    handler = route.endpoint
+
+    class FakeRequest:
+        async def is_disconnected(self):
+            return False
+
+    request = FakeRequest()
+    response = await handler(request)
+    assert response.media_type == "text/event-stream"
+
+    async def trigger_events():
+        await asyncio.sleep(0.05)
+        store.create_task("event_task", 0, "test task")
+        await asyncio.sleep(0.05)
+        store.set_task_status("event_task", "running")
+
+    bg_task = asyncio.create_task(trigger_events())
+
+    events = []
+    async for chunk in response.body_iterator:
+        if chunk.startswith("data: "):
+            data = json.loads(chunk[6:])
+            events.append(data)
+            if data.get("type") == "task_status" and data.get("status") == "running":
+                break
+
+    await bg_task
+
+    assert any(ev.get("type") == "task_created" and ev.get("task_id") == "event_task" for ev in events)
+    assert any(ev.get("type") == "task_status" and ev.get("task_id") == "event_task" and ev.get("status") == "running" for ev in events)
