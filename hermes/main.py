@@ -199,9 +199,9 @@ def build_nim_chat(settings, secrets):
         "Tentu! Berikut cara kerja start task di Lail Hermes:\n\n"
         "## 📝 Cara mengantre task\n\n"
         "Kamu cukup minta dengan jelas, misalnya:\n\n"
-        '> *"Jalankan pengujian untuk @myprofit"*\n'
-        '> *"Antrekan task build untuk @project-abc"*\n'
-        '> *"Tolong mulai orkestrasi deployment"*\n\n'
+        '> *"Jalankan testing untuk @myprofit"*\n'
+        '> *"Build @project-abc"*\n'
+        '> *"Deploy @project-x ke staging"*\n\n'
         "Syaratnya:\n"
         "• Sertakan @nama-proyek biar saya tahu proyek mana yang dimaksud.\n"
         "• Jelaskan apa yang ingin dilakukan (testing, build, deploy, dll).\n\n"
