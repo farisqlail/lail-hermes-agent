@@ -5,6 +5,7 @@ everything above `make_handlers` is a pure function over an `Ask`.
 """
 from __future__ import annotations
 from .ask import Ask, AskRegistry
+from .tg_format import strip_markdown
 
 CB_PREFIX = "ask"
 LABEL_MAX = 60      # button faces stay readable on a phone
@@ -12,17 +13,24 @@ _UNCHECKED, _CHECKED = "☐", "☑"
 
 
 def _clip(label: str) -> str:
-    label = " ".join(str(label).split())     # newlines break button layout
+    # Strip before measuring: markers that will not be shown must not spend any
+    # of the 60-char budget the operator can actually read.
+    label = " ".join(strip_markdown(str(label)).split())  # newlines break layout
     return label if len(label) <= LABEL_MAX else label[:LABEL_MAX - 1] + "…"
 
 
 def question_text(ask: Ask) -> str:
     """Plain text only: sender() sends without parse_mode, so any markup
-    marker here would reach the operator literally."""
-    lines = [f"❓ {ask.question}"]
+    marker here would reach the operator literally.
+
+    The question and the option text come from the engine, which writes
+    Markdown by habit — hence the strip. Hermes' own lines below need none.
+    """
+    lines = [f"❓ {strip_markdown(ask.question)}"]
     for i, opt in enumerate(ask.options, 1):
-        desc = str(opt.get("description", "")).strip()
-        lines.append(f"{i}. {opt.get('label', '')}" + (f" — {desc}" if desc else ""))
+        label = strip_markdown(str(opt.get("label", "")))
+        desc = strip_markdown(str(opt.get("description", ""))).strip()
+        lines.append(f"{i}. {label}" + (f" — {desc}" if desc else ""))
     lines.append("")
     lines.append("Pilih beberapa lalu tekan Kirim, atau balas dengan teks."
                  if ask.multi else

@@ -46,6 +46,9 @@ TOOL_DESCRIPTION = (
     "each an object with a 'label' and an optional 'description'; provide 2-4 when the "
     "answer is a choice, or omit them for a free-text-only question. The operator can "
     "always reply in free text instead. Set 'multi' to allow more than one choice. "
+    "Write 'question', labels and descriptions as PLAIN TEXT — no Markdown, no "
+    "**bold**, no backticks, no '>' quotes, no headings: the chat renders none of "
+    "it and the markers reach the operator as literal punctuation. "
     "Returns the operator's answer, or a fallback instruction if no one answers in "
     "time — in which case proceed with your best assumption and state it.")
 

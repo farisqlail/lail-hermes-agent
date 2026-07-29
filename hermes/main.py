@@ -12,7 +12,7 @@ from .orchestrator import Orchestrator
 from .telegram_bridge import Bridge
 from .web_ui import create_app
 from . import build_runner, engine_runner, test_runner, project_detect
-from . import ask_server, ask_ui
+from . import ask_server, ask_ui, tg_format
 from .ask import AskRegistry
 from .git_status import git_dirty
 from .recovery import group_digests
@@ -370,11 +370,17 @@ def _make_sender(bot):
     by the change-summary table's <pre> block. It stays opt-in per call
     because every other message is raw text that may contain `<` or `&`, and
     parsing those as markup would corrupt or reject them.
+
+    A plain message is stripped of Markdown on the way out. With no parse_mode
+    there is nothing to consume an engine's `**bold**` or `> quote`, so the
+    markers would land on the operator's screen as punctuation. html=True is
+    exempt: that markup is Hermes' own and is meant to be parsed.
     """
     async def sender(chat_id, text, html: bool = False):
         kw = {"parse_mode": "HTML"} if html else {}
+        body = text if html else tg_format.strip_markdown(text)
         await _telegram_send_with_retry(lambda: bot.send_message(
-            chat_id=chat_id, text=_clip_for_telegram(text, html=html), **kw))
+            chat_id=chat_id, text=_clip_for_telegram(body, html=html), **kw))
     return sender
 
 def _console_safe(e: object) -> str:

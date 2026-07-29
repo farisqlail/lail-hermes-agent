@@ -40,6 +40,32 @@ def test_long_labels_are_clipped_for_the_button_face():
     assert label.endswith("…")
 
 
+def test_question_text_strips_engine_written_markdown():
+    """The engine writes Markdown by habit; sender() sends without parse_mode,
+    so a stray `> *...*` reaches the operator as literal punctuation."""
+    a = _ask([{"label": "**Ya**", "description": "jalankan `pytest -q`"}],
+             question='Lanjut?\n> *"Jalankan testing untuk @myprofit"*')
+    text = ask_ui.question_text(a)
+    assert 'Lanjut?\n"Jalankan testing untuk @myprofit"' in text
+    assert "1. Ya — jalankan pytest -q" in text
+    assert "*" not in text and "`" not in text
+
+
+def test_button_faces_strip_markdown_too():
+    """A label is rendered on the button itself, which never passes through
+    question_text()."""
+    a = _ask([{"label": "**Ya**, jalankan"}])
+    assert ask_ui.keyboard_rows(a)[0][0][0] == "Ya, jalankan"
+
+
+def test_button_face_clipping_measures_the_stripped_label():
+    """Stripping after clipping would let the markers eat the budget and leave
+    a face shorter than the cap for no reason."""
+    a = _ask([{"label": "**" + "x" * (ask_ui.LABEL_MAX - 2) + "**"}])
+    face = ask_ui.keyboard_rows(a)[0][0][0]
+    assert face == "x" * (ask_ui.LABEL_MAX - 2)
+
+
 def test_callback_data_fits_telegram_64_byte_cap():
     """Labels never travel in callback_data — indices do — so even 40 options
     with essay-length labels stay inside the cap."""
@@ -78,16 +104,15 @@ def test_question_text_says_when_multiple_answers_are_allowed():
     assert "beberapa" in ask_ui.question_text(a).lower()
 
 
-def test_question_text_has_no_markup_characters_that_telegram_would_parse():
-    """sender() sends without parse_mode, so question_text must pass
-    user-supplied text through verbatim: no escaping of markup-looking
-    characters (that would leave stray backslashes visible to the operator)
-    and no mangling, and the function must not introduce any markup of its
-    own around the text it assembles."""
+def test_question_text_removes_markup_rather_than_escaping_it():
+    """sender() sends without parse_mode, so there is nothing to consume a
+    marker and nothing to be protected from one. The markers are dropped and
+    the words kept; escaping instead would leave stray backslashes on screen,
+    and question_text must still introduce no markup of its own."""
     a = _ask([{"label": "*bold*"}], question="pakai `x` atau _y_?")
     text = ask_ui.question_text(a)
-    assert "pakai `x` atau _y_?" in text   # question passed through as-is
-    assert "*bold*" in text                # label passed through as-is
+    assert "pakai x atau y?" in text       # words kept, markers gone
+    assert "1. bold" in text
     assert "\\" not in text                # nothing got escaped
 
 

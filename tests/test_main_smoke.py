@@ -203,6 +203,33 @@ async def test_sender_uses_html_parse_mode_only_when_asked():
     assert bot.calls[1]["parse_mode"] == "HTML"
 
 
+async def test_sender_strips_markdown_from_a_plain_message():
+    """Last line of defence: any plain-text path — a step report echoing engine
+    prose, a crash report — is sent with no parse_mode, so markers would land
+    literally on the operator's screen."""
+    class FakeBot:
+        def __init__(self): self.calls = []
+        async def send_message(self, **kw): self.calls.append(kw)
+
+    bot = FakeBot()
+    sender = main._make_sender(bot)
+    await sender(7, '> *"Jalankan testing untuk @myprofit"*')
+    assert bot.calls[0]["text"] == '"Jalankan testing untuk @myprofit"'
+
+
+async def test_sender_leaves_an_html_message_alone():
+    """The change summary's <pre> table is deliberate markup; stripping it as
+    if it were engine Markdown would destroy the alignment it exists for."""
+    class FakeBot:
+        def __init__(self): self.calls = []
+        async def send_message(self, **kw): self.calls.append(kw)
+
+    bot = FakeBot()
+    sender = main._make_sender(bot)
+    await sender(7, "<pre>M  a_b.txt  *</pre>", html=True)
+    assert bot.calls[0]["text"] == "<pre>M  a_b.txt  *</pre>"
+
+
 def test_console_safe_output_is_pure_ascii():
     """Every except handler in run() reports through _console_safe. An
     attached Windows console is UTF-8 (PEP 528) and never raises; the hazard
