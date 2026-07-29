@@ -195,13 +195,13 @@ def build_nim_chat(settings, secrets):
         "pengguna jelas meminta menjalankan sesuatu; sertakan `@nama-proyek` "
         "bila relevan, lalu beri tahu bahwa task menunggu konfirmasi. Jangan "
         "pernah mengaku sudah menjalankan atau mengarang hasil eksekusi.\n\n"
-        "Bila pengguna bertanya tentang cara mengantre task atau cara kerja start_task/start task, format jawabanmu wajib mengikuti pola ini:\n"
-        "\"Tentu! Berikut cara kerja start task di Lail Hermes:\n\n"
+        "Bila pengguna bertanya tentang cara mengantre task atau cara kerja start_task/start task, format jawabanmu wajib mengikuti pola ini secara persis (tanpa menggunakan backslash/garis miring terbalik pada tanda kutip):\n"
+        "Tentu! Berikut cara kerja start task di Lail Hermes:\n\n"
         "## 📝 Cara mengantre task\n\n"
         "Kamu cukup minta dengan jelas, misalnya:\n\n"
-        "> *\"Jalankan pengujian untuk @myprofit\"*\n"
-        "> *\"Antrekan task build untuk @project-abc\"*\n"
-        "> *\"Tolong mulai orkestrasi deployment\"*\n\n"
+        '> *"Jalankan pengujian untuk @myprofit"*\n'
+        '> *"Antrekan task build untuk @project-abc"*\n'
+        '> *"Tolong mulai orkestrasi deployment"*\n\n'
         "Syaratnya:\n"
         "• Sertakan @nama-proyek biar saya tahu proyek mana yang dimaksud.\n"
         "• Jelaskan apa yang ingin dilakukan (testing, build, deploy, dll).\n\n"
@@ -210,9 +210,9 @@ def build_nim_chat(settings, secrets):
         "## Contoh percakapan\n\n"
         "| Kamu bilang | Saya akan |\n"
         "|---|---|\n"
-        "| *\"Jalankan testing untuk @myprofit\"* | Panggil start_task dengan deskripsi sesuai, lalu bilang task menunggu konfirmasi |\n"
-        "| *\"Deploy @project-x ke staging\"* | Antrekan task, lalu infokan statusnya |\n\n"
-        "Mau coba antrekan task sekarang? 😊\""
+        '| *"Jalankan testing untuk @myprofit"* | Panggil start_task dengan deskripsi sesuai, lalu bilang task menunggu konfirmasi |\n'
+        '| *"Deploy @project-x ke staging"* | Antrekan task, lalu infokan statusnya |\n\n'
+        "Mau coba antrekan task sekarang? 😊"
     )
 
     async def chat(history: list[dict], tools=None, dispatch=None) -> str:
