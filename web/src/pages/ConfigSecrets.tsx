@@ -78,16 +78,16 @@ export function ConfigSecrets() {
         <h3 style={{ fontFamily: 'var(--font-title)', fontSize: 'var(--t-lg)', fontWeight: '600', marginBottom: '16px', color: 'var(--accent)' }}>🔑 API Keys & Bot Tokens</h3>
 
         <Field
-          label="NVIDIA API Key"
+          label="AI API Key (NVIDIA NIM / DeepSeek / Custom)"
           error={fieldErrors.nvidia_api_key}
-          helpText="Dibutuhkan untuk pemanggilan model planner NVIDIA NIM (format 'nvapi-...')"
+          helpText="Masukkan NVIDIA API Key (format 'nvapi-...') atau DeepSeek API Key (format 'sk-...')"
         >
           <input
             type="password"
             className="field-input"
             value={nvidiaKey}
             onChange={(e) => setNvidiaKey(e.target.value)}
-            placeholder={status?.nvidia_api_key_set ? 'Sudah tersimpan' : 'Masukkan NVIDIA API Key'}
+            placeholder={status?.nvidia_api_key_set ? 'Sudah tersimpan' : 'Masukkan API Key Anda'}
           />
         </Field>
 

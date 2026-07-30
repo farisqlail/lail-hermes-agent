@@ -157,12 +157,46 @@ export function ConfigGeneral() {
         </div>
       )}
 
-      {/* NVIDIA Brain Section */}
+      {/* AI Brain Section */}
       <section style={{ backgroundColor: 'var(--surface-1)', padding: '20px', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
-        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: 'var(--t-lg)', fontWeight: '600', marginBottom: '16px', color: 'var(--accent)' }}>🧠 NVIDIA NIM Brain (Planner)</h3>
+        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: 'var(--t-lg)', fontWeight: '600', marginBottom: '16px', color: 'var(--accent)' }}>🧠 LLM Brain Settings (Planner)</h3>
         
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+          <Field label="AI Provider" helpText="Pilih penyedia layanan model AI Anda">
+            <select
+              className="field-select"
+              value={formState.ai_provider || 'nvidia'}
+              onChange={(e) => {
+                const val = e.target.value as 'nvidia' | 'deepseek' | 'custom';
+                handleChange('ai_provider', val);
+                if (val === 'nvidia') {
+                  handleChange('nvidia_base_url', 'https://integrate.api.nvidia.com/v1');
+                  handleChange('model', 'deepseek-ai/deepseek-v3');
+                } else if (val === 'deepseek') {
+                  handleChange('nvidia_base_url', 'https://api.deepseek.com/v1');
+                  handleChange('model', 'deepseek-chat');
+                }
+              }}
+              style={{
+                width: '100%',
+                padding: '10px 14px',
+                borderRadius: 'var(--r-md)',
+                backgroundColor: 'var(--surface-2)',
+                color: 'var(--text)',
+                border: '1px solid var(--border)',
+                outline: 'none',
+                cursor: 'pointer'
+              }}
+            >
+              <option value="nvidia">NVIDIA NIM</option>
+              <option value="deepseek">DeepSeek Official</option>
+              <option value="custom">Custom (OpenAI Compatible)</option>
+            </select>
+          </Field>
+        </div>
+
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
-          <Field label="NVIDIA API Base URL" helpText="Endpoint untuk API planner">
+          <Field label="API Base URL" helpText="Endpoint URL untuk API planner">
             <input
               type="text"
               className="field-input"
@@ -172,7 +206,7 @@ export function ConfigGeneral() {
             />
           </Field>
           
-          <Field label="NIM Model ID" helpText="Model ID untuk perencanaan tugas">
+          <Field label="Model ID" helpText="Model ID untuk perencanaan tugas">
             <input
               type="text"
               className="field-input"

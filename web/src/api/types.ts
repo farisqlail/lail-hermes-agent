@@ -9,6 +9,7 @@ export interface McpServer {
 }
 
 export interface Settings {
+  ai_provider: 'nvidia' | 'deepseek' | 'custom';
   nvidia_base_url: string;
   model: string;
   planner_temperature: number;

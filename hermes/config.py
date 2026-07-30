@@ -24,6 +24,7 @@ class McpServer(BaseModel):
     enabled: bool = True
 
 class Settings(BaseModel):
+    ai_provider: Literal["nvidia", "deepseek", "custom"] = "nvidia"
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     model: str = "deepseek-ai/deepseek-v3"
     # Planning emits JSON that must obey fixed rules; sampling randomness buys
