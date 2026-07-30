@@ -52,3 +52,72 @@ a {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-faint);
 }
+
+/* Markdown Rendering Styles */
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: var(--t-sm);
+  background-color: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.md-table th, .md-table td {
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.md-table th {
+  background-color: var(--surface-2);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.md-table tr:last-child td {
+  border-bottom: none;
+}
+
+.md-table tr:hover {
+  background-color: var(--surface-2);
+}
+
+.md-blockquote {
+  border-left: 3px solid var(--accent);
+  padding: 8px 16px;
+  margin: 16px 0;
+  background-color: var(--surface-2);
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.md-hr {
+  border: none;
+  border-top: 1px solid var(--border-strong);
+  margin: 20px 0;
+}
+
+/* Headings in chat thread */
+.chat-thread h1, .chat-thread h2, .chat-thread h3 {
+  font-family: var(--font-title);
+  color: var(--text);
+  margin-top: 18px;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.chat-thread h1 {
+  font-size: var(--t-xl);
+}
+
+.chat-thread h2 {
+  font-size: var(--t-lg);
+}
+
+.chat-thread h3 {
+  font-size: var(--t-base);
+}

@@ -33,16 +33,99 @@ export function renderMarkdown(src: string): string {
   // Links
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   
+  // Headers (multiline search)
+  s = s.replace(/^(\s*)### (.*)$/gm, '<h3>$2</h3>');
+  s = s.replace(/^(\s*)## (.*)$/gm, '<h2>$2</h2>');
+  s = s.replace(/^(\s*)# (.*)$/gm, '<h1>$2</h1>');
+
+  // Blockquotes
+  s = s.replace(/^&gt; (.*)$/gm, '<blockquote class="md-blockquote">$1</blockquote>');
+
+  // Horizontal Rules
+  s = s.replace(/^(\s*)---$/gm, '<hr class="md-hr">');
+
   // Bullet lists
   s = s.replace(/^(\s*)[-*] +(.+)$/gm, '$1&bull; $2');
   
-  // Newlines
-  s = s.replace(/\n/g, '<br>');
-  
+  // Parse Tables
+  const lines = s.split('\n');
+  const newLines: string[] = [];
+  let inTable = false;
+  let headers: string[] = [];
+  let rows: string[][] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.startsWith('|') && line.endsWith('|')) {
+      const cells = line.split('|').map(c => c.trim()).filter((_, idx, arr) => idx > 0 && idx < arr.length - 1);
+      if (!inTable) {
+        headers = cells;
+        inTable = true;
+        rows = [];
+      } else {
+        const isSeparator = cells.every(c => /^:?-+:?$/.test(c));
+        if (!isSeparator) {
+          rows.push(cells);
+        }
+      }
+    } else {
+      if (inTable) {
+        let tableHtml = '<table class="md-table"><thead><tr>';
+        headers.forEach(h => tableHtml += `<th>${h}</th>`);
+        tableHtml += '</tr></thead><tbody>';
+        rows.forEach(r => {
+          tableHtml += '<tr>';
+          r.forEach(c => tableHtml += `<td>${c}</td>`);
+          tableHtml += '</tr>';
+        });
+        tableHtml += '</tbody></table>';
+        newLines.push(tableHtml);
+        inTable = false;
+      }
+      newLines.push(lines[i]);
+    }
+  }
+  if (inTable) {
+    let tableHtml = '<table class="md-table"><thead><tr>';
+    headers.forEach(h => tableHtml += `<th>${h}</th>`);
+    tableHtml += '</tr></thead><tbody>';
+    rows.forEach(r => {
+      tableHtml += '<tr>';
+      r.forEach(c => tableHtml += `<td>${c}</td>`);
+      tableHtml += '</tr>';
+    });
+    tableHtml += '</tbody></table>';
+    newLines.push(tableHtml);
+  }
+
+  // Handle Newlines correctly to avoid spacing issues after block-level tags
+  let finalHtml = '';
+  for (let i = 0; i < newLines.length; i++) {
+    const line = newLines[i];
+    const trimmed = line.trim();
+    const isBlock = trimmed.startsWith('<table') || 
+                    trimmed.startsWith('<h1') || 
+                    trimmed.startsWith('<h2') || 
+                    trimmed.startsWith('<h3') || 
+                    trimmed.startsWith('<blockquote') || 
+                    trimmed.startsWith('<hr') ||
+                    trimmed.startsWith('<pre') ||
+                    trimmed.startsWith('</table');
+    
+    finalHtml += line;
+    if (i < newLines.length - 1) {
+      if (isBlock) {
+        finalHtml += '\n';
+      } else {
+        finalHtml += '<br>';
+      }
+    }
+  }
+
   // Restore code blocks
-  s = s.replace(new RegExp(SENT + '(\\d+)' + SENT, 'g'), (_, i) => blocks[+i]);
+  finalHtml = finalHtml.replace(new RegExp(SENT + '(\\d+)' + SENT, 'g'), (_, i) => blocks[+i]);
   
-  return s;
+  return finalHtml;
 }
 
 export function Markdown({ content }: MarkdownProps) {

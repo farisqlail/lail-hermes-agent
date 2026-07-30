@@ -219,6 +219,16 @@ export function ConfigGeneral() {
               required
             />
           </Field>
+
+          <Field label="Agent Name" helpText="Nama identitas asisten chat AI Anda (Default: Lail Agent)">
+            <input
+              type="text"
+              className="field-input"
+              placeholder="Lail Agent"
+              value={formState.agent_name || ''}
+              onChange={(e) => handleChange('agent_name', e.target.value)}
+            />
+          </Field>
         </div>
       </section>
 

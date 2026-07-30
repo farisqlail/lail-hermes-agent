@@ -1,10 +1,12 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useTasks } from '../hooks/useTasks';
 import { parseStreamBuffer, StreamEvent } from '../api/stream';
-import { errorMessage } from '../api/client';
+import { errorMessage, api } from '../api/client';
 import { Markdown } from '../components/Markdown';
 import { Button } from '../components/Button';
 import { useToast } from '../components/Toast';
+import { useTasksContext } from '../api/events';
+import { loadTtsEnabled, loadTtsVoice } from '../tts';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -14,24 +16,220 @@ interface Message {
   };
 }
 
-export function Dashboard() {
+function findTaskIds(text: string): string[] {
+  const TASK_ID_REGEX = /\b(\d{8}-\d{6}-[0-9a-f]{6})\b/g;
+  const matches: string[] = [];
+  let match;
+  while ((match = TASK_ID_REGEX.exec(text)) !== null) {
+    if (!matches.includes(match[1])) {
+      matches.push(match[1]);
+    }
+  }
+  return matches;
+}
+
+interface InlineTaskCardProps {
+  taskId: string;
+  tasks: any[];
+  confirming: boolean;
+  onConfirm: (approved: boolean) => void;
+}
+
+function InlineTaskCard({ taskId, tasks, confirming, onConfirm }: InlineTaskCardProps) {
+  const task = tasks.find(t => t.task_id === taskId);
+
+  // An id in the prose with no task behind it. Rendering null here hid the
+  // problem: the assistant can quote a task id it never queued, and the reply
+  // then reads as if work is waiting while no card, no log link and no Run
+  // button appear. Say so instead — an id that resolves to nothing is a
+  // failure the operator must see, not a blank space.
+  if (!task) {
+    return (
+      <div style={{
+        marginTop: '12px',
+        padding: '10px 14px',
+        backgroundColor: 'var(--surface-1)',
+        border: '1px dashed var(--err)',
+        borderRadius: 'var(--r-md)',
+        alignSelf: 'stretch',
+        fontSize: 'var(--t-sm)',
+        color: 'var(--text-dim)',
+      }}>
+        <span style={{ color: 'var(--err)', fontWeight: '600' }}>⚠️ Task tidak ditemukan</span>
+        {' — '}
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)' }}>{taskId}</span>
+        <div style={{ marginTop: '4px', fontSize: 'var(--t-xs)' }}>
+          ID ini tidak ada di daftar task, jadi tidak ada tombol Run untuknya.
+          Minta asisten memakai <code>recent_tasks</code> untuk menyebut ID yang benar,
+          atau antrekan ulang tasknya.
+        </div>
+      </div>
+    );
+  }
+
+  const statusColors: Record<string, string> = {
+    queued: 'var(--text-faint)',
+    running: 'var(--accent)',
+    done: 'var(--ready)',
+    failed: 'var(--err)',
+    cancelled: 'var(--text-faint)',
+    interrupted: 'var(--warn)',
+    awaiting_confirm: 'var(--warn)',
+  };
+
+  return (
+    <div style={{
+      marginTop: '12px',
+      padding: '12px 16px',
+      backgroundColor: 'var(--surface-1)',
+      border: '1px solid var(--border)',
+      borderRadius: 'var(--r-md)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '8px',
+      fontSize: 'var(--t-sm)',
+      alignSelf: 'stretch',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontWeight: '600', color: 'var(--text)' }}>
+          ⚙️ Task: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)' }}>{taskId}</span>
+        </span>
+        <span style={{
+          padding: '2px 8px',
+          borderRadius: 'var(--r-sm)',
+          fontSize: 'var(--t-xs)',
+          fontWeight: '600',
+          backgroundColor: 'rgba(255,255,255,0.05)',
+          color: statusColors[task.status] || 'var(--text)',
+          border: `1px solid ${statusColors[task.status] || 'var(--border)'}`,
+        }}>
+          {task.status.toUpperCase()}
+        </span>
+      </div>
+
+      <div style={{ color: 'var(--text-dim)', fontStyle: 'italic' }}>
+        "{task.text}"
+      </div>
+
+      <div style={{ display: 'flex', gap: '8px', marginTop: '4px', alignItems: 'center', flexWrap: 'wrap' }}>
+        <a
+          href={`#/task/${taskId}`}
+          style={{
+            color: 'var(--accent)',
+            textDecoration: 'none',
+            fontWeight: '600',
+            fontSize: 'var(--t-xs)',
+          }}
+        >
+          Lihat Log & Langkah Lengkap ↗
+        </a>
+
+        {task.status === 'awaiting_confirm' && (
+          <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
+            <Button
+              variant="primary"
+              size="small"
+              onClick={() => onConfirm(true)}
+              disabled={confirming}
+              style={{ padding: '4px 12px', fontSize: 'var(--t-xs)' }}
+            >
+              Run
+            </Button>
+            <Button
+              variant="danger"
+              size="small"
+              onClick={() => onConfirm(false)}
+              disabled={confirming}
+              style={{ padding: '4px 12px', fontSize: 'var(--t-xs)' }}
+            >
+              Cancel
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface DashboardProps {
+  sessionId?: string;
+  onRefreshSessions?: () => void;
+}
+
+export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
   const { isConnected } = useTasks();
+  const { tasks } = useTasksContext();
   const { toast } = useToast();
   
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [agentName, setAgentName] = useState('Lail Agent');
+
+  // Read-only here: the Voice Output config tab owns these settings. The
+  // Dashboard remounts on navigation, so it picks up a save without a listener.
+  const [ttsEnabled] = useState<boolean>(loadTtsEnabled);
+  const [ttsVoice] = useState<string>(loadTtsVoice);
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    api.getSettings().then(s => {
+      if (s.agent_name) {
+        setAgentName(s.agent_name);
+      }
+    }).catch(() => {});
+
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+    };
+  }, []);
+
+  const speakText = async (text: string) => {
+    if (!ttsEnabled) return;
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice: ttsVoice }),
+      });
+      if (res.status === 204) return;
+      if (!res.ok) throw new Error('Gagal memuat audio TTS');
+      const blob = await res.blob();
+      const audioUrl = URL.createObjectURL(blob);
+      
+      let audio = audioRef.current;
+      if (!audio) {
+        audio = new Audio();
+        audioRef.current = audio;
+      }
+      
+      audio.pause();
+      audio.src = audioUrl;
+      audio.onended = () => {
+        URL.revokeObjectURL(audioUrl);
+      };
+      await audio.play();
+    } catch (e) {
+      console.warn('Gagal memutar audio TTS:', e);
+    }
+  };
   
   const [inputText, setInputText] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [streamContent, setStreamContent] = useState('');
   const [streamUsage, setStreamUsage] = useState<{ total: number } | null>(null);
+  const [confirmingMap, setConfirmingMap] = useState<Record<string, boolean>>({});
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const chatThreadRef = useRef<HTMLDivElement | null>(null);
 
   const fetchChatHistory = useCallback(async () => {
     try {
-      const res = await fetch('/api/chat');
+      setLoadingHistory(true);
+      const url = sessionId ? `/api/chat?session_id=${sessionId}` : '/api/chat';
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         setMessages(data.messages || []);
@@ -41,11 +239,31 @@ export function Dashboard() {
     } finally {
       setLoadingHistory(false);
     }
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
     fetchChatHistory();
   }, [fetchChatHistory]);
+
+  const handleConfirmTask = async (tid: string, approved: boolean) => {
+    setConfirmingMap(prev => ({ ...prev, [tid]: true }));
+    try {
+      const res = await fetch(`/api/tasks/${tid}/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approved }),
+      });
+      if (res.ok) {
+        toast(approved ? 'Tugas disetujui!' : 'Tugas dibatalkan.', 'ok');
+      } else {
+        toast('Gagal mengirim konfirmasi.', 'err');
+      }
+    } catch (err) {
+      toast('Terjadi kesalahan jaringan.', 'err');
+    } finally {
+      setConfirmingMap(prev => ({ ...prev, [tid]: false }));
+    }
+  };
 
   // Scroll to bottom when messages or streamContent updates
   const scrollToBottom = useCallback(() => {
@@ -68,6 +286,19 @@ export function Dashboard() {
     setStreamContent('');
     setStreamUsage(null);
 
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+
+    // Synchronously play a tiny silent sound to unlock audio autoplay
+    if (ttsEnabled) {
+      if (!audioRef.current) {
+        audioRef.current = new Audio();
+      }
+      audioRef.current.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAAA';
+      audioRef.current.play().catch(() => {});
+    }
+
     // Append user message immediately
     const userMsg: Message = { role: 'user', content: text };
     setMessages((prev) => [...prev, userMsg]);
@@ -82,7 +313,7 @@ export function Dashboard() {
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, session_id: sessionId }),
         signal: controller.signal,
       });
 
@@ -124,6 +355,10 @@ export function Dashboard() {
         usage: accumulatedUsage || undefined,
       };
       setMessages((prev) => [...prev, assistantMsg]);
+      speakText(accumulatedText);
+      if (onRefreshSessions) {
+        onRefreshSessions();
+      }
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         const assistantMsg: Message = {
@@ -155,9 +390,13 @@ export function Dashboard() {
   };
 
   const handleReset = async () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
     if (!window.confirm('Hapus seluruh percakapan?')) return;
     try {
-      const res = await fetch('/api/chat/reset', { method: 'POST' });
+      const url = sessionId ? `/api/chat/reset?session_id=${sessionId}` : '/api/chat/reset';
+      const res = await fetch(url, { method: 'POST' });
       if (res.ok) {
         setMessages([]);
         toast('Percakapan telah di-reset', 'ok');
@@ -227,7 +466,7 @@ export function Dashboard() {
           ) : messages.length === 0 && !streaming ? (
             <div style={{ color: 'var(--text-faint)', textAlign: 'center', margin: 'auto', maxWidth: '400px' }}>
               <span style={{ fontSize: '2rem', display: 'block', marginBottom: '8px' }}>🤖</span>
-              Halo! Saya adalah <strong>Lail Hermes Agent</strong>.<br />
+              Halo! Saya adalah <strong>{agentName}</strong>.<br />
               Ketik instruksi di bawah (mis. <code>buat counter app dengan Flutter</code> atau <code>jalankan test</code>) untuk memulai.
             </div>
           ) : (
@@ -254,11 +493,23 @@ export function Dashboard() {
                         border: '1px solid var(--border)',
                         borderRadius: 'var(--r-lg)',
                         padding: '16px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'flex-start',
                       }}
                     >
                       <Markdown content={m.content} />
+                      {findTaskIds(m.content).map(tid => (
+                        <InlineTaskCard
+                          key={tid}
+                          taskId={tid}
+                          tasks={tasks}
+                          confirming={!!confirmingMap[tid]}
+                          onConfirm={(approved) => handleConfirmTask(tid, approved)}
+                        />
+                      ))}
                       {m.usage && m.usage.total > 0 && (
-                        <div style={{ fontSize: 'var(--t-xs)', color: 'var(--text-faint)', marginTop: '8px', borderTop: '1px dashed var(--border)', paddingTop: '6px' }}>
+                        <div style={{ fontSize: 'var(--t-xs)', color: 'var(--text-faint)', marginTop: '8px', borderTop: '1px dashed var(--border)', paddingTop: '6px', alignSelf: 'stretch' }}>
                           💡 Total token: {m.usage.total}
                         </div>
                       )}
@@ -282,10 +533,24 @@ export function Dashboard() {
                     border: '1px solid var(--border)',
                     borderRadius: 'var(--r-lg)',
                     padding: '16px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
                   }}
                 >
                   {streamContent ? (
-                    <Markdown content={streamContent} />
+                    <>
+                      <Markdown content={streamContent} />
+                      {findTaskIds(streamContent).map(tid => (
+                        <InlineTaskCard
+                          key={tid}
+                          taskId={tid}
+                          tasks={tasks}
+                          confirming={!!confirmingMap[tid]}
+                          onConfirm={(approved) => handleConfirmTask(tid, approved)}
+                        />
+                      ))}
+                    </>
                   ) : (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <span style={{ opacity: 0.55, fontSize: 'var(--t-sm)', color: 'var(--text-dim)' }}>Hermes sedang berpikir</span>
@@ -297,7 +562,7 @@ export function Dashboard() {
                     </div>
                   )}
                   {streamUsage && (
-                    <div style={{ fontSize: 'var(--t-xs)', color: 'var(--text-faint)', marginTop: '8px', borderTop: '1px dashed var(--border)', paddingTop: '6px' }}>
+                    <div style={{ fontSize: 'var(--t-xs)', color: 'var(--text-faint)', marginTop: '8px', borderTop: '1px dashed var(--border)', paddingTop: '6px', alignSelf: 'stretch' }}>
                       💡 Total token: {streamUsage.total}
                     </div>
                   )}

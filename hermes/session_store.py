@@ -46,7 +46,9 @@ class Store:
                 """
                 CREATE TABLE IF NOT EXISTS tasks(
                   task_id TEXT PRIMARY KEY, chat_id INTEGER, text TEXT,
-                  status TEXT, created REAL);
+                  status TEXT, created REAL, session_id TEXT);
+                CREATE TABLE IF NOT EXISTS sessions(
+                  session_id TEXT PRIMARY KEY, title TEXT, created REAL);
                 CREATE TABLE IF NOT EXISTS steps(
                   id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
                   idx INTEGER, kind TEXT, detail TEXT, status TEXT);
@@ -61,12 +63,45 @@ class Store:
                   role TEXT, content TEXT, ts REAL);
                 """
             )
+            try:
+                c.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
+            except sqlite3.OperationalError:
+                pass
 
-    def create_task(self, task_id, chat_id, text):
+    def create_session(self, session_id, title):
         with self._conn() as c:
-            c.execute("INSERT INTO tasks VALUES(?,?,?,?,?)",
-                      (task_id, chat_id, text, "queued", time.time()))
-        self.publish({"type": "task_created", "task_id": task_id})
+            c.execute("INSERT OR REPLACE INTO sessions(session_id, title, created) VALUES(?,?,?)",
+                      (session_id, title, time.time()))
+        self.publish({"type": "session_created", "session_id": session_id, "title": title})
+
+    def rename_session(self, session_id, title):
+        with self._conn() as c:
+            c.execute("UPDATE sessions SET title=? WHERE session_id=?", (title, session_id))
+        self.publish({"type": "session_renamed", "session_id": session_id, "title": title})
+
+    def delete_session(self, session_id):
+        with self._conn() as c:
+            c.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
+            c.execute("DELETE FROM messages WHERE conv_id=?", (session_id,))
+            tasks = c.execute("SELECT task_id FROM tasks WHERE session_id=?", (session_id,)).fetchall()
+            for t in tasks:
+                tid = t["task_id"]
+                c.execute("DELETE FROM steps WHERE task_id=?", (tid,))
+                c.execute("DELETE FROM logs WHERE task_id=?", (tid,))
+                c.execute("DELETE FROM artifacts WHERE task_id=?", (tid,))
+            c.execute("DELETE FROM tasks WHERE session_id=?", (session_id,))
+        self.publish({"type": "session_deleted", "session_id": session_id})
+
+    def list_sessions(self):
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM sessions ORDER BY created DESC").fetchall()
+            return [dict(r) for r in rows]
+
+    def create_task(self, task_id, chat_id, text, session_id=None):
+        with self._conn() as c:
+            c.execute("INSERT INTO tasks(task_id, chat_id, text, status, created, session_id) VALUES(?,?,?,?,?,?)",
+                      (task_id, chat_id, text, "queued", time.time(), session_id))
+        self.publish({"type": "task_created", "task_id": task_id, "session_id": session_id})
 
     def set_task_status(self, task_id, status):
         with self._conn() as c:

@@ -675,3 +675,125 @@ def test_static_serving_bundle_missing(hermes_home, monkeypatch):
     assert "Bundle Missing" in r.text
     assert "text/html" in r.headers.get("content-type", "")
 
+
+def _install_fake_edge_tts(monkeypatch, recorder):
+    """Stub edge_tts so the TTS route never touches the network."""
+    import sys, types
+
+    class FakeCommunicate:
+        def __init__(self, text, voice):
+            recorder["text"] = text
+            recorder["voice"] = voice
+
+        async def stream(self):
+            yield {"type": "WordBoundary"}
+            yield {"type": "audio", "data": b"ID3fake"}
+
+    module = types.ModuleType("edge_tts")
+    module.Communicate = FakeCommunicate
+    monkeypatch.setitem(sys.modules, "edge_tts", module)
+
+def test_tts_post_reads_json_body(hermes_home, monkeypatch):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    recorder = {}
+    _install_fake_edge_tts(monkeypatch, recorder)
+    client = TestClient(create_app(store))
+
+    r = client.post("/api/tts", json={"text": "**Halo** tuan", "voice": "id-ID-ArdiNeural"})
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "audio/mpeg"
+    assert r.content == b"ID3fake"
+    # markdown emphasis is stripped before synthesis
+    assert recorder["text"] == "Halo tuan"
+    assert recorder["voice"] == "id-ID-ArdiNeural"
+
+def test_tts_post_defaults_voice_and_skips_empty_text(hermes_home, monkeypatch):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    recorder = {}
+    _install_fake_edge_tts(monkeypatch, recorder)
+    client = TestClient(create_app(store))
+
+    r = client.post("/api/tts", json={"text": "hello"})
+    assert r.status_code == 200
+    # an omitted voice falls back to Indonesian, not to an English voice
+    assert recorder["voice"] == "id-ID-ArdiNeural"
+
+    # text that cleans down to nothing yields No Content, not audio
+    r = client.post("/api/tts", json={"text": "---\n**`  `**"})
+    assert r.status_code == 204
+
+def test_session_rename_reads_json_body(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+
+    session_id = client.post("/api/sessions").json()["session_id"]
+    r = client.post(f"/api/sessions/{session_id}/rename", json={"title": "Rencana rilis"})
+    assert r.status_code == 200, r.text
+    titles = [s["title"] for s in client.get("/api/sessions").json()]
+    assert "Rencana rilis" in titles
+
+def test_tts_voices_list_is_indonesian_first(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+
+    r = client.get("/api/tts/voices")
+    assert r.status_code == 200
+    voices = r.json()
+    ids = [v["id"] for v in voices]
+    # the two native id-ID neural voices lead the list, and the first one is the
+    # server-side default so an omitted voice never lands on an English one
+    assert ids[:2] == ["id-ID-ArdiNeural", "id-ID-GadisNeural"]
+    from hermes.web_ui import TTS_VOICE_DEFAULT
+    assert TTS_VOICE_DEFAULT == ids[0]
+    # Javanese/Sundanese/Malay are different languages — they must not be offered
+    assert not any(v["id"].startswith(("jv-", "su-", "ms-")) for v in voices)
+    assert all(v["name"] for v in voices)
+
+async def test_web_task_awaiting_confirm_is_listed_and_runnable(hermes_home):
+    """The chat pane draws its Run button from a task in GET /api/tasks whose
+    status is awaiting_confirm, and posts to /confirm. A web task carries
+    chat_id=0, so it has to survive the >=0 list filter and reach the bridge —
+    otherwise the assistant says "press Run" and no button exists to press."""
+    import asyncio
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    store.create_task("20260730-141410-9b2e4f", 0, "@v3 jalankan test")
+    store.set_task_status("20260730-141410-9b2e4f", "awaiting_confirm")
+
+    resolved = []
+    class FakeBridge:
+        async def resolve_confirm(self, user_id, task_id, approved, trusted=False):
+            resolved.append((task_id, approved, trusted))
+
+    app = create_app(store)
+    app.state.bridge = FakeBridge()
+    client = TestClient(app)
+
+    listed = client.get("/api/tasks").json()
+    entry = next(t for t in listed if t["task_id"] == "20260730-141410-9b2e4f")
+    assert entry["status"] == "awaiting_confirm", "no awaiting_confirm, no Run button"
+
+    r = client.post("/api/tasks/20260730-141410-9b2e4f/confirm", json={"approved": True})
+    assert r.status_code == 200
+    await asyncio.sleep(0)   # let the fire-and-forget confirm task run
+    assert resolved == [("20260730-141410-9b2e4f", True, True)]
+
+def test_task_detail_is_fetchable_by_id(hermes_home):
+    """The card's 'Lihat Log & Langkah Lengkap' link opens #/task/<id>, which
+    reads this endpoint. A web task (chat_id=0) must be reachable there."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    store.create_task("20260730-140639-8a36d8", 0, "@v3 investigasi")
+    store.append_log("20260730-140639-8a36d8", r"project: C:\Users\USER\myprofit-v3")
+    client = TestClient(create_app(store))
+
+    r = client.get("/api/tasks/20260730-140639-8a36d8")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["task"]["task_id"] == "20260730-140639-8a36d8"
+    assert any("myprofit-v3" in line for line in body["logs"])

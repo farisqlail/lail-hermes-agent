@@ -304,3 +304,24 @@ async def test_notify_restart_survives_unprintable_error(monkeypatch):
     ]
     assert await main._notify_restart(swept, sender) == 1
     assert sent == [7]
+
+
+async def test_sender_drops_a_message_with_no_telegram_chat():
+    """The web UI queues tasks with chat_id=0 meaning "no Telegram chat". The
+    bridge notifies unconditionally, so without this guard the first send
+    reaches Telegram as chat_id=0 and comes back BadRequest("Chat not found"),
+    killing the whole task. 0 is safe as the sentinel: a real chat id is never
+    0, and a group's id is a large *negative* number that must still send."""
+    class FakeBot:
+        def __init__(self): self.calls = []
+        async def send_message(self, **kw): self.calls.append(kw)
+
+    bot = FakeBot()
+    sender = main._make_sender(bot)
+    await sender(0, "Task 123 queued.")
+    assert bot.calls == []
+
+    # a real chat still sends, including a negative supergroup id
+    await sender(7, "hello")
+    await sender(-1001234567890, "group hello")
+    assert [c["chat_id"] for c in bot.calls] == [7, -1001234567890]

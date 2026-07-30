@@ -37,6 +37,7 @@ class Settings(BaseModel):
     # reason to split them appears.
     chat_model: str = ""
     chat_temperature: float = 0.3
+    agent_name: str = "Lail Agent"
     allowed_user_ids: list[int] = Field(default_factory=list)
     default_engine: Literal["claude", "antigravity", "auto"] = "auto"
     # Per-engine tuning ("" = leave that CLI's own default). Model fields are

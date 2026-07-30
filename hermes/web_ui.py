@@ -11,6 +11,7 @@ from .telegram_bridge import new_task_id
 
 class TaskSubmit(BaseModel):
     text: str
+    session_id: str | None = None
 
 class TaskConfirm(BaseModel):
     approved: bool
@@ -19,6 +20,32 @@ class TaskAnswer(BaseModel):
     ask_id: str
     text: str | None = None
     options: list[int] | None = None
+
+# Request models must live at module scope: `from __future__ import annotations`
+# turns every annotation into a string, and FastAPI resolves those against the
+# endpoint's module globals only. A model declared inside create_app() is
+# invisible there, so the parameter degrades to a required query param and every
+# POST comes back 422.
+class SessionRename(BaseModel):
+    title: str
+
+# edge-tts voices offered in the UI. Indonesian first: the agent answers in
+# Bahasa, and an English voice reads Indonesian text with English phonetics.
+# id-ID-* are the only two native Indonesian neural voices edge-tts ships —
+# jv-ID (Javanese), su-ID (Sundanese) and ms-MY (Malay) are separate languages
+# and mispronounce Bahasa, so they are deliberately left out.
+TTS_VOICES = [
+    {"id": "id-ID-ArdiNeural", "name": "Ardi (Pria ID - Natural)"},
+    {"id": "id-ID-GadisNeural", "name": "Gadis (Wanita ID - Natural)"},
+    {"id": "en-GB-RyanNeural", "name": "Ryan (Male UK - Jarvis Style)"},
+    {"id": "en-US-GuyNeural", "name": "Guy (Male US - Professional)"},
+    {"id": "en-US-JennyNeural", "name": "Jenny (Female US - Soft)"},
+]
+TTS_VOICE_DEFAULT = TTS_VOICES[0]["id"]
+
+class TtsRequest(BaseModel):
+    text: str
+    voice: str = TTS_VOICE_DEFAULT
 
 # The web operator holds one continuous conversation. Localhost, single user,
 # so a fixed id is enough; a per-browser session id is only needed once the
@@ -190,55 +217,62 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     # (the conversational branch then falls back to a canned reply).
     app.state.chat = chat
 
-    async def chat_dispatch(name: str, args: dict) -> str:
-        """Execute one chat tool call and return a JSON string for the model.
+    def make_chat_dispatch(session_id: str):
+        async def chat_dispatch(name: str, args: dict) -> str:
+            """Execute one chat tool call and return a JSON string for the model.
 
-        Every tool is read-only except start_task, which only queues a task
-        held for the operator's one-tap confirm — the LLM never runs work or
-        mutates a repo directly. Errors are returned as data, never raised, so
-        one bad call cannot abort the whole chat turn.
-        """
-        try:
-            if name == "list_projects":
-                s = config.load_settings()
-                return json.dumps(
-                    [{"name": n, "path": p, "exists": Path(p).exists()}
-                     for n, p in s.projects.items()], ensure_ascii=False)
-            if name == "recent_tasks":
-                limit = int(args.get("limit") or 5)
-                rows = [t for t in store.list_tasks() if t.get("chat_id", 0) >= 0][:limit]
-                return json.dumps(
-                    [{"task_id": t["task_id"], "status": t["status"], "text": t["text"]}
-                     for t in rows], ensure_ascii=False)
-            if name == "get_task_detail":
-                tid = str(args.get("task_id") or "")
-                t = store.get_task(tid)
-                if not t:
-                    return json.dumps({"error": "task tidak ditemukan"}, ensure_ascii=False)
-                return json.dumps(
-                    {"task_id": tid, "status": t["status"], "text": t["text"],
-                     "logs": store.get_logs(tid)[-8:]}, ensure_ascii=False)
-            if name == "start_task":
-                bridge = getattr(app.state, "bridge", None)
-                if not bridge:
-                    return json.dumps({"error": "bridge tidak tersedia — tidak bisa antre task"},
-                                      ensure_ascii=False)
-                desc = str(args.get("description") or "").strip()
-                if not desc:
-                    return json.dumps({"error": "deskripsi task kosong"}, ensure_ascii=False)
-                new_id = new_task_id()
-                t = asyncio.create_task(bridge.handle_task(
-                    user_id=0, chat_id=0, text=desc, task_id=new_id,
-                    trusted=True, force_confirm=True))
-                t.add_done_callback(_bg_crash_cb(store, new_id))
-                return json.dumps(
-                    {"task_id": new_id, "status": "awaiting_confirm",
-                     "note": "Task diantre; menunggu operator menekan Run sebelum berjalan."},
-                    ensure_ascii=False)
-            return json.dumps({"error": f"tool tak dikenal: {name}"}, ensure_ascii=False)
-        except Exception as e:  # a tool failure is data for the model, not a 500
-            safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
-            return json.dumps({"error": f"tool gagal: {safe}"}, ensure_ascii=False)
+            Every tool is read-only except start_task, which only queues a task
+            held for the operator's one-tap confirm — the LLM never runs work or
+            mutates a repo directly. Errors are returned as data, never raised, so
+            one bad call cannot abort the whole chat turn.
+            """
+            try:
+                if name == "list_projects":
+                    s = config.load_settings()
+                    return json.dumps(
+                        [{"name": n, "path": p, "exists": Path(p).exists()}
+                         for n, p in s.projects.items()], ensure_ascii=False)
+                if name == "recent_tasks":
+                    limit = int(args.get("limit") or 5)
+                    rows = [t for t in store.list_tasks() if t.get("chat_id", 0) >= 0][:limit]
+                    return json.dumps(
+                        [{"task_id": t["task_id"], "status": t["status"], "text": t["text"]}
+                         for t in rows], ensure_ascii=False)
+                if name == "get_task_detail":
+                    tid = str(args.get("task_id") or "")
+                    t = store.get_task(tid)
+                    if not t:
+                        return json.dumps({"error": "task tidak ditemukan"}, ensure_ascii=False)
+                    return json.dumps(
+                        {"task_id": tid, "status": t["status"], "text": t["text"],
+                         "logs": store.get_logs(tid)[-8:]}, ensure_ascii=False)
+                if name == "start_task":
+                    bridge = getattr(app.state, "bridge", None)
+                    if not bridge:
+                        return json.dumps({"error": "bridge tidak tersedia — tidak bisa antre task"},
+                                          ensure_ascii=False)
+                    desc = str(args.get("description") or "").strip()
+                    if not desc:
+                        return json.dumps({"error": "deskripsi task kosong"}, ensure_ascii=False)
+                    new_id = new_task_id()
+                    import inspect
+                    sig = inspect.signature(bridge.handle_task)
+                    kwargs = {}
+                    if "session_id" in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+                        kwargs["session_id"] = session_id
+                    t = asyncio.create_task(bridge.handle_task(
+                        user_id=0, chat_id=0, text=desc, task_id=new_id,
+                        trusted=True, force_confirm=True, **kwargs))
+                    t.add_done_callback(_bg_crash_cb(store, new_id))
+                    return json.dumps(
+                        {"task_id": new_id, "status": "awaiting_confirm",
+                         "note": "Task diantre; menunggu operator menekan Run sebelum berjalan."},
+                        ensure_ascii=False)
+                return json.dumps({"error": f"tool tak dikenal: {name}"}, ensure_ascii=False)
+            except Exception as e:  # a tool failure is data for the model, not a 500
+                safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
+                return json.dumps({"error": f"tool gagal: {safe}"}, ensure_ascii=False)
+        return chat_dispatch
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
@@ -361,6 +395,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         bridge = getattr(app.state, "bridge", None)
         text = body.text.strip()
         task_id = new_task_id()
+        sid = body.session_id or CONV_WEB
 
         # chat_id sentinels below: /task -> 0 (a real queued task, listed);
         # every other branch is a synchronous stub answered inline and stored
@@ -371,57 +406,66 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             if not bridge:
                 raise HTTPException(status_code=503, detail="Bridge not configured")
             prompt = text[5:].strip()
-            t = asyncio.create_task(bridge.handle_task(user_id=0, chat_id=0, text=prompt, task_id=task_id, trusted=True))
+            import inspect
+            sig = inspect.signature(bridge.handle_task)
+            kwargs = {}
+            if "session_id" in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+                kwargs["session_id"] = sid
+            t = asyncio.create_task(bridge.handle_task(
+                user_id=0, chat_id=0, text=prompt, task_id=task_id,
+                trusted=True, **kwargs))
             t.add_done_callback(_bg_crash_cb(store, task_id))
             return {"task_id": task_id, "status": "queued"}
         elif text.lower().startswith("/help"):
             from .telegram_bridge import help_text
             answer = help_text()
-            store.create_task(task_id, -1, text)
+            store.create_task(task_id, -1, text, session_id=sid)
             store.set_task_status(task_id, "done")
             store.append_log(task_id, "ask: Bantuan Penggunaan")
             store.append_log(task_id, f"answer: {answer}")
             # Record in the thread too: /help and /projects are conversational
             # Q&A, so they belong in the chat log the pane renders, unlike /task
             # which is real work tracked in the task list.
-            store.add_message(CONV_WEB, "user", text)
-            store.add_message(CONV_WEB, "assistant", answer)
+            store.add_message(sid, "user", text)
+            store.add_message(sid, "assistant", answer)
             return {"task_id": task_id, "status": "done"}
         elif text.lower().startswith("/projects"):
             from .telegram_bridge import projects_overview
             answer = projects_overview(config.load_settings())
-            store.create_task(task_id, -1, text)
+            store.create_task(task_id, -1, text, session_id=sid)
             store.set_task_status(task_id, "done")
             store.append_log(task_id, "ask: Proyek Terdaftar")
             store.append_log(task_id, f"answer: {answer}")
-            store.add_message(CONV_WEB, "user", text)
-            store.add_message(CONV_WEB, "assistant", answer)
+            store.add_message(sid, "user", text)
+            store.add_message(sid, "assistant", answer)
             return {"task_id": task_id, "status": "done"}
         else:
-            store.create_task(task_id, -1, text)
+            store.create_task(task_id, -1, text, session_id=sid)
             store.append_log(task_id, "ask: Chat Conversation")
             # Record the user's turn first, so the history handed to the model
             # includes the message it is replying to.
-            store.add_message(CONV_WEB, "user", text)
+            store.add_message(sid, "user", text)
             chat = getattr(app.state, "chat", None)
             if chat is None:
+                s = config.load_settings()
+                agent_name = s.agent_name or "Lail Agent"
                 reply = (
-                    "Halo! Saya Lail Agent, asisten orkestrasi Anda.\n\n"
+                    f"Halo! Saya {agent_name}, asisten orkestrasi Anda.\n\n"
                     "Untuk menjalankan tugas, gunakan `/task <deskripsi>` — "
                     "mis. `/task @myproject jalankan pengujian`.\n"
                     "Gunakan `/projects` untuk daftar proyek atau `/help` untuk bantuan."
                 )
             else:
                 try:
-                    history = store.get_messages(CONV_WEB, limit=CHAT_HISTORY_LIMIT)
-                    reply = await chat(history, tools=CHAT_TOOLS, dispatch=chat_dispatch)
+                    history = store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)
+                    reply = await chat(history, tools=CHAT_TOOLS, dispatch=make_chat_dispatch(sid))
                 except Exception as e:
                     # A NIM outage or missing key must not 500 the chat pane;
                     # surface it as the assistant's turn so the thread stays
                     # coherent and the operator sees the cause.
                     safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
                     reply = f"(Maaf, chat gagal: {safe})"
-            store.add_message(CONV_WEB, "assistant", reply)
+            store.add_message(sid, "assistant", reply)
             store.set_task_status(task_id, "done")
             store.append_log(task_id, f"answer: {reply}")
             return {"task_id": task_id, "status": "done"}
@@ -452,15 +496,37 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
 
         return {"ok": ok}
 
+    @app.get("/api/sessions")
+    def list_sessions():
+        return store.list_sessions()
+
+    @app.post("/api/sessions")
+    def create_session():
+        session_id = new_task_id()
+        store.create_session(session_id, "Percakapan Baru")
+        return {"session_id": session_id, "title": "Percakapan Baru", "created": time.time()}
+
+    @app.post("/api/sessions/{session_id}/rename")
+    def rename_session(session_id: str, body: SessionRename):
+        store.rename_session(session_id, body.title)
+        return {"ok": True}
+
+    @app.delete("/api/sessions/{session_id}")
+    def delete_session(session_id: str):
+        store.delete_session(session_id)
+        return {"ok": True}
+
     @app.get("/api/chat")
-    def chat_history():
+    def chat_history(session_id: str | None = None):
         # The whole conversational thread, oldest-first, for the chat pane to
         # render on load. Slash-command tasks live in /api/tasks, not here.
-        return {"messages": store.get_messages(CONV_WEB, limit=CHAT_HISTORY_LIMIT)}
+        sid = session_id or CONV_WEB
+        return {"messages": store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)}
 
     @app.post("/api/chat/reset")
-    def chat_reset():
-        store.clear_messages(CONV_WEB)
+    def chat_reset(session_id: str | None = None):
+        sid = session_id or CONV_WEB
+        store.clear_messages(sid)
         return {"ok": True}
 
     @app.post("/api/chat/stream")
@@ -472,8 +538,17 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         # actually delivered — a client that disconnects mid-stream still leaves
         # a coherent thread on the next load.
         text = body.text.strip()
-        store.add_message(CONV_WEB, "user", text)
+        sid = body.session_id or CONV_WEB
+        store.add_message(sid, "user", text)
         chat = getattr(app.state, "chat", None)
+
+        # Auto rename session if it was default name
+        if sid != CONV_WEB:
+            sessions = store.list_sessions()
+            curr = next((s for s in sessions if s["session_id"] == sid), None)
+            if curr and curr["title"] == "Percakapan Baru":
+                new_title = text[:30] + "..." if len(text) > 30 else text
+                store.rename_session(sid, new_title)
 
         def sse(obj: dict) -> str:
             return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
@@ -482,15 +557,17 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             acc = ""
             usage = None
             if chat is None or not hasattr(chat, "stream"):
-                acc = ("Halo! Saya Lail Agent. Untuk menjalankan tugas gunakan "
+                s = config.load_settings()
+                agent_name = s.agent_name or "Lail Agent"
+                acc = (f"Halo! Saya {agent_name}. Untuk menjalankan tugas gunakan "
                        "`/task <deskripsi>`; `/projects` untuk daftar proyek, "
                        "`/help` untuk bantuan.")
                 yield sse({"delta": acc})
             else:
-                history = store.get_messages(CONV_WEB, limit=CHAT_HISTORY_LIMIT)
+                history = store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)
                 try:
                     async for kind, payload in chat.stream(
-                            history, tools=CHAT_TOOLS, dispatch=chat_dispatch):
+                            history, tools=CHAT_TOOLS, dispatch=make_chat_dispatch(sid)):
                         if kind == "token":
                             acc += payload
                             yield sse({"delta": payload})
@@ -503,7 +580,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     acc += note
                     yield sse({"delta": note})
             # Persist whatever was actually produced (empty stays empty, not a lie).
-            store.add_message(CONV_WEB, "assistant", acc)
+            store.add_message(sid, "assistant", acc)
             yield sse({"done": True, "usage": usage})
 
         return StreamingResponse(gen(), media_type="text/event-stream",
@@ -595,5 +672,42 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             return {"ok": True, "tools": [t["name"] for t in tools]}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    @app.get("/api/tts/voices")
+    def get_tts_voices():
+        return TTS_VOICES
+
+    @app.post("/api/tts")
+    async def post_tts(body: TtsRequest):
+        import edge_tts
+        from fastapi import Response
+        
+        # Clean text from markdown formatting or tags so it reads smoothly
+        clean_text = body.text
+        # Remove markdown tables (lines starting with |)
+        clean_text = re.sub(r"^\|.*\|$", "", clean_text, flags=re.MULTILINE)
+        # Remove markdown horizontal rules
+        clean_text = re.sub(r"^---+$", "", clean_text, flags=re.MULTILINE)
+        # Remove inline code backticks, bold asterisks
+        clean_text = clean_text.replace("**", "").replace("`", "")
+        # Remove headers hashes
+        clean_text = re.sub(r"^#+\s+", "", clean_text, flags=re.MULTILINE)
+        # Remove blockquote angle brackets
+        clean_text = re.sub(r"^>\s+", "", clean_text, flags=re.MULTILINE)
+        # Remove empty lines
+        clean_text = "\n".join([line.strip() for line in clean_text.split("\n") if line.strip()])
+
+        if not clean_text:
+            return Response(status_code=204) # No content
+
+        try:
+            communicate = edge_tts.Communicate(clean_text, body.voice)
+            mp3_bytes = b""
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    mp3_bytes += chunk["data"]
+            return Response(content=mp3_bytes, media_type="audio/mpeg")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     return app

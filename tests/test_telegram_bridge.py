@@ -497,3 +497,64 @@ async def test_clean_project_runs_when_git_dirty_not_configured(hermes_home):
     tid = await b.handle_task(user_id=1, chat_id=5, text="@myprofit refactor auth")
     assert tid is not None
     assert got == [("refactor auth", proj)]
+
+async def test_web_queued_task_survives_the_real_telegram_sender(hermes_home):
+    """Regression: the web UI queues with chat_id=0 (no Telegram chat), and the
+    bridge notifies unconditionally. Wired to the real _make_sender against a
+    bot that rejects chat_id=0 the way Telegram does, every web task died on its
+    first notification with BadRequest("Chat not found") before running at all.
+    The sender's NO_CHAT guard has to absorb that for the whole bridge, since
+    handle_task alone touches the sender at ten call sites."""
+    from hermes import main
+    store = Store(hermes_home / "t.db"); store.init_schema()
+
+    class TelegramLikeBot:
+        def __init__(self): self.calls = []
+        async def send_message(self, **kw):
+            if kw["chat_id"] == 0:
+                raise RuntimeError("Chat not found")
+            self.calls.append(kw)
+
+    bot = TelegramLikeBot()
+    sender = main._make_sender(bot)
+    ran = []
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            ran.append(task_id)
+            await report(task_id, "step done")   # progress also goes to sender
+
+    b = Bridge(Settings(allowed_user_ids=[1]), store, FakeOrch(), sender)
+    tid = await b.handle_task(user_id=0, chat_id=0, text="build app",
+                              trusted=True)
+
+    assert ran == [tid], "task must actually run, not die notifying nobody"
+    assert store.get_task(tid)["status"] in ("queued", "running", "done")
+    assert bot.calls == [], "nothing may be pushed to Telegram for a web task"
+
+async def test_web_queued_task_still_parks_at_awaiting_confirm(hermes_home):
+    """With no chat to draw buttons in, the confirm gate must still hold the
+    task: the web UI runs it from the awaiting_confirm status. Silently
+    running it instead would hand the LLM an unapproved engine budget."""
+    from hermes import main
+    store = Store(hermes_home / "t.db"); store.init_schema()
+
+    class TelegramLikeBot:
+        async def send_message(self, **kw):
+            if kw["chat_id"] == 0:
+                raise RuntimeError("Chat not found")
+
+    sender = main._make_sender(TelegramLikeBot())
+    async def ask_confirm(chat_id, task_id, reasons):
+        if not main.has_chat(chat_id):
+            return
+        raise AssertionError("would have drawn Telegram buttons")
+
+    class FakeOrch:
+        async def run_task(self, *a, **k):
+            raise AssertionError("must not run before the operator confirms")
+
+    b = Bridge(Settings(allowed_user_ids=[1]), store, FakeOrch(), sender,
+               ask_confirm)
+    tid = await b.handle_task(user_id=0, chat_id=0, text="build app",
+                              trusted=True, force_confirm=True)
+    assert store.get_task(tid)["status"] == "awaiting_confirm"

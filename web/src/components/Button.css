@@ -14,6 +14,14 @@
   min-height: 38px;
 }
 
+/* Inline card/row buttons. min-height has to be overridden explicitly: the
+   call sites set their own padding, but .btn's 38px floor kept winning. */
+.btn-small {
+  min-height: 26px;
+  padding: var(--s1) var(--s3);
+  font-size: var(--t-xs);
+}
+
 .btn:active {
   transform: scale(0.98);
 }

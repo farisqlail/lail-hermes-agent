@@ -179,11 +179,14 @@ def build_nim_chat(settings, secrets):
     explicit /task command, so the agent cannot silently spend money or touch a
     repo, and cannot invent a result it never produced.
     """
-    system = (
-        "Kamu adalah Lail Agent, asisten orkestrasi rekayasa perangkat lunak untuk Lail Hermes. "
+    system_template = (
+        "Kamu adalah {agent_name}, asisten orkestrasi rekayasa perangkat lunak untuk Lail Hermes. "
         "Jawab ringkas dan membantu, dalam bahasa yang dipakai pengguna "
         "(default Bahasa Indonesia). Kamu menjelaskan cara kerja Lail Hermes, "
         "membantu menyusun instruksi, dan menjawab pertanyaan teknis.\n"
+        "Selalu gunakan format Markdown yang bersih dan terstruktur untuk menyusun jawabanmu: "
+        "gunakan header (## atau ###) untuk memisahkan topik/judul, garis horizontal (---) untuk memisahkan bagian besar, "
+        "serta tabel (|---|---|) atau poin bullet untuk menyajikan daftar/rincian data agar mudah dibaca.\n"
         "Kamu punya alat: `list_projects` (proyek terdaftar), `recent_tasks` "
         "(task terakhir + status), `get_task_detail` (rincian satu task), dan "
         "`start_task` (antre task orkestrasi baru). Pakai alat baca untuk "
@@ -194,7 +197,18 @@ def build_nim_chat(settings, secrets):
         "benar-benar menjalankan kode sendiri. Panggil `start_task` hanya bila "
         "pengguna jelas meminta menjalankan sesuatu; sertakan `@nama-proyek` "
         "bila relevan, lalu beri tahu bahwa task menunggu konfirmasi. Jangan "
-        "pernah mengaku sudah menjalankan atau mengarang hasil eksekusi.\n\n"
+        "pernah mengaku sudah menjalankan atau mengarang hasil eksekusi.\n"
+        "DILARANG KERAS menulis task ID yang tidak kamu terima dari hasil alat "
+        "pada giliran ini. Task ID hanya sah bila dikembalikan `start_task`, "
+        "`recent_tasks`, atau `get_task_detail` barusan — jangan menyalin pola "
+        "ID dari percakapan sebelumnya, jangan menyusun ID dari tanggal/jam, "
+        "dan jangan menebak. Bila kamu tidak punya ID dari alat, jangan sebut "
+        "ID sama sekali: panggil `recent_tasks` dulu. ID karangan membuat "
+        "pengguna menunggu task yang tidak pernah ada.\n"
+        "Kalau pengguna minta 'run'/'jalankan' task yang sudah diantre: kamu "
+        "TIDAK bisa menekan Run. Arahkan ke kartu task di panel chat ini — "
+        "kartu itu punya tombol Run/Cancel dan tautan 'Lihat Log & Langkah "
+        "Lengkap'. Jangan mengarang lokasi menu lain.\n\n"
         "Bila pengguna bertanya tentang cara mengantre task atau cara kerja start_task/start task, format jawabanmu wajib mengikuti pola ini secara persis (tanpa menggunakan backslash/garis miring terbalik pada tanda kutip):\n"
         "Tentu! Berikut cara kerja start task di Lail Hermes:\n\n"
         "## 📝 Cara mengantre task\n\n"
@@ -218,7 +232,10 @@ def build_nim_chat(settings, secrets):
     async def chat(history: list[dict], tools=None, dispatch=None) -> str:
         if not secrets.nvidia_api_key:
             raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
-        client = AsyncOpenAI(base_url=settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
+        current_settings = config.load_settings()
+        agent_name = current_settings.agent_name or "Lail Agent"
+        system = system_template.format(agent_name=agent_name)
+        client = AsyncOpenAI(base_url=current_settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
                              timeout=PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
         # tools + dispatch are a curated, safe set supplied by the web layer
@@ -228,14 +245,14 @@ def build_nim_chat(settings, secrets):
         if not (tools and dispatch):
             resp = await _completion_with_retry(
                 lambda: client.chat.completions.create(
-                    model=settings.chat_model or settings.model, messages=msgs,
-                    temperature=settings.chat_temperature))
+                    model=current_settings.chat_model or current_settings.model, messages=msgs,
+                    temperature=current_settings.chat_temperature))
             return resp.choices[0].message.content or ""
         for _ in range(MAX_TOOL_ROUNDS):
             resp = await _completion_with_retry(
                 lambda: client.chat.completions.create(
-                    model=settings.chat_model or settings.model, messages=msgs,
-                    temperature=settings.chat_temperature, tools=tools))
+                    model=current_settings.chat_model or current_settings.model, messages=msgs,
+                    temperature=current_settings.chat_temperature, tools=tools))
             m = resp.choices[0].message
             if m.tool_calls:
                 msgs.append(m.model_dump())
@@ -262,13 +279,16 @@ def build_nim_chat(settings, secrets):
         """
         if not secrets.nvidia_api_key:
             raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
-        client = AsyncOpenAI(base_url=settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
+        current_settings = config.load_settings()
+        agent_name = current_settings.agent_name or "Lail Agent"
+        system = system_template.format(agent_name=agent_name)
+        client = AsyncOpenAI(base_url=current_settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
                              timeout=PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
         use_tools = bool(tools and dispatch)
         for _ in range(MAX_TOOL_ROUNDS):
-            kwargs = dict(model=settings.chat_model or settings.model, messages=msgs,
-                          temperature=settings.chat_temperature, stream=True,
+            kwargs = dict(model=current_settings.chat_model or current_settings.model, messages=msgs,
+                          temperature=current_settings.chat_temperature, stream=True,
                           stream_options={"include_usage": True})
             if use_tools:
                 kwargs["tools"] = tools
@@ -363,6 +383,16 @@ def _clip_for_telegram(text: str, html: bool = False) -> str:
     return cut + _TRUNCATION_SUFFIX
 
 
+#: chat_id the web UI passes for a task it queued itself — it reads progress
+#: from the store, so there is no Telegram chat to notify. Telegram rejects it
+#: with BadRequest("Chat not found"), which killed every web-queued task before
+#: its first log line. 0 is safe as the sentinel: a real chat id is never 0, and
+#: a group is a large *negative* id that must keep sending normally.
+NO_CHAT = 0
+
+def has_chat(chat_id) -> bool:
+    return chat_id != NO_CHAT
+
 def _make_sender(bot):
     """Outbound text chokepoint: clip, then send.
 
@@ -377,6 +407,8 @@ def _make_sender(bot):
     exempt: that markup is Hermes' own and is meant to be parsed.
     """
     async def sender(chat_id, text, html: bool = False):
+        if not has_chat(chat_id):
+            return
         kw = {"parse_mode": "HTML"} if html else {}
         body = text if html else tg_format.strip_markdown(text)
         await _telegram_send_with_retry(lambda: bot.send_message(
@@ -525,6 +557,8 @@ async def run():
             sender = _make_sender(app.bot)
 
             async def send_file(chat_id, kind, path):
+                if not has_chat(chat_id):
+                    return
                 # Screenshots land inline as photos; anything else (apk,
                 # logs) as a document. Callers guard failures — Telegram's
                 # 50 MB bot upload cap can reject a big APK. The file is
@@ -543,6 +577,12 @@ async def run():
             crash_reporter = _make_crash_reporter(sender)
 
             async def ask_confirm(chat_id, task_id, reasons):
+                # No Telegram chat: handle_task has already parked the task at
+                # awaiting_confirm, and the web UI draws its own Run/Cancel from
+                # that status via /api/tasks/{id}/confirm. Staying silent here
+                # leaves the task confirmable instead of crashing it.
+                if not has_chat(chat_id):
+                    return
                 kb = InlineKeyboardMarkup([[
                     InlineKeyboardButton("✅ Run", callback_data=f"confirm:{task_id}:yes"),
                     InlineKeyboardButton("❌ Cancel", callback_data=f"confirm:{task_id}:no"),
@@ -564,10 +604,17 @@ async def run():
             # closed one strips its dead keyboard, and how a multi-select redraw
             # edits in place.
             async def _edit_ask_markup(chat_id, message_id, markup):
+                if not has_chat(chat_id):
+                    return
                 await app.bot.edit_message_reply_markup(
                     chat_id=chat_id, message_id=message_id, reply_markup=markup)
 
             async def _send_ask(a):
+                # A web-queued task's question is answered through the web ask
+                # endpoints; only the Telegram drawing is skipped, so the ask
+                # stays open and answerable rather than dying on send.
+                if not has_chat(a.chat_id):
+                    return
                 markup = ask_ui.to_markup(ask_ui.keyboard_rows(a))
                 msg = await _telegram_send_with_retry(lambda: app.bot.send_message(
                     chat_id=a.chat_id,
@@ -667,7 +714,9 @@ async def run():
                 if await on_ask_text(c, update.message.text or ""):
                     return
                 from .telegram_bridge import help_text
-                await sender(c, "Halo! Saya Lail Agent, asisten orkestrasi Anda.\n\n"
+                current_settings = bridge.get_settings()
+                agent_name = current_settings.agent_name or "Lail Agent"
+                await sender(c, f"Halo! Saya {agent_name}, asisten orkestrasi Anda.\n\n"
                                 + help_text())
 
             app.add_handler(CommandHandler("task", on_task))

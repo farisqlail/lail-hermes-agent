@@ -118,7 +118,7 @@ class Bridge:
 
     async def handle_task(self, user_id: int, chat_id: int, text: str,
                           task_id: str | None = None, trusted: bool = False,
-                          force_confirm: bool = False):
+                          force_confirm: bool = False, session_id: str | None = None):
         # trusted skips the Telegram allow-list for a caller that has already
         # authenticated by another route (the localhost web UI). It is NOT
         # inferable from user_id -- a Telegram id is never 0, so the old
@@ -142,7 +142,7 @@ class Bridge:
 
         if task_id is None:
             task_id = new_task_id()
-        self.store.create_task(task_id, chat_id, text)
+        self.store.create_task(task_id, chat_id, text, session_id=session_id)
         if proj is not None:
             self.store.append_log(task_id, f"project: {proj}")
 

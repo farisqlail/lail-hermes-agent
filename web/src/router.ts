@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 export interface RouteState {
   path: string;
   taskId?: string;
+  sessionId?: string;
 }
 
 export function getHashRoute(): RouteState {
@@ -18,6 +19,12 @@ export function getHashRoute(): RouteState {
   const taskMatch = hash.match(/^#\/task\/([^/]+)$/);
   if (taskMatch) {
     return { path: '/task', taskId: taskMatch[1] };
+  }
+
+  // Match #/session/<id>
+  const sessionMatch = hash.match(/^#\/session\/([^/]+)$/);
+  if (sessionMatch) {
+    return { path: '/', sessionId: sessionMatch[1] };
   }
 
   // Clean trailing and leading slashes for routing matches

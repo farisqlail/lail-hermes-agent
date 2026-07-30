@@ -14,6 +14,7 @@ export interface Settings {
   planner_temperature: number;
   chat_model: string;
   chat_temperature: number;
+  agent_name: string;
   allowed_user_ids: number[];
   default_engine: 'claude' | 'antigravity' | 'auto';
   claude_model: string;
