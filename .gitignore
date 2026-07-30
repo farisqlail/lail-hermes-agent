@@ -8,3 +8,5 @@ hermes.db
 .superpowers/
 tests/fake_engine.py
 *.egg-info/
+/web/node_modules/
+/hermes/static/

@@ -172,9 +172,14 @@ below). Neither has a required location; put them wherever suits the machine.
 
 ## Install
 
-Prerequisites on PATH: `python` 3.11+, `claude` (Claude Code CLI), `agy` (Antigravity CLI),
-`adb`/`emulator` (Android SDK). For browser testing, the optional `[browser]` extra installs
-Playwright.
+Prerequisites on PATH:
+- `python` 3.11+
+- `node` 20+ & `npm` (required to install & build the React Web UI)
+- `claude` (Claude Code CLI)
+- `agy` (Antigravity CLI)
+- `adb`/`emulator` (Android SDK)
+
+For browser testing, the optional `[browser]` extra installs Playwright.
 
 **Set `HERMES_HOME` first, explicitly.** The installer honours it and stores it for your user;
 left unset, different entry points disagree about where the data root is (see below).

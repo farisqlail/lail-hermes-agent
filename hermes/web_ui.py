@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio, json, re, subprocess, time
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
 from . import config, paths
@@ -146,11 +147,34 @@ class SecretsUpdate(BaseModel):
                 "(check for smart quotes from copy-paste); NVIDIA keys look like 'nvapi-...'")
         return v
 
-def load_spa_html() -> str:
-    path = Path(__file__).parent / "spa.html"
+STATIC_DIR = Path(__file__).parent / "static"
+INDEX_HTML_CACHE: str | None = None
+
+def load_index_html() -> str:
+    global INDEX_HTML_CACHE
+    import os
+    if os.environ.get("HERMES_DEV"):
+        path = STATIC_DIR / "index.html"
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+
+    if INDEX_HTML_CACHE is not None:
+        return INDEX_HTML_CACHE
+    path = STATIC_DIR / "index.html"
     if path.exists():
-        return path.read_text(encoding="utf-8")
-    return "<h1>Hermes: spa.html not found!</h1>"
+        INDEX_HTML_CACHE = path.read_text(encoding="utf-8")
+        return INDEX_HTML_CACHE
+    return (
+        "<html><head><title>Hermes: Bundle Missing</title></head>"
+        "<body style='font-family: sans-serif; padding: 2rem; background: #0b0c10; color: #fff;'>"
+        "<h1>Hermes UI Bundle Missing</h1>"
+        "<p>The frontend React bundle is not built yet.</p>"
+        "<p>Please build it by running:</p>"
+        "<pre style='background: #1f2833; padding: 1rem; border-radius: 4px; color: #66fcf1;'>"
+        "npm --prefix web run build</pre>"
+        "<p>Or start Hermes using <code>start.bat</code> which builds it automatically.</p>"
+        "</body></html>"
+    )
 
 def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan=None) -> FastAPI:
     # lifespan carries the ask MCP server's session manager when main.py mounts
@@ -159,6 +183,9 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     app = FastAPI(lifespan=lifespan)
     app.state.bridge = bridge
     app.state.ask_registry = ask_registry
+
+    app.mount("/assets", StaticFiles(directory=str(STATIC_DIR), check_dir=False), name="static")
+
     # async (history, tools=, dispatch=) -> str; None when no NIM chat is wired
     # (the conversational branch then falls back to a canned reply).
     app.state.chat = chat
@@ -215,11 +242,11 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
-        return HTMLResponse(content=load_spa_html())
+        return HTMLResponse(content=load_index_html())
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page():
-        return HTMLResponse(content=load_spa_html())
+        return HTMLResponse(content=load_index_html())
 
     @app.get("/api/artifacts/download")
     def download_artifact(path: str):

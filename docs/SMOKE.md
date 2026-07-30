@@ -4,14 +4,21 @@
 
 - Full unit suite, from the repo checkout: `.venv\Scripts\python -m pytest -q` → all green.
   (Deliberately not a count: a hardcoded number rots on the next commit.)
+- Frontend gates, from the same checkout: `npm --prefix web test` → typecheck (`tsc --noEmit`,
+  `strict`) plus the pure-module unit tests, both green. Run this before every commit that
+  touches `web/`: the React bundle is git-ignored, so a type error that slips through is only
+  discovered by whoever next runs `start.bat`.
+- Bundle builds: `npm --prefix web run build` writes `hermes/static/app.js` + `app.css`.
+  Serving them is covered by pytest (`test_static_serving_*`), so a missing bundle shows the
+  build command rather than a blank page.
 - Web UI serves on `127.0.0.1:8799`: `GET /`, `/api/tasks`, `/api/settings`, `/api/secrets/status` all 200; secrets returned as booleans only (masked). ✅
 - `hermes.main` imports; `main.run` is a coroutine; `Adb` exposes async `is_running/start/install/launch/screencap`; `build_nim_planner` callable. ✅
 
 ## Manual end-to-end (needs your credentials — pending)
 
-Prereqs on PATH: `python` 3.11+, `claude` (Claude Code CLI), `agy` (Antigravity CLI),
-`adb`/`emulator` (Android SDK). For browser tests: `pip install -e ".[browser]"` +
-`python -m playwright install chromium`.
+Prereqs on PATH: `python` 3.11+, `node` 20+ with `npm` (builds the React web UI),
+`claude` (Claude Code CLI), `agy` (Antigravity CLI), `adb`/`emulator` (Android SDK).
+For browser tests: `pip install -e ".[browser]"` + `python -m playwright install chromium`.
 
 Paths below use `%HERMES_HOME%` for the data root and `<repo>` for this checkout. Both are
 yours to choose; nothing here assumes a particular drive.

@@ -599,3 +599,79 @@ async def test_tasks_events_sse_streams_live_updates(hermes_home):
 
     assert any(ev.get("type") == "task_created" and ev.get("task_id") == "event_task" for ev in events)
     assert any(ev.get("type") == "task_status" and ev.get("task_id") == "event_task" and ev.get("status") == "running" for ev in events)
+
+def test_static_serving_root_and_settings(hermes_home, monkeypatch):
+    import shutil
+    from pathlib import Path
+    from hermes import web_ui
+    
+    # Reset cache
+    web_ui.INDEX_HTML_CACHE = None
+
+    # Setup fake static folder inside hermes folder to mock bundle existence
+    static_dir = Path(hermes_home) / "app" / "hermes" / "static"
+    static_dir.mkdir(parents=True, exist_ok=True)
+    
+    monkeypatch.setattr(web_ui, "STATIC_DIR", static_dir)
+
+    # Write fake index.html and assets directly in static_dir
+    index_html = static_dir / "index.html"
+    index_html.write_text("<html>React App</html>", encoding="utf-8")
+    
+    app_js = static_dir / "app.js"
+    app_js.write_text("console.log('test');", encoding="utf-8")
+    app_css = static_dir / "app.css"
+    app_css.write_text("body {}", encoding="utf-8")
+    
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+    
+    # Test Root /
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "React App" in r.text
+    assert "text/html" in r.headers.get("content-type", "")
+    
+    # Test /settings
+    r = client.get("/settings")
+    assert r.status_code == 200
+    assert "React App" in r.text
+    assert "text/html" in r.headers.get("content-type", "")
+    
+    # Test /assets/app.js
+    r = client.get("/assets/app.js")
+    assert r.status_code == 200
+    assert r.text == "console.log('test');"
+    
+    # Test /assets/app.css
+    r = client.get("/assets/app.css")
+    assert r.status_code == 200
+    assert r.text == "body {}"
+
+    # Cleanup fake static directory
+    shutil.rmtree(static_dir)
+
+def test_static_serving_bundle_missing(hermes_home, monkeypatch):
+    from pathlib import Path
+    from hermes import web_ui
+    
+    # Reset cache
+    web_ui.INDEX_HTML_CACHE = None
+
+    # Ensure static directory does not exist or has no index.html
+    static_dir = Path(hermes_home) / "app" / "hermes" / "static"
+    if static_dir.exists():
+        import shutil
+        shutil.rmtree(static_dir)
+        
+    monkeypatch.setattr(web_ui, "STATIC_DIR", static_dir)
+
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+    
+    # Test Root / when bundle is missing
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "Bundle Missing" in r.text
+    assert "text/html" in r.headers.get("content-type", "")
+

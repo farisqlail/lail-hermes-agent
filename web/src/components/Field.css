@@ -1,0 +1,66 @@
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin-bottom: var(--s4);
+}
+
+.field-label {
+  font-family: var(--font-main);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.field-control {
+  width: 100%;
+}
+
+.field-input,
+.field-select,
+.field-textarea {
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text);
+  font-family: var(--font-main);
+  font-size: var(--t-base);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.field-input:focus,
+.field-select:focus,
+.field-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.field-input::placeholder {
+  color: var(--text-faint);
+}
+
+.field-help {
+  font-size: var(--t-xs);
+  color: var(--text-faint);
+}
+
+.field-error {
+  font-size: var(--t-xs);
+  color: var(--err);
+  font-weight: 500;
+}
+
+.form-field.has-error .field-input,
+.form-field.has-error .field-select,
+.form-field.has-error .field-textarea {
+  border-color: var(--err);
+}
+
+.form-field.has-error .field-input:focus,
+.form-field.has-error .field-select:focus,
+.form-field.has-error .field-textarea:focus {
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+}
