@@ -132,9 +132,11 @@ def build_nim_planner(settings, secrets, hub):
         "5. `prompt` is the instruction handed to the coding engine — write it "
         "as a clear, self-contained task, in the language the user used.")
     async def planner(text: str, context: str = "") -> str:
-        if not secrets.nvidia_api_key:
-            raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
-        client = AsyncOpenAI(base_url=settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
+        current_secrets = config.load_secrets()
+        if not current_secrets.nvidia_api_key:
+            raise ValueError("AI API Key is missing. Please configure it in Settings.")
+        current_settings = config.load_settings()
+        client = AsyncOpenAI(base_url=current_settings.nvidia_base_url, api_key=current_secrets.nvidia_api_key,
                              timeout=PLANNER_REQUEST_TIMEOUT_S)
         try:
             discovered = await asyncio.wait_for(hub.list_tools(), MCP_DISCOVERY_TIMEOUT_S)
@@ -153,8 +155,8 @@ def build_nim_planner(settings, secrets, hub):
         for _ in range(MAX_TOOL_ROUNDS):
             resp = await _completion_with_retry(
                 lambda: client.chat.completions.create(
-                    model=settings.model, messages=msgs,
-                    temperature=settings.planner_temperature,
+                    model=current_settings.model, messages=msgs,
+                    temperature=current_settings.planner_temperature,
                     tools=oa_tools or None))
             m = resp.choices[0].message
             if m.tool_calls:
