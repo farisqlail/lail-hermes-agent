@@ -10,8 +10,12 @@ import {
   loadTtsSettings, TtsMode, TtsPersonality,
   ttsRequest, TtsIntent, TtsRequestOptions,
   hasGreeted, markGreeted,
+  loadVoiceSettings, VoiceSettings, VOICE_SETTINGS_DEFAULT,
 } from '../tts';
-import { VoiceRecorder, transcribeBlob } from '../stt';
+import { SpeechQueue, HtmlAudioSink, fetchSpeech } from '../audio';
+import { splitSentences, flushSentence } from '../sentences';
+import { useVoiceLoop } from '../hooks/useVoiceLoop';
+import { STOP_ACK } from '../commands';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -177,13 +181,43 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
   const [ttsGreeting, setTtsGreeting] = useState<boolean>(true);
   const [ttsTaskNotify, setTtsTaskNotify] = useState<boolean>(false);
   const [ttsPersonality, setTtsPersonality] = useState<TtsPersonality>('professional');
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [sttEnabled, setSttEnabled] = useState<boolean>(false);
+
+  const [voice, setVoice] = useState<VoiceSettings>(VOICE_SETTINGS_DEFAULT);
+  const [speaking, setSpeaking] = useState(false);
+  const speakingRef = useRef(false);
+  const sinkRef = useRef<HtmlAudioSink | null>(null);
+  const queueRef = useRef<SpeechQueue | null>(null);
+
+  if (queueRef.current === null && typeof window !== 'undefined') {
+    sinkRef.current = new HtmlAudioSink();
+    queueRef.current = new SpeechQueue(fetchSpeech, sinkRef.current, {
+      onSpeakingChange: (v) => { speakingRef.current = v; setSpeaking(v); },
+    });
+  }
+
+  /** Queue one utterance. Everything spoken goes through here, so barge-in has
+   *  exactly one thing to stop. */
+  const speak = useCallback((intent: TtsIntent, opts: Partial<TtsRequestOptions> = {}) => {
+    if (!ttsEnabled) return;
+    const { endpoint, payload } = ttsRequest(ttsMode, intent, {
+      voice: ttsVoice,
+      agentName,
+      maxWords: ttsMaxWords,
+      personality: ttsPersonality,
+      ...opts,
+    });
+    queueRef.current?.enqueue(endpoint, payload);
+  }, [ttsEnabled, ttsMode, ttsVoice, agentName, ttsMaxWords, ttsPersonality]);
+
+  const shutUp = useCallback(() => { queueRef.current?.stop(); }, []);
 
   useEffect(() => {
     api.getSettings().then(s => {
       if (s.agent_name) {
         setAgentName(s.agent_name);
       }
+      setSttEnabled(s.stt_enabled ?? false);
     }).catch(() => {});
 
     loadTtsSettings().then(s => {
@@ -196,49 +230,12 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
       setTtsPersonality(s.tts_personality);
     }).catch(() => {});
 
+    loadVoiceSettings().then(setVoice).catch(() => {});
+
     return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-      }
+      queueRef.current?.stop();
     };
   }, []);
-
-  const speak = async (intent: TtsIntent, opts: Partial<TtsRequestOptions> = {}) => {
-    if (!ttsEnabled) return;
-    try {
-      const { endpoint, payload } = ttsRequest(ttsMode, intent, {
-        voice: ttsVoice,
-        agentName,
-        maxWords: ttsMaxWords,
-        personality: ttsPersonality,
-        ...opts,
-      });
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (res.status === 204) return;
-      if (!res.ok) throw new Error('Gagal memuat audio TTS');
-      const blob = await res.blob();
-      const audioUrl = URL.createObjectURL(blob);
-
-      let audio = audioRef.current;
-      if (!audio) {
-        audio = new Audio();
-        audioRef.current = audio;
-      }
-
-      audio.pause();
-      audio.src = audioUrl;
-      audio.onended = () => {
-        URL.revokeObjectURL(audioUrl);
-      };
-      await audio.play();
-    } catch (e) {
-      console.warn('Gagal memutar audio TTS:', e);
-    }
-  };
 
   // ── Proactive greeting on fresh session ──
   useEffect(() => {
@@ -273,64 +270,48 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
   const [inputText, setInputText] = useState('');
 
   // ── Voice input ──
-  const [micState, setMicState] = useState<'idle' | 'recording' | 'working'>('idle');
-  const recorderRef = useRef<VoiceRecorder | null>(null);
   // Distinguishes a hold (Ctrl+Space) from a click. Without it, releasing
   // Space would also stop a recording the operator started by clicking.
   const holdingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const startRecording = useCallback(async () => {
-    if (micState !== 'idle') return;
-    try {
-      const recorder = new VoiceRecorder();
-      await recorder.start();
-      recorderRef.current = recorder;
-      setMicState('recording');
-    } catch {
-      // Denied permission, no microphone, or a non-secure origin. The browser
-      // wording is unhelpful, so say what the operator can do about it.
-      toast('Mic tidak bisa diakses. Izinkan mikrofon untuk situs ini.', 'err');
-      setMicState('idle');
-    }
-  }, [micState, toast]);
-
-  const stopRecording = useCallback(async () => {
-    const recorder = recorderRef.current;
-    if (!recorder) return;
-    recorderRef.current = null;
-    setMicState('working');
-    try {
-      const blob = await recorder.stop();
-      const text = await transcribeBlob(blob);
-      if (text) {
-        // Append rather than replace: the operator may have typed half the
-        // instruction before deciding to say the rest.
-        setInputText((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
-        inputRef.current?.focus();
-      }
-    } catch (err) {
-      toast(errorMessage(err, 'Transkripsi gagal'), 'err');
-    } finally {
-      setMicState('idle');
-    }
-  }, [toast]);
+  const { micState, pushToTalkStart, pushToTalkStop } = useVoiceLoop({
+    enabled: sttEnabled,
+    handsfree: voice.voice_handsfree,
+    bargeIn: voice.voice_barge_in,
+    silenceMs: voice.voice_silence_ms,
+    sensitivity: voice.voice_sensitivity,
+    isSpeaking: () => speakingRef.current,
+    onBargeIn: shutUp,
+    onCommand: (cmd) => {
+      if (cmd !== 'stop') return;
+      shutUp();
+      // Confirm in the thread: without it the operator cannot tell whether the
+      // mic heard "diam" or the assistant simply finished.
+      toast(STOP_ACK, 'ok');
+    },
+    onTranscript: (text) => {
+      setInputText((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
+      inputRef.current?.focus();
+      if (voice.voice_handsfree) void submitText(text);
+    },
+    onError: (message) => toast(message, 'err'),
+  });
 
   // Hold Ctrl+Space to talk. Ctrl rather than Space alone so the shortcut
   // cannot fire while the operator is typing a message.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code !== 'Space' || !e.ctrlKey || e.repeat) return;
-      if (micState !== 'idle') return;
       e.preventDefault();
       holdingRef.current = true;
-      startRecording();
+      pushToTalkStart();
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code !== 'Space' || !holdingRef.current) return;
       e.preventDefault();
       holdingRef.current = false;
-      stopRecording();
+      pushToTalkStop();
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -338,11 +319,7 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [micState, startRecording, stopRecording]);
-
-  // Releasing the mic on unmount, so navigating away mid-recording does not
-  // leave the browser's recording indicator lit.
-  useEffect(() => () => { recorderRef.current?.stop(); }, []);
+  }, [pushToTalkStart, pushToTalkStop]);
   const [streaming, setStreaming] = useState(false);
   const [streamContent, setStreamContent] = useState('');
   const [streamUsage, setStreamUsage] = useState<{ total: number } | null>(null);
@@ -402,9 +379,7 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     scrollToBottom();
   }, [messages, streamContent, streaming, scrollToBottom]);
 
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const text = inputText.trim();
+  const submitText = async (text: string) => {
     if (!text || streaming) return;
 
     setInputText('');
@@ -412,18 +387,8 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     setStreamContent('');
     setStreamUsage(null);
 
-    if (audioRef.current) {
-      audioRef.current.pause();
-    }
-
-    // Synchronously play a tiny silent sound to unlock audio autoplay
-    if (ttsEnabled) {
-      if (!audioRef.current) {
-        audioRef.current = new Audio();
-      }
-      audioRef.current.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAAA';
-      audioRef.current.play().catch(() => {});
-    }
+    shutUp();
+    if (ttsEnabled) sinkRef.current?.unlock();
 
     // Append user message immediately
     const userMsg: Message = { role: 'user', content: text };
@@ -433,6 +398,8 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     abortControllerRef.current = controller;
 
     let accumulatedText = '';
+    let speechBuffer = '';
+    const streamSpeech = ttsEnabled && ttsMode === 'verbatim';
     let accumulatedUsage: { total: number } | null = null;
 
     try {
@@ -463,6 +430,12 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
           if (ev.delta) {
             accumulatedText += ev.delta;
             setStreamContent(accumulatedText);
+            if (streamSpeech) {
+              speechBuffer += ev.delta;
+              const { sentences, remainder } = splitSentences(speechBuffer);
+              speechBuffer = remainder;
+              for (const s of sentences) speak('summary', { text: s });
+            }
           }
           if (ev.usage) {
             accumulatedUsage = ev.usage;
@@ -481,11 +454,16 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
         usage: accumulatedUsage || undefined,
       };
       setMessages((prev) => [...prev, assistantMsg]);
-      speak('summary', { text: accumulatedText });
+      if (streamSpeech) {
+        for (const s of flushSentence(speechBuffer)) speak('summary', { text: s });
+      } else {
+        speak('summary', { text: accumulatedText });
+      }
       if (onRefreshSessions) {
         onRefreshSessions();
       }
     } catch (err) {
+      shutUp();
       if (err instanceof Error && err.name === 'AbortError') {
         const assistantMsg: Message = {
           role: 'assistant',
@@ -509,16 +487,20 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     }
   };
 
+  const handleSend = (e: React.FormEvent) => {
+    e.preventDefault();
+    void submitText(inputText.trim());
+  };
+
   const handleStop = () => {
+    shutUp();
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
   };
 
   const handleReset = async () => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-    }
+    shutUp();
     if (!window.confirm('Hapus seluruh percakapan?')) return;
     try {
       const url = sessionId ? `/api/chat/reset?session_id=${sessionId}` : '/api/chat/reset';
@@ -719,16 +701,35 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
           type="button"
           variant={micState === 'recording' ? 'danger' : 'secondary'}
           disabled={streaming || micState === 'working'}
+          title={
+            micState === 'listening' ? 'Mendengarkan — bicara saja'
+            : micState === 'recording' ? 'Merekam — klik untuk berhenti'
+            : micState === 'working' ? 'Mentranskripsi…'
+            : 'Klik atau tahan Ctrl+Space untuk bicara'
+          }
           onClick={() => {
             holdingRef.current = false;
-            if (micState === 'recording') stopRecording();
-            else startRecording();
+            if (micState === 'recording') pushToTalkStop();
+            else pushToTalkStart();
           }}
-          title="Klik untuk mulai/berhenti merekam, atau tahan Ctrl+Space"
           style={{ height: '44px', width: '52px' }}
         >
-          {micState === 'recording' ? '⏹' : micState === 'working' ? '⏳' : '🎤'}
+          {micState === 'recording' ? '⏹'
+            : micState === 'working' ? '⏳'
+            : micState === 'listening' ? '👂'
+            : '🎤'}
         </Button>
+        {speaking && (
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={shutUp}
+            title="Hentikan suara"
+            style={{ height: '44px', padding: '0 12px' }}
+          >
+            🔇 Diam
+          </Button>
+        )}
         <input
           ref={inputRef}
           type="text"
