@@ -229,3 +229,13 @@ def test_voice_tag_instruction_round_trips_through_the_stripper(hermes_home):
     example = example[:example.index(voice.VOICE_TAG_CLOSE) + len(voice.VOICE_TAG_CLOSE)]
     _, spoken = voice.strip_voice_tag(example + " sisa jawaban")
     assert spoken
+
+def test_voice_tag_grammar_matches_the_client():
+    """The extractor in app/web/src/voicetag.ts and the stripper here must
+    agree, or a tag written by one is invisible to the other."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "web" / "src" / "voicetag.ts")
+    text = src.read_text(encoding="utf-8")
+    assert f"VOICE_TAG_OPEN = '{voice.VOICE_TAG_OPEN}'" in text
+    assert f"VOICE_TAG_CLOSE = '{voice.VOICE_TAG_CLOSE}'" in text
+    assert f"MAX_VOICE_CHARS = {voice.MAX_VOICE_CHARS}" in text
