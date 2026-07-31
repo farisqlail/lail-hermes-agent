@@ -5,7 +5,7 @@ from openai import AsyncOpenAI
 import uvicorn
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, CommandHandler, filters
-from . import config, paths
+from . import config, paths, voice
 from .session_store import Store
 from .mcp_hub import McpHub, RealMcpSession, to_openai_tools
 from .orchestrator import Orchestrator
@@ -236,7 +236,7 @@ def build_nim_chat(settings, secrets):
             raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
         current_settings = config.load_settings()
         agent_name = current_settings.agent_name or "Lail Agent"
-        system = system_template.format(agent_name=agent_name)
+        system = system_template.format(agent_name=agent_name) + voice.voice_tag_instruction(current_settings)
         client = AsyncOpenAI(base_url=current_settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
                              timeout=PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
@@ -283,7 +283,7 @@ def build_nim_chat(settings, secrets):
             raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
         current_settings = config.load_settings()
         agent_name = current_settings.agent_name or "Lail Agent"
-        system = system_template.format(agent_name=agent_name)
+        system = system_template.format(agent_name=agent_name) + voice.voice_tag_instruction(current_settings)
         client = AsyncOpenAI(base_url=current_settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
                              timeout=PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]

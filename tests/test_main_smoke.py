@@ -325,3 +325,63 @@ async def test_sender_drops_a_message_with_no_telegram_chat():
     await sender(7, "hello")
     await sender(-1001234567890, "group hello")
     assert [c["chat_id"] for c in bot.calls] == [7, -1001234567890]
+
+async def test_chat_system_prompt_asks_for_the_voice_tag_only_when_smart(hermes_home, monkeypatch):
+    """The instruction costs ~90 prompt tokens per turn — an operator with
+    speech off must not pay for it."""
+    from hermes import config, main, voice
+
+    seen: list[str] = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            seen.append(kwargs["messages"][0]["content"])
+            msg = type("M", (), {"content": "ok", "tool_calls": None})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    secrets = config.Secrets(nvidia_api_key="nvapi-test")
+
+    config.save_settings(config.Settings(tts_enabled=False))
+    chat = main.build_nim_chat(config.load_settings(), secrets)
+    await chat([{"role": "user", "content": "halo"}])
+    assert voice.VOICE_TAG_OPEN not in seen[-1]
+
+    config.save_settings(config.Settings(tts_enabled=True, tts_mode="smart"))
+    chat = main.build_nim_chat(config.load_settings(), secrets)
+    await chat([{"role": "user", "content": "halo"}])
+    assert voice.VOICE_TAG_OPEN in seen[-1]
+
+async def test_chat_stream_carries_the_same_instruction(hermes_home, monkeypatch):
+    from hermes import config, main, voice
+
+    seen: list[str] = []
+
+    class FakeStream:
+        def __aiter__(self):
+            async def gen():
+                delta = type("D", (), {"content": "hai", "tool_calls": None})()
+                yield type("K", (), {"choices": [type("C", (), {"delta": delta})()],
+                                     "usage": None})()
+            return gen()
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            seen.append(kwargs["messages"][0]["content"])
+            return FakeStream()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(tts_enabled=True, tts_mode="smart"))
+    chat = main.build_nim_chat(config.load_settings(),
+                               config.Secrets(nvidia_api_key="nvapi-test"))
+    async for _ in chat.stream([{"role": "user", "content": "halo"}]):
+        pass
+    assert voice.VOICE_TAG_OPEN in seen[-1]
