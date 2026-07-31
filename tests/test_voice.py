@@ -172,3 +172,60 @@ def test_smart_notify_speaks_fallback_without_api_key(hermes_home, monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert recorder["text"] == "run test suite sudah berhasil."
+
+def test_strip_voice_tag_splits_the_spoken_line_from_the_display_text():
+    display, spoken = voice.strip_voice_tag(
+        "<voice>Semua pengujian lulus.</voice>\n\n## Hasil\nDetail panjang.")
+    assert spoken == "Semua pengujian lulus."
+    assert display == "## Hasil\nDetail panjang."
+    assert "<voice>" not in display
+
+def test_strip_voice_tag_handles_a_tag_that_is_not_first():
+    display, spoken = voice.strip_voice_tag("Halo.\n<voice>Ringkasnya begini.</voice>\nSisa.")
+    assert spoken == "Ringkasnya begini."
+    assert display == "Halo.\nSisa."
+
+def test_strip_voice_tag_leaves_untagged_text_alone():
+    assert voice.strip_voice_tag("Tidak ada tag di sini.") == ("Tidak ada tag di sini.", "")
+
+def test_strip_voice_tag_recovers_an_unclosed_tag_as_display_text():
+    # the model opened the tag and never closed it: better to show the answer
+    # and fall back to the summariser than to lose the reply
+    display, spoken = voice.strip_voice_tag("<voice>Ini seluruh jawaban tanpa penutup")
+    assert spoken == ""
+    assert display == "Ini seluruh jawaban tanpa penutup"
+
+def test_strip_voice_tag_refuses_an_oversized_spoken_line():
+    long = "x" * (voice.MAX_VOICE_CHARS + 1)
+    display, spoken = voice.strip_voice_tag(f"<voice>{long}</voice>Sisa.")
+    # the model ignored "one sentence" — show it, do not speak a paragraph
+    assert spoken == ""
+    assert long in display
+
+def test_strip_voice_tag_removes_every_occurrence_but_speaks_the_first():
+    display, spoken = voice.strip_voice_tag(
+        "<voice>Satu.</voice>Isi.<voice>Dua.</voice>Lagi.")
+    assert spoken == "Satu."
+    assert "<voice>" not in display and "Dua." not in display
+
+def test_voice_tag_instruction_is_gated_on_smart_tts(hermes_home):
+    from hermes import config
+    off = config.Settings(tts_enabled=False)
+    verbatim = config.Settings(tts_enabled=True, tts_mode="verbatim")
+    smart = config.Settings(tts_enabled=True, tts_mode="smart")
+    # ~90 prompt tokens per turn is not free: only the mode that benefits pays
+    assert voice.voice_tag_instruction(off) == ""
+    assert voice.voice_tag_instruction(verbatim) == ""
+    instruction = voice.voice_tag_instruction(smart)
+    assert voice.VOICE_TAG_OPEN in instruction
+    assert voice.VOICE_TAG_CLOSE in instruction
+
+def test_voice_tag_instruction_round_trips_through_the_stripper(hermes_home):
+    from hermes import config
+    # whatever shape the instruction asks for, the stripper must understand it
+    instruction = voice.voice_tag_instruction(
+        config.Settings(tts_enabled=True, tts_mode="smart"))
+    example = instruction[instruction.index(voice.VOICE_TAG_OPEN):]
+    example = example[:example.index(voice.VOICE_TAG_CLOSE) + len(voice.VOICE_TAG_CLOSE)]
+    _, spoken = voice.strip_voice_tag(example + " sisa jawaban")
+    assert spoken

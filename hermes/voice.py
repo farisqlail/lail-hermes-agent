@@ -176,6 +176,91 @@ def fallback_text(body: SmartTtsRequest, agent: str,
     return cleaned[:200] if cleaned else "Tidak ada yang bisa dirangkum."
 
 
+# ── the <voice> fast path ──
+# The chat model opens its reply with one spoken sentence wrapped in this tag.
+# The client pulls it out of the token stream and starts synthesis while the
+# rest of the answer is still arriving — one LLM call instead of two, and first
+# audio in about a second instead of after the whole reply plus a summariser
+# round trip. The grammar is mirrored in app/web/src/voicetag.ts; a test pins
+# the two together.
+VOICE_TAG_OPEN = "<voice>"
+VOICE_TAG_CLOSE = "</voice>"
+
+#: Longer than this and the model ignored "one sentence" — the line is shown
+#: rather than spoken, because reading a paragraph aloud is the behaviour this
+#: whole path exists to avoid.
+MAX_VOICE_CHARS = 300
+
+_VOICE_TAG_RE = re.compile(
+    re.escape(VOICE_TAG_OPEN) + r"(.*?)" + re.escape(VOICE_TAG_CLOSE),
+    re.DOTALL)
+
+
+def strip_voice_tag(text: str) -> tuple[str, str]:
+    """Split a reply into what is displayed and the one line to speak.
+
+    Returns ``(display_text, voice_line)``. ``voice_line`` is empty when there
+    is no tag, when it was never closed, or when it is too long to be the one
+    sentence the instruction asked for — in every one of those cases the caller
+    falls back to /api/tts/smart, which still works, just slower.
+    """
+    matches = _VOICE_TAG_RE.findall(text)
+    
+    # Clean up the tag and surrounding newlines if the tag is on its own line
+    temp_text = text
+    for m in _VOICE_TAG_RE.finditer(text):
+        tag_str = m.group(0)
+        idx = temp_text.find(tag_str)
+        if idx > 0 and temp_text[idx - 1] == "\n" and idx + len(tag_str) < len(temp_text) and temp_text[idx + len(tag_str)] == "\n":
+            temp_text = temp_text[:idx] + temp_text[idx + len(tag_str) + 1:]
+        else:
+            temp_text = temp_text.replace(tag_str, "")
+    display = temp_text
+
+    if not matches:
+        # An opened-but-never-closed tag would otherwise leave "<voice>" in the
+        # displayed answer. Drop the marker, keep the words.
+        if VOICE_TAG_OPEN in display:
+            display = display.replace(VOICE_TAG_OPEN, "")
+        return display.strip(), ""
+
+    spoken = matches[0].strip()
+    if len(spoken) > MAX_VOICE_CHARS:
+        # The model dumped the answer into the tag. Show it, do not speak it.
+        return (display + "\n" + spoken).strip(), ""
+    return display.strip(), spoken
+
+
+def voice_tag_instruction(settings) -> str:
+    """The prompt fragment that asks for the tag, or "" when nothing would
+    listen to it.
+
+    Gated because it costs roughly 90 prompt tokens on every chat turn.
+    Verbatim mode is excluded too: it already speaks sentence by sentence as
+    the reply streams, so a summary line on top would duplicate the opening.
+    """
+    if not getattr(settings, "tts_enabled", False):
+        return ""
+    if getattr(settings, "tts_mode", "smart") != "smart":
+        return ""
+    return (
+        "\n\nSUARA: Awali SETIAP jawaban dengan SATU kalimat lisan yang "
+        f"dibungkus {VOICE_TAG_OPEN}...{VOICE_TAG_CLOSE}, lalu tulis jawaban "
+        "lengkapnya seperti biasa.\n"
+        "Aturan kalimat di dalam tag:\n"
+        "1. Maksimal satu kalimat, maksimal 25 kata\n"
+        "2. Sampaikan INTI jawaban, bukan basa-basi seperti 'baik, saya jelaskan'\n"
+        "3. Tanpa markdown, tanpa simbol, tanpa nama file atau ID\n"
+        "4. Bahasa sama dengan jawaban\n"
+        f"Contoh: {VOICE_TAG_OPEN}Semua pengujian lulus, tidak ada yang perlu "
+        f"diperbaiki.{VOICE_TAG_CLOSE}\n"
+        "## Hasil Pengujian\n"
+        "...isi lengkap...\n"
+        f"JANGAN menulis {VOICE_TAG_OPEN} di tempat lain, dan jangan "
+        "menyebut tag ini kepada pengguna."
+    )
+
+
 router = APIRouter()
 
 
