@@ -884,3 +884,51 @@ def test_tts_smart_route_registered_once(hermes_home):
                 if getattr(ir, "path", None) == "/api/tts/smart":
                     smart.append(ir)
     assert len(smart) == 1
+
+def test_stream_persists_the_reply_without_the_voice_tag(hermes_home):
+    """A stored tag re-enters the model's context on the next turn and teaches
+    it that the tag is ordinary prose."""
+    from hermes import voice
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    class FakeChat:
+        async def stream(self, history, tools=None, dispatch=None):
+            yield ("token", "<voice>Semua lulus.</voice>")
+            yield ("token", "\n\n## Hasil\nRinci.")
+            yield ("usage", {"prompt": 1, "completion": 2, "total": 3})
+
+    fake = FakeChat()
+    async def chat(history, tools=None, dispatch=None): return ""
+    chat.stream = fake.stream
+
+    client = TestClient(create_app(store, chat=chat))
+    body = client.post("/api/chat/stream", json={"text": "halo"}).text
+    # the raw stream still carries the tag — the client extracts from it
+    assert voice.VOICE_TAG_OPEN in body
+
+    stored = store.get_messages("web", limit=10)
+    assistant = [m for m in stored if m["role"] == "assistant"][-1]
+    assert voice.VOICE_TAG_OPEN not in assistant["content"]
+    assert "Semua lulus." not in assistant["content"]
+    assert "## Hasil" in assistant["content"]
+
+def test_non_streaming_chat_persists_without_the_voice_tag(hermes_home):
+    from hermes import voice
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    async def chat(history, tools=None, dispatch=None):
+        return "<voice>Beres.</voice>Jawaban lengkap."
+
+    client = TestClient(create_app(store, chat=chat))
+    r = client.post("/api/tasks", json={"text": "halo"})
+    assert r.status_code == 200
+
+    stored = store.get_messages("web", limit=10)
+    assistant = [m for m in stored if m["role"] == "assistant"][-1]
+    assert voice.VOICE_TAG_OPEN not in assistant["content"]
+    assert assistant["content"] == "Jawaban lengkap."
+    # the task log the dashboard renders must be clean too
+    logs = "\n".join(store.get_logs(r.json()["task_id"]))
+    assert voice.VOICE_TAG_OPEN not in logs

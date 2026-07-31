@@ -453,9 +453,12 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     # coherent and the operator sees the cause.
                     safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
                     reply = f"(Maaf, chat gagal: {safe})"
-            store.add_message(sid, "assistant", reply)
+            # The tag is a transport detail between the model and the speech
+            # path. Storing it would feed it back as context next turn.
+            clean, _ = voice.strip_voice_tag(reply)
+            store.add_message(sid, "assistant", clean)
             store.set_task_status(task_id, "done")
-            store.append_log(task_id, f"answer: {reply}")
+            store.append_log(task_id, f"answer: {clean}")
             return {"task_id": task_id, "status": "done"}
 
     @app.post("/api/tasks/{task_id}/confirm")
@@ -567,8 +570,10 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     note = f"\n\n(Maaf, chat gagal: {safe})"
                     acc += note
                     yield sse({"delta": note})
-            # Persist whatever was actually produced (empty stays empty, not a lie).
-            store.add_message(sid, "assistant", acc)
+            # Persist whatever was actually produced (empty stays empty, not a
+            # lie), minus the <voice> line the client already consumed.
+            clean, _ = voice.strip_voice_tag(acc)
+            store.add_message(sid, "assistant", clean)
             yield sse({"done": True, "usage": usage})
 
         return StreamingResponse(gen(), media_type="text/event-stream",
