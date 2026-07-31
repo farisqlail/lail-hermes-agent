@@ -112,3 +112,44 @@ test('reports speaking transitions once each way', async () => {
   finish(); await tick(); await tick();
   assert.deepEqual(seen, [true, false]);
 });
+
+test('reports milliseconds from turn start to the first audio, once per turn', async () => {
+  const { sink, finish } = fakeSink();
+  let clock = 0;
+  const reported: number[] = [];
+  const q = new SpeechQueue(fakeFetcher(), sink, {
+    now: () => clock,
+    onFirstAudio: (ms) => reported.push(ms),
+  });
+
+  q.markTurnStart();
+  clock = 900;
+  q.enqueue('/api/tts', { text: 'satu' });
+  await tick(); await tick();
+  assert.deepEqual(reported, [900]);
+
+  // the second utterance of the same turn is not a first audio
+  finish(); await tick();
+  q.enqueue('/api/tts', { text: 'dua' });
+  await tick(); await tick();
+  assert.deepEqual(reported, [900]);
+
+  // a new turn re-arms the measurement
+  finish(); await tick(); await tick();
+  clock = 2000;
+  q.markTurnStart();
+  clock = 2400;
+  q.enqueue('/api/tts', { text: 'tiga' });
+  await tick(); await tick();
+  assert.deepEqual(reported, [900, 400]);
+});
+
+test('does not report when no turn was marked', async () => {
+  const { sink, finish } = fakeSink();
+  const reported: number[] = [];
+  const q = new SpeechQueue(fakeFetcher(), sink, { onFirstAudio: (ms) => reported.push(ms) });
+  q.enqueue('/api/tts', { text: 'greeting' });   // proactive speech, no turn
+  await tick(); await tick();
+  assert.deepEqual(reported, []);
+  finish();
+});

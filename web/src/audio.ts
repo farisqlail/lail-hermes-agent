@@ -84,17 +84,37 @@ export class SpeechQueue {
   private _speaking = false;
   private readonly maxInFlight: number;
   private readonly onSpeakingChange?: (speaking: boolean) => void;
+  private turnStart: number | null = null;
+  private readonly now: () => number;
+  private readonly onFirstAudio?: (ms: number) => void;
 
   constructor(
     private fetchAudio: SpeechFetcher,
     private sink: AudioSink,
-    opts: { maxInFlight?: number; onSpeakingChange?: (speaking: boolean) => void } = {},
+    opts: {
+      maxInFlight?: number;
+      onSpeakingChange?: (speaking: boolean) => void;
+      /** Injected so the measurement is testable without a real clock. */
+      now?: () => number;
+      /** Milliseconds from markTurnStart() to the first audio of that turn.
+       *  The P3 target is under 1500. */
+      onFirstAudio?: (ms: number) => void;
+    } = {},
   ) {
     // Three concurrent edge-tts round trips is enough to hide the round-trip
     // latency of the sentence being spoken without opening a socket per
     // sentence of a long reply.
     this.maxInFlight = opts.maxInFlight ?? 3;
     this.onSpeakingChange = opts.onSpeakingChange;
+    this.now = opts.now ?? (() => Date.now());
+    this.onFirstAudio = opts.onFirstAudio;
+  }
+
+  /** Start the clock for one conversational turn. Proactive speech (greeting,
+   *  task notify) deliberately does not call this — it has no turn to be late
+   *  for, and would pollute the measurement. */
+  markTurnStart(): void {
+    this.turnStart = this.now();
   }
 
   get speaking(): boolean { return this._speaking; }
@@ -152,6 +172,10 @@ export class SpeechQueue {
           continue;
         }
         this.setSpeaking(true);
+        if (this.turnStart !== null) {
+          this.onFirstAudio?.(this.now() - this.turnStart);
+          this.turnStart = null;   // one report per turn
+        }
         await this.sink.play(blob);
         this.releaseSlot();
       }

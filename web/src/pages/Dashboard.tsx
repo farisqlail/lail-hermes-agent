@@ -186,6 +186,7 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
 
   const [voice, setVoice] = useState<VoiceSettings>(VOICE_SETTINGS_DEFAULT);
   const [speaking, setSpeaking] = useState(false);
+  const [firstAudioMs, setFirstAudioMs] = useState<number | null>(null);
   const speakingRef = useRef(false);
   const sinkRef = useRef<HtmlAudioSink | null>(null);
   const queueRef = useRef<SpeechQueue | null>(null);
@@ -194,6 +195,11 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     sinkRef.current = new HtmlAudioSink();
     queueRef.current = new SpeechQueue(fetchSpeech, sinkRef.current, {
       onSpeakingChange: (v) => { speakingRef.current = v; setSpeaking(v); },
+      now: () => performance.now(),
+      onFirstAudio: (ms) => {
+        setFirstAudioMs(Math.round(ms));
+        console.debug(`[voice] audio pertama: ${Math.round(ms)} ms`);
+      },
     });
   }
 
@@ -389,6 +395,8 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     setStreamUsage(null);
 
     shutUp();
+    setFirstAudioMs(null);
+    queueRef.current?.markTurnStart();
     if (ttsEnabled) sinkRef.current?.unlock();
 
     // Append user message immediately
@@ -646,8 +654,16 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
                         />
                       ))}
                       {m.usage && m.usage.total > 0 && (
-                        <div style={{ fontSize: 'var(--t-xs)', color: 'var(--text-faint)', marginTop: '8px', borderTop: '1px dashed var(--border)', paddingTop: '6px', alignSelf: 'stretch' }}>
-                          💡 Total token: {m.usage.total}
+                        <div style={{ fontSize: 'var(--t-xs)', color: 'var(--text-faint)', marginTop: '8px', borderTop: '1px dashed var(--border)', paddingTop: '6px', alignSelf: 'stretch', display: 'flex', gap: '12px', alignItems: 'center' }}>
+                          <span>💡 Total token: {m.usage.total}</span>
+                          {m === messages[messages.length - 1] && firstAudioMs !== null && (
+                            <span
+                              title="Waktu sampai suara pertama terdengar (target di bawah 1500 ms)"
+                              style={{ color: firstAudioMs <= 1500 ? 'var(--text-faint)' : 'var(--warn)' }}
+                            >
+                              🔊 {firstAudioMs} ms
+                            </span>
+                          )}
                         </div>
                       )}
                       {m.usage && m.usage.total === 0 && (
@@ -698,9 +714,17 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
                       </div>
                     </div>
                   )}
-                  {streamUsage && (
-                    <div style={{ fontSize: 'var(--t-xs)', color: 'var(--text-faint)', marginTop: '8px', borderTop: '1px dashed var(--border)', paddingTop: '6px', alignSelf: 'stretch' }}>
-                      💡 Total token: {streamUsage.total}
+                  {(streamUsage || firstAudioMs !== null) && (
+                    <div style={{ fontSize: 'var(--t-xs)', color: 'var(--text-faint)', marginTop: '8px', borderTop: '1px dashed var(--border)', paddingTop: '6px', alignSelf: 'stretch', display: 'flex', gap: '12px', alignItems: 'center' }}>
+                      {streamUsage && <span>💡 Total token: {streamUsage.total}</span>}
+                      {firstAudioMs !== null && (
+                        <span
+                          title="Waktu sampai suara pertama terdengar (target di bawah 1500 ms)"
+                          style={{ color: firstAudioMs <= 1500 ? 'var(--text-faint)' : 'var(--warn)' }}
+                        >
+                          🔊 {firstAudioMs} ms
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
