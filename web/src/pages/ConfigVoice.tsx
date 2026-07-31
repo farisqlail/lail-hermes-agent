@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Field } from '../components/Field';
 import { Button } from '../components/Button';
 import { useToast } from '../components/Toast';
+import { api, errorMessage } from '../api/client';
+import { SttStatus, fetchSttStatus } from '../stt';
 import {
   TtsVoice,
   TTS_VOICES_FALLBACK,
@@ -35,6 +37,23 @@ export function ConfigVoice() {
   const [saving, setSaving] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
 
+  // Voice input lives in server Settings, not localStorage: the model runs on
+  // the server, and a wake-word service later will need to read the same
+  // values without a browser.
+  const [sttEnabled, setSttEnabled] = useState(true);
+  const [sttLanguage, setSttLanguage] = useState('id');
+  const [sttStatus, setSttStatus] = useState<SttStatus | null>(null);
+
+  useEffect(() => {
+    fetchSttStatus()
+      .then((s) => {
+        setSttStatus(s);
+        setSttEnabled(s.enabled);
+        setSttLanguage(s.language);
+      })
+      .catch(() => setSttStatus(null));
+  }, []);
+
   useEffect(() => {
     fetch('/api/tts/voices')
       .then(res => res.json())
@@ -46,15 +65,21 @@ export function ConfigVoice() {
       .catch(() => {});
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     try {
       saveTtsSettings(ttsEnabled, ttsVoice);
       saveSmartTtsSettings(ttsMode, maxWords, greeting, taskNotify, personality);
+      const current = await api.getSettings();
+      await api.saveSettings({
+        ...current,
+        stt_enabled: sttEnabled,
+        stt_language: sttLanguage,
+      });
       toast('Konfigurasi suara berhasil disimpan!', 'ok');
-    } catch {
-      toast('Gagal menyimpan konfigurasi suara.', 'err');
+    } catch (err) {
+      toast(errorMessage(err, 'Gagal menyimpan konfigurasi suara.'), 'err');
     } finally {
       setSaving(false);
     }
@@ -282,6 +307,44 @@ export function ConfigVoice() {
             </label>
           </div>
         </Field>
+      </section>
+
+      {/* Section 4: Voice Input (STT) */}
+      <section style={sectionStyle}>
+        <h3 style={headingStyle}>🎤 Voice Input (STT)</h3>
+
+        {sttStatus && !sttStatus.available && (
+          <p style={{ color: 'var(--warn)', marginBottom: '12px' }}>
+            faster-whisper belum terinstal. Jalankan <code>pip install -e .[voice]</code> lalu
+            restart Hermes.
+          </p>
+        )}
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+          <input
+            type="checkbox"
+            style={checkboxStyle}
+            checked={sttEnabled}
+            onChange={(e) => setSttEnabled(e.target.checked)}
+          />
+          <span>Aktifkan input suara (tombol mic dan Ctrl+Space)</span>
+        </label>
+
+        <label style={{ display: 'block', marginBottom: '8px' }}>Bahasa Ucapan</label>
+        <select
+          style={selectStyle}
+          value={sttLanguage}
+          onChange={(e) => setSttLanguage(e.target.value)}
+        >
+          <option value="id">Indonesia</option>
+          <option value="en">Inggris</option>
+          <option value="">Deteksi otomatis</option>
+        </select>
+
+        <p style={{ opacity: 0.7, marginTop: '12px', fontSize: 'var(--t-sm)' }}>
+          Model: <code>{sttStatus?.model ?? '—'}</code>
+          {sttStatus?.loaded === false && ' · transkripsi pertama lebih lambat karena model dimuat dulu'}
+        </p>
       </section>
 
       {/* Action buttons */}

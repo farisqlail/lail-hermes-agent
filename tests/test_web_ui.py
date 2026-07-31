@@ -797,3 +797,135 @@ def test_task_detail_is_fetchable_by_id(hermes_home):
     body = r.json()
     assert body["task"]["task_id"] == "20260730-140639-8a36d8"
     assert any("myprofit-v3" in line for line in body["logs"])
+
+
+def test_stt_status_reports_model_and_settings(hermes_home, monkeypatch):
+    from hermes import stt
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    monkeypatch.setattr(stt, "available", lambda: True)
+    monkeypatch.setattr(stt, "is_loaded", lambda: False)
+    client = TestClient(create_app(store))
+
+    r = client.get("/api/stt/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["loaded"] is False
+    assert body["model"] == stt.MODEL_SIZE
+    assert body["enabled"] is True
+    assert body["language"] == "id"
+
+
+def test_stt_transcribes_posted_audio(hermes_home, monkeypatch):
+    from hermes import stt
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    seen = {}
+
+    def fake_transcribe(audio, language="id"):
+        seen["audio"] = audio
+        seen["language"] = language
+        return "jalankan test project v3"
+
+    monkeypatch.setattr(stt, "available", lambda: True)
+    monkeypatch.setattr(stt, "transcribe", fake_transcribe)
+    client = TestClient(create_app(store))
+
+    r = client.post("/api/stt", content=b"fake-webm",
+                    headers={"Content-Type": "audio/webm"})
+    assert r.status_code == 200
+    assert r.json() == {"text": "jalankan test project v3"}
+    assert seen["audio"] == b"fake-webm"
+    assert seen["language"] == "id"
+
+
+def test_stt_uses_configured_language(hermes_home, monkeypatch):
+    from hermes import stt
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    config.save_settings(config.Settings(stt_language="en"))
+    seen = {}
+
+    def fake_transcribe(audio, language="id"):
+        seen["language"] = language
+        return "run the tests"
+
+    monkeypatch.setattr(stt, "available", lambda: True)
+    monkeypatch.setattr(stt, "transcribe", fake_transcribe)
+    client = TestClient(create_app(store))
+
+    client.post("/api/stt", content=b"fake-webm")
+    assert seen["language"] == "en"
+
+
+def test_stt_returns_503_when_faster_whisper_missing(hermes_home, monkeypatch):
+    from hermes import stt
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    monkeypatch.setattr(stt, "available", lambda: False)
+    client = TestClient(create_app(store))
+
+    r = client.post("/api/stt", content=b"fake-webm")
+    assert r.status_code == 503
+    # The operator has to be told the install command, not just "unavailable".
+    assert "[voice]" in r.json()["detail"]
+
+
+def test_stt_returns_403_when_disabled(hermes_home, monkeypatch):
+    from hermes import stt
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    config.save_settings(config.Settings(stt_enabled=False))
+    monkeypatch.setattr(stt, "available", lambda: True)
+    client = TestClient(create_app(store))
+
+    r = client.post("/api/stt", content=b"fake-webm")
+    assert r.status_code == 403
+
+
+def test_stt_returns_413_for_oversized_audio(hermes_home, monkeypatch):
+    from hermes import stt
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    def explode(audio, language="id"):
+        raise AssertionError("must reject before reaching the model")
+
+    monkeypatch.setattr(stt, "available", lambda: True)
+    monkeypatch.setattr(stt, "transcribe", explode)
+    client = TestClient(create_app(store))
+
+    r = client.post("/api/stt", content=b"x" * (stt.MAX_AUDIO_BYTES + 1))
+    assert r.status_code == 413
+
+
+def test_stt_returns_204_for_empty_transcript(hermes_home, monkeypatch):
+    from hermes import stt
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    monkeypatch.setattr(stt, "available", lambda: True)
+    monkeypatch.setattr(stt, "transcribe", lambda audio, language="id": "  ")
+    client = TestClient(create_app(store))
+
+    # Silence transcribes to nothing. 204 lets the browser stay quiet instead
+    # of pasting an empty string over what the operator already typed.
+    r = client.post("/api/stt", content=b"fake-webm")
+    assert r.status_code == 204
+
+
+def test_stt_returns_500_when_the_model_fails(hermes_home, monkeypatch):
+    from hermes import stt
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    def explode(audio, language="id"):
+        raise RuntimeError("ctranslate2 blew up")
+
+    monkeypatch.setattr(stt, "available", lambda: True)
+    monkeypatch.setattr(stt, "transcribe", explode)
+    client = TestClient(create_app(store))
+
+    r = client.post("/api/stt", content=b"fake-webm")
+    assert r.status_code == 500
+    assert "ctranslate2 blew up" in r.json()["detail"]

@@ -7,6 +7,7 @@ import { Button } from '../components/Button';
 import { useToast } from '../components/Toast';
 import { useTasksContext } from '../api/events';
 import { loadTtsEnabled, loadTtsVoice, loadTtsMode, loadTtsMaxWords, loadTtsGreeting, loadTtsTaskNotify, loadTtsPersonality } from '../tts';
+import { VoiceRecorder, transcribeBlob } from '../stt';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -270,6 +271,78 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
   }, [tasks, ttsEnabled, ttsTaskNotify]);
   
   const [inputText, setInputText] = useState('');
+
+  // ── Voice input ──
+  const [micState, setMicState] = useState<'idle' | 'recording' | 'working'>('idle');
+  const recorderRef = useRef<VoiceRecorder | null>(null);
+  // Distinguishes a hold (Ctrl+Space) from a click. Without it, releasing
+  // Space would also stop a recording the operator started by clicking.
+  const holdingRef = useRef(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const startRecording = useCallback(async () => {
+    if (micState !== 'idle') return;
+    try {
+      const recorder = new VoiceRecorder();
+      await recorder.start();
+      recorderRef.current = recorder;
+      setMicState('recording');
+    } catch {
+      // Denied permission, no microphone, or a non-secure origin. The browser
+      // wording is unhelpful, so say what the operator can do about it.
+      toast('Mic tidak bisa diakses. Izinkan mikrofon untuk situs ini.', 'err');
+      setMicState('idle');
+    }
+  }, [micState, toast]);
+
+  const stopRecording = useCallback(async () => {
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    recorderRef.current = null;
+    setMicState('working');
+    try {
+      const blob = await recorder.stop();
+      const text = await transcribeBlob(blob);
+      if (text) {
+        // Append rather than replace: the operator may have typed half the
+        // instruction before deciding to say the rest.
+        setInputText((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
+        inputRef.current?.focus();
+      }
+    } catch (err) {
+      toast(errorMessage(err, 'Transkripsi gagal'), 'err');
+    } finally {
+      setMicState('idle');
+    }
+  }, [toast]);
+
+  // Hold Ctrl+Space to talk. Ctrl rather than Space alone so the shortcut
+  // cannot fire while the operator is typing a message.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || !e.ctrlKey || e.repeat) return;
+      if (micState !== 'idle') return;
+      e.preventDefault();
+      holdingRef.current = true;
+      startRecording();
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || !holdingRef.current) return;
+      e.preventDefault();
+      holdingRef.current = false;
+      stopRecording();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [micState, startRecording, stopRecording]);
+
+  // Releasing the mic on unmount, so navigating away mid-recording does not
+  // leave the browser's recording indicator lit.
+  useEffect(() => () => { recorderRef.current?.stop(); }, []);
   const [streaming, setStreaming] = useState(false);
   const [streamContent, setStreamContent] = useState('');
   const [streamUsage, setStreamUsage] = useState<{ total: number } | null>(null);
@@ -642,7 +715,22 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
           alignItems: 'center',
         }}
       >
+        <Button
+          type="button"
+          variant={micState === 'recording' ? 'danger' : 'secondary'}
+          disabled={streaming || micState === 'working'}
+          onClick={() => {
+            holdingRef.current = false;
+            if (micState === 'recording') stopRecording();
+            else startRecording();
+          }}
+          title="Klik untuk mulai/berhenti merekam, atau tahan Ctrl+Space"
+          style={{ height: '44px', width: '52px' }}
+        >
+          {micState === 'recording' ? '⏹' : micState === 'working' ? '⏳' : '🎤'}
+        </Button>
         <input
+          ref={inputRef}
           type="text"
           className="field-input"
           value={inputText}

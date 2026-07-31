@@ -60,6 +60,8 @@ class Settings(BaseModel):
     timeout_build_s: int = 1200
     timeout_test_s: int = 600
     mcp_servers: list[McpServer] = Field(default_factory=list)
+    stt_enabled: bool = True
+    stt_language: str = "id"
 
     @field_validator("claude_model")
     @classmethod
@@ -84,6 +86,18 @@ class Settings(BaseModel):
                 "agy model must be printable ASCII, e.g. 'Gemini 3.5 Flash "
                 "(High)' — check for smart quotes or line breaks")
         return v
+
+    @field_validator("stt_language")
+    @classmethod
+    def _stt_language_shape(cls, v: str) -> str:
+        # whisper wants an ISO-639-1 code ("id", "en", "ja"). Anything else
+        # only fails once it reaches the model, several layers from the
+        # setting that caused it.
+        if v and not re.fullmatch(r"[A-Za-z]{2}", v):
+            raise ValueError(
+                "stt language must be a two-letter ISO-639-1 code, e.g. 'id' "
+                "or 'en', or empty to auto-detect")
+        return v.lower()
 
     @field_validator("projects")
     @classmethod

@@ -1,0 +1,102 @@
+import io
+import pytest
+from hermes import stt
+
+
+class FakeSegment:
+    def __init__(self, text):
+        self.text = text
+
+
+class FakeModel:
+    """Stands in for faster_whisper.WhisperModel. Records what it was asked
+    to do so the tests can assert on the call, and returns a generator the
+    way the real transcribe() does."""
+
+    def __init__(self):
+        self.calls = []
+
+    def transcribe(self, audio, language=None, vad_filter=False):
+        self.calls.append({"audio": audio, "language": language,
+                           "vad_filter": vad_filter})
+        return (s for s in [FakeSegment(" Halo"), FakeSegment(" dunia.")]), None
+
+
+@pytest.fixture
+def fake_model(monkeypatch):
+    model = FakeModel()
+    monkeypatch.setattr(stt, "_load_model", lambda: model)
+    return model
+
+
+def test_transcribe_joins_segments_and_strips(fake_model):
+    assert stt.transcribe(b"fake-webm-bytes") == "Halo dunia."
+
+
+def test_transcribe_passes_language_and_enables_vad(fake_model):
+    stt.transcribe(b"fake-webm-bytes", language="en")
+    call = fake_model.calls[0]
+    assert call["language"] == "en"
+    assert call["vad_filter"] is True
+
+
+def test_transcribe_empty_language_means_autodetect(fake_model):
+    # Whisper's own contract: language=None asks it to detect. An empty
+    # setting string must not be forwarded as the literal language "".
+    stt.transcribe(b"fake-webm-bytes", language="")
+    assert fake_model.calls[0]["language"] is None
+
+
+def test_transcribe_wraps_bytes_in_a_file_object(fake_model):
+    # faster-whisper accepts a path, a file-like object or a numpy array.
+    # Bytes are not in that set, so stt must wrap them.
+    stt.transcribe(b"fake-webm-bytes")
+    assert isinstance(fake_model.calls[0]["audio"], io.BytesIO)
+
+
+def test_transcribe_empty_audio_returns_empty_without_loading(monkeypatch):
+    def explode():
+        raise AssertionError("must not load the model for empty audio")
+    monkeypatch.setattr(stt, "_load_model", explode)
+    assert stt.transcribe(b"") == ""
+
+
+def test_transcribe_rejects_oversized_audio(monkeypatch):
+    def explode():
+        raise AssertionError("must not load the model for oversized audio")
+    monkeypatch.setattr(stt, "_load_model", explode)
+    with pytest.raises(ValueError, match="terlalu besar"):
+        stt.transcribe(b"x" * (stt.MAX_AUDIO_BYTES + 1))
+
+
+def test_load_model_without_faster_whisper_raises_sttunavailable(monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+
+    def no_faster_whisper(name, *args, **kwargs):
+        if name == "faster_whisper":
+            raise ImportError("No module named 'faster_whisper'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_faster_whisper)
+    stt._reset_model_for_tests()
+    with pytest.raises(stt.SttUnavailable, match=r"\[voice\]"):
+        stt._load_model()
+
+
+def test_available_is_false_without_faster_whisper(monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+
+    def no_faster_whisper(name, *args, **kwargs):
+        if name == "faster_whisper":
+            raise ImportError("No module named 'faster_whisper'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_faster_whisper)
+    assert stt.available() is False
+
+
+def test_is_loaded_false_before_first_transcribe():
+    stt._reset_model_for_tests()
+    assert stt.is_loaded() is False

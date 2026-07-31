@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import config, paths
+from . import config, paths, stt
 from .session_store import Store
 from .telegram_bridge import new_task_id
 
@@ -679,6 +679,61 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             return {"ok": True, "tools": [t["name"] for t in tools]}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    @app.get("/api/stt/status")
+    def get_stt_status():
+        s = config.load_settings()
+        return {
+            "available": stt.available(),
+            "loaded": stt.is_loaded(),
+            "model": stt.MODEL_SIZE,
+            "enabled": s.stt_enabled,
+            "language": s.stt_language,
+        }
+
+    @app.post("/api/stt")
+    async def post_stt(request: Request):
+        """Transcribe a recording from the browser's mic. The body is the raw
+        blob MediaRecorder produced -- raw rather than multipart so this needs
+        no python-multipart dependency, and faster-whisper decodes webm/opus
+        itself."""
+        from fastapi import Response
+
+        if not stt.available():
+            raise HTTPException(
+                status_code=503,
+                detail="faster-whisper belum terinstal. Jalankan: "
+                       "pip install -e .[voice]")
+
+        settings = config.load_settings()
+        if not settings.stt_enabled:
+            raise HTTPException(
+                status_code=403,
+                detail="Voice input dimatikan di pengaturan Suara")
+
+        audio = await request.body()
+        if len(audio) > stt.MAX_AUDIO_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Rekaman terlalu panjang (maksimal "
+                       f"{stt.MAX_AUDIO_BYTES // (1024 * 1024)} MB)")
+
+        # Transcription is seconds of synchronous CPU work. Run straight from
+        # this coroutine it would freeze the whole event loop -- including the
+        # SSE feed the dashboard lives on and any chat stream in flight.
+        try:
+            text = await asyncio.to_thread(
+                stt.transcribe, audio, settings.stt_language)
+        except stt.SttUnavailable as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=413, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+        if not text.strip():
+            return Response(status_code=204)
+        return {"text": text.strip()}
 
     @app.get("/api/tts/voices")
     def get_tts_voices():

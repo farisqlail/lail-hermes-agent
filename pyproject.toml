@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 browser = ["playwright>=1.45"]
+voice = ["faster-whisper>=1.2"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [tool.pytest.ini_options]

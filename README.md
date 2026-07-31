@@ -105,6 +105,10 @@ flowchart LR
   live `agy models` output where reachable), secrets (masked), an MCP-server manager, a
   Projects Registry panel (add/edit/delete with an OK/Missing badge per path), and a live task
   dashboard.
+- **Voice input** — hold `Ctrl+Space` (or click the mic) in the chat box to dictate a task.
+  Audio is transcribed locally by faster-whisper (`base`, int8, CPU); nothing is uploaded.
+  Optional: `pip install -e .[voice]`. The transcript lands in the input box for review — it
+  is never sent on your behalf.
 - **MCP bridge** exposing MCP tools to the NIM brain as OpenAI function calls (stdio + HTTP/SSE
   transports, lazily connected, every remote call time-bounded).
 - **Existing projects** — register a name-to-path map in settings, then aim a task at it with

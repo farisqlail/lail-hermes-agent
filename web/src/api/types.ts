@@ -30,6 +30,8 @@ export interface Settings {
   timeout_code_s: number;
   timeout_build_s: number;
   timeout_test_s: number;
+  stt_enabled: boolean;
+  stt_language: string;
   mcp_servers: McpServer[];
 }
 

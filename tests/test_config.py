@@ -114,3 +114,26 @@ def test_projects_roundtrip(hermes_home, tmp_path):
     s.projects = {"myprofit": str(tmp_path)}
     config.save_settings(s)
     assert config.load_settings().projects == {"myprofit": str(tmp_path)}
+
+
+def test_stt_defaults():
+    s = config.Settings()
+    assert s.stt_enabled is True
+    assert s.stt_language == "id"
+
+
+def test_stt_language_accepts_empty_for_autodetect():
+    assert config.Settings(stt_language="").stt_language == ""
+
+
+def test_stt_language_normalises_case():
+    assert config.Settings(stt_language="ID").stt_language == "id"
+
+
+def test_stt_language_rejects_non_language_tokens():
+    import pytest
+    # Whisper takes ISO-639-1 codes. A full name or a locale would be
+    # forwarded verbatim and rejected deep inside the model, far from here.
+    for bad in ["indonesian", "id-ID", "i d", "id1"]:
+        with pytest.raises(ValidationError):
+            config.Settings(stt_language=bad)
