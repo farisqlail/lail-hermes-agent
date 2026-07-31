@@ -59,13 +59,90 @@ export async function transcribeBlob(blob: Blob): Promise<string> {
   return String(data?.text ?? '').trim();
 }
 
-/** One recording session. Holds the MediaStream so stop() can release the
- *  mic — without that the browser keeps showing the recording indicator and
- *  the mic stays hot long after the operator stopped talking. */
+/** What we ask the browser for. echoCancellation is what lets the mic stay open
+ *  while the assistant speaks; autoGainControl keeps a quiet speaker above the
+ *  VAD threshold on laptop mics. */
+export const MIC_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+};
+
+export interface MicWarning {
+  echoCancellation: boolean;
+  autoGainControl: boolean;
+}
+
+export const MIC_AEC_WARNING =
+  'Peredam gema tidak aktif di mikrofon ini — asisten bisa menyela suaranya ' +
+  'sendiri. Pakai headset, atau matikan Sela Otomatis di pengaturan Suara.';
+
+/** Chrome drops these constraints silently on some capture devices, and with
+ *  echo cancellation off, barge-in makes the assistant interrupt itself. A
+ *  browser that reports nothing is taken at its word: warning on every Firefox
+ *  session would train the operator to ignore the warning. */
+export function checkMicConstraints(applied: MediaTrackSettings): MicWarning {
+  return {
+    echoCancellation: applied.echoCancellation !== false,
+    autoGainControl: applied.autoGainControl !== false,
+  };
+}
+
+/** One microphone, shared and reference counted.
+ *
+ *  The analyser must outlive any single recording, and re-acquiring per
+ *  utterance costs 200-400 ms of device warm-up — enough to clip the first
+ *  word of every hands-free reply. */
+export class MicStream {
+  static shared = new MicStream();
+
+  private stream: MediaStream | null = null;
+  private pending: Promise<MediaStream> | null = null;
+  private refs = 0;
+  private _warning: MicWarning | null = null;
+
+  get warning(): MicWarning | null { return this._warning; }
+  get live(): boolean { return this.stream !== null; }
+
+  async acquire(): Promise<MediaStream> {
+    this.refs++;
+    if (this.stream) return this.stream;
+    if (!this.pending) {
+      this.pending = navigator.mediaDevices
+        .getUserMedia({ audio: MIC_CONSTRAINTS })
+        .then((s) => {
+          this.stream = s;
+          const track = s.getAudioTracks?.()[0];
+          this._warning = track ? checkMicConstraints(track.getSettings()) : null;
+          this.pending = null;
+          return s;
+        })
+        .catch((e) => {
+          this.refs = Math.max(0, this.refs - 1);
+          this.pending = null;
+          throw e;
+        });
+    }
+    return this.pending;
+  }
+
+  release(): void {
+    this.refs = Math.max(0, this.refs - 1);
+    if (this.refs > 0 || !this.stream) return;
+    this.stream.getTracks().forEach((t) => t.stop());
+    this.stream = null;
+    this._warning = null;
+  }
+}
+
+/** One recording session over a shared MicStream. Never stops the tracks
+ *  itself — the stream is refcounted and may be feeding the analyser. */
 export class VoiceRecorder {
   private recorder: MediaRecorder | null = null;
-  private stream: MediaStream | null = null;
   private chunks: Blob[] = [];
+  private held = false;
+
+  constructor(private mic: MicStream = MicStream.shared) {}
 
   get recording(): boolean {
     return this.recorder?.state === 'recording';
@@ -73,14 +150,10 @@ export class VoiceRecorder {
 
   async start(): Promise<void> {
     if (this.recording) return;
-    // echoCancellation is what will let the mic stay open while the assistant
-    // is speaking, once barge-in lands. Harmless now, and asking for it later
-    // would mean re-acquiring the stream.
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true },
-    });
+    const stream = await this.mic.acquire();
+    this.held = true;
     this.chunks = [];
-    this.recorder = new MediaRecorder(this.stream);
+    this.recorder = new MediaRecorder(stream);
     this.recorder.ondataavailable = (e) => {
       if (e.data.size > 0) this.chunks.push(e.data);
     };
@@ -103,9 +176,8 @@ export class VoiceRecorder {
   }
 
   private release(): void {
-    this.stream?.getTracks().forEach((t) => t.stop());
-    this.stream = null;
     this.recorder = null;
     this.chunks = [];
+    if (this.held) { this.mic.release(); this.held = false; }
   }
 }
