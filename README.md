@@ -41,11 +41,12 @@ plans and drives; `claude -p` and `agy -p` do the code writing.
 </table>
 
 ```mermaid
-flowchart LR
+flowchart TD
     TG(["📱 Telegram<br/>/task ..."])
+    OP(["👤 Operator (Web/Browser)"])
 
     subgraph HERMES["🏛️ LAIL HERMES"]
-        direction LR
+        direction TB
         BR["🔐 telegram_bridge<br/><sub>whitelist · confirm gate</sub>"]
         OR["🧠 orchestrator<br/><sub>NVIDIA NIM planner</sub>"]
         HUB["🔌 mcp_hub<br/><sub>stdio / SSE tools</sub>"]
@@ -56,6 +57,15 @@ flowchart LR
             BLD["📦 build_runner<br/><sub>flutter / gradle → APK</sub>"]
             TST["🧪 test_runner<br/><sub>playwright · adb emulator</sub>"]
             ENG --> BLD --> TST
+        end
+
+        subgraph VOICE_SYS["🎙️ Voice Pipeline"]
+            direction TB
+            VAD["Local VAD & Commands<br/><sub>VAD (RMS) · Stop Detector</sub>"]
+            EXT["voicetag Extractor<br/><sub>P3 Stream Splitter</sub>"]
+            Q["SpeechQueue<br/><sub>In-flight Fetch-Ahead</sub>"]
+            STT_SRV["STT Server<br/><sub>FastAPI · faster-whisper</sub>"]
+            TTS_SRV["TTS Server<br/><sub>FastAPI · edge-tts · NIM</sub>"]
         end
 
         UI["🖥️ web_ui · FastAPI<br/><sub>127.0.0.1:8799</sub>"]
@@ -71,12 +81,18 @@ flowchart LR
     TG -->|"/task"| BR
     OR -.->|"status · APK · screenshots"| TG
 
+    OP <-->|"Audio Capture (VAD)<br/>Audio Playback (Queue)"| VOICE_SYS
+    VOICE_SYS <-->|"STT / TTS API"| UI
+    OP <-->|"Interact"| UI
+
     classDef ext fill:#229ED9,stroke:#1a7fb0,color:#fff
     classDef brain fill:#76B900,stroke:#5a8c00,color:#fff
     classDef store fill:#f5f0e6,stroke:#c9b896,color:#333
+    classDef op fill:#e06666,stroke:#a61c1c,color:#fff
     class TG ext
     class OR brain
     class DB store
+    class OP op
 ```
 
 ## Features
@@ -105,10 +121,15 @@ flowchart LR
   live `agy models` output where reachable), secrets (masked), an MCP-server manager, a
   Projects Registry panel (add/edit/delete with an OK/Missing badge per path), and a live task
   dashboard.
-- **Voice input** — hold `Ctrl+Space` (or click the mic) in the chat box to dictate a task.
-  Audio is transcribed locally by faster-whisper (`base`, int8, CPU); nothing is uploaded.
-  Optional: `pip install -e .[voice]`. The transcript lands in the input box for review — it
-  is never sent on your behalf.
+- **Voice input & conversation (VAD + STT + TTS)** — Speak naturally with the assistant using a local Voice Activity Detection (VAD) loop and edge-tts feedback:
+  - **Siklus Suara (VAD)**: RMS-based VAD detects speech-start and speech-end locally, dynamically adapting to the room's noise floor. Ducking raises the threshold when the assistant is speaking to prevent self-interruption.
+  - **Hands-Free / PTT**: Toggle hands-free in settings to automatically submit after speaking (`👂 -> ⏹ -> ⏳`), or hold `Ctrl+Space` (Push-To-Talk) to dictate.
+  - **Low Latency (<1.5s) Smart path**: When Smart TTS mode is on, the model opens its stream with `<voice>One spoken sentence</voice>`. The client extracts this tag mid-stream and synthesises it immediately while the rest of the reply continues streaming.
+  - **Per-sentence Verbatim path**: Streams verbatim sentence-by-sentence as the text arrives, utilizing a local sentence splitter.
+  - **Ordered Speech Queue**: Plays audio chunks sequentially using `SpeechQueue` with an in-flight fetch-ahead capacity (up to 3 concurrent requests) to hide network latency.
+  - **Local Interruption Commands**: Saying "diam" or "stop" locally halts the speech queue immediately without waiting for the LLM response.
+  - **Direct AEC Check**: Warns the operator if the browser's echo cancellation is missing so they can use a headset to prevent self-interruption.
+  - **Prerequisites**: `pip install -e .[voice]`. Audio transcription runs locally via faster-whisper (`base`, int8, CPU).
 - **MCP bridge** exposing MCP tools to the NIM brain as OpenAI function calls (stdio + HTTP/SSE
   transports, lazily connected, every remote call time-bounded).
 - **Existing projects** — register a name-to-path map in settings, then aim a task at it with
