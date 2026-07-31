@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import config, paths, stt
+from . import config, paths, stt, voice
 from .session_store import Store
 from .telegram_bridge import new_task_id
 
@@ -29,30 +29,7 @@ class TaskAnswer(BaseModel):
 class SessionRename(BaseModel):
     title: str
 
-# edge-tts voices offered in the UI. Indonesian first: the agent answers in
-# Bahasa, and an English voice reads Indonesian text with English phonetics.
-# id-ID-* are the only two native Indonesian neural voices edge-tts ships —
-# jv-ID (Javanese), su-ID (Sundanese) and ms-MY (Malay) are separate languages
-# and mispronounce Bahasa, so they are deliberately left out.
-TTS_VOICES = [
-    {"id": "id-ID-ArdiNeural", "name": "Ardi (Pria ID - Natural)"},
-    {"id": "id-ID-GadisNeural", "name": "Gadis (Wanita ID - Natural)"},
-    {"id": "en-GB-RyanNeural", "name": "Ryan (Male UK - Jarvis Style)"},
-    {"id": "en-US-GuyNeural", "name": "Guy (Male US - Professional)"},
-    {"id": "en-US-JennyNeural", "name": "Jenny (Female US - Soft)"},
-]
-TTS_VOICE_DEFAULT = TTS_VOICES[0]["id"]
 
-class TtsRequest(BaseModel):
-    text: str
-    voice: str = TTS_VOICE_DEFAULT
-
-class SmartTtsRequest(BaseModel):
-    text: str
-    voice: str = TTS_VOICE_DEFAULT
-    agent_name: str = ""
-    max_words: int = 40
-    personality: str = "professional"  # professional | friendly | jarvis
 
 # The web operator holds one continuous conversation. Localhost, single user,
 # so a fixed id is enough; a per-browser session id is only needed once the
@@ -219,6 +196,10 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     app.state.ask_registry = ask_registry
 
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR), check_dir=False), name="static")
+
+    # Voice output has no dependency on store/bridge/ask_registry, so it lives
+    # in its own module instead of this factory's closure.
+    app.include_router(voice.router)
 
     # async (history, tools=, dispatch=) -> str; None when no NIM chat is wired
     # (the conversational branch then falls back to a canned reply).
@@ -735,225 +716,6 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             return Response(status_code=204)
         return {"text": text.strip()}
 
-    @app.get("/api/tts/voices")
-    def get_tts_voices():
-        return TTS_VOICES
 
-    @app.post("/api/tts")
-    async def post_tts(body: TtsRequest):
-        import edge_tts
-        from fastapi import Response
-        
-        # Clean text from markdown formatting or tags so it reads smoothly
-        clean_text = body.text
-        # Remove markdown tables (lines starting with |)
-        clean_text = re.sub(r"^\|.*\|$", "", clean_text, flags=re.MULTILINE)
-        # Remove markdown horizontal rules
-        clean_text = re.sub(r"^---+$", "", clean_text, flags=re.MULTILINE)
-        # Remove inline code backticks, bold asterisks
-        clean_text = clean_text.replace("**", "").replace("`", "")
-        # Remove headers hashes
-        clean_text = re.sub(r"^#+\s+", "", clean_text, flags=re.MULTILINE)
-        # Remove blockquote angle brackets
-        clean_text = re.sub(r"^>\s+", "", clean_text, flags=re.MULTILINE)
-        # Remove empty lines
-        clean_text = "\n".join([line.strip() for line in clean_text.split("\n") if line.strip()])
-
-        if not clean_text:
-            return Response(status_code=204) # No content
-
-        try:
-            communicate = edge_tts.Communicate(clean_text, body.voice)
-            mp3_bytes = b""
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    mp3_bytes += chunk["data"]
-            return Response(content=mp3_bytes, media_type="audio/mpeg")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.post("/api/tts/smart")
-    async def post_tts_smart(body: SmartTtsRequest):
-        """Voice summarizer: condenses a full LLM response into 1-3 spoken
-        sentences via a second LLM call, then synthesises the summary with
-        edge-tts.  Falls back to the verbatim /api/tts path on any LLM
-        failure so the operator always hears *something*."""
-        import edge_tts
-        from openai import AsyncOpenAI
-        from fastapi import Response
-
-        agent = body.agent_name or config.load_settings().agent_name
-
-        # ── personality presets ──
-        personality_instructions = {
-            "professional": "Nada bicara: formal, ringkas, to-the-point. Seperti asisten eksekutif.",
-            "friendly": "Nada bicara: santai, hangat, supportive. Seperti teman kerja yang ramah.",
-            "jarvis": "Tone: formal British, elegant and composed. Speak in English like a gentleman's valet.",
-        }
-        personality_line = personality_instructions.get(
-            body.personality, personality_instructions["professional"]
-        )
-
-        system_prompt = (
-            f"Kamu adalah {agent}, asisten AI yang cerdas dan natural.\n\n"
-            "TUGASMU: Rangkum respons berikut menjadi kalimat lisan SINGKAT "
-            f"(maksimal 2 kalimat, maksimal {body.max_words} kata) "
-            "yang akan diucapkan oleh text-to-speech.\n\n"
-            "ATURAN:\n"
-            '1. Bicara sebagai orang pertama ("Saya sudah...", "Ini hasilnya...")\n'
-            "2. JANGAN sebut simbol markdown, tabel, atau format teknis\n"
-            "3. JANGAN ulangi seluruh isi — sampaikan INTI dan KESIMPULAN saja\n"
-            "4. Gunakan bahasa yang sama dengan respons asli (Indonesia/Inggris)\n"
-            "5. Jika respons berisi daftar/perbandingan → sebutkan rekomendasi utama saja\n"
-            "6. Jika respons berisi konfirmasi aksi → konfirmasi singkat apa yang sudah dilakukan\n"
-            "7. Jika respons berisi error → jelaskan masalah dan solusi singkat\n"
-            f"8. {personality_line}\n\n"
-            "KONTEKS EMOSIONAL (pilih otomatis berdasarkan isi):\n"
-            "- Jika respons berisi keberhasilan/konfirmasi → nada percaya diri dan positif\n"
-            "- Jika respons berisi error/warning → nada serius dan solutif\n"
-            "- Jika respons berisi pertanyaan balik → nada sopan dan mengundang\n"
-            "- Jika respons berisi salam/greeting → nada hangat dan ramah\n"
-        )
-
-        summary_text = ""
-        try:
-            secrets = config.load_secrets()
-            if not secrets.nvidia_api_key:
-                raise ValueError("no API key")
-            settings = config.load_settings()
-            client = AsyncOpenAI(
-                base_url=settings.nvidia_base_url,
-                api_key=secrets.nvidia_api_key,
-                timeout=15,
-            )
-            resp = await client.chat.completions.create(
-                model=settings.chat_model or settings.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": body.text},
-                ],
-                temperature=settings.chat_temperature,
-                max_tokens=120,
-            )
-            summary_text = (resp.choices[0].message.content or "").strip()
-        except Exception:
-            # Fallback: first 200 chars, stripped of markdown
-            pass
-
-        if not summary_text:
-            # Fallback to simple truncation
-            fallback = body.text
-            fallback = re.sub(r"```[\s\S]*?```", " ", fallback)
-            fallback = re.sub(r"`[^`]+`", "", fallback)
-            fallback = re.sub(r"#{1,6}\s*", "", fallback)
-            fallback = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", fallback)
-            fallback = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "", fallback)
-            fallback = re.sub(r"\s+", " ", fallback).strip()
-            summary_text = fallback[:200] if fallback else "Tidak ada yang bisa dirangkum."
-
-        # Synthesise with edge-tts
-        try:
-            communicate = edge_tts.Communicate(summary_text, body.voice)
-            mp3_bytes = b""
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    mp3_bytes += chunk["data"]
-            if not mp3_bytes:
-                return Response(status_code=204)
-            return Response(content=mp3_bytes, media_type="audio/mpeg")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.post("/api/tts/smart")
-    async def post_tts_smart(body: SmartTtsRequest):
-        """Voice summarizer: condenses a full LLM response into 1-3 spoken
-        sentences via a second LLM call, then synthesises the summary with
-        edge-tts.  Falls back to the verbatim /api/tts path on any LLM
-        failure so the operator always hears *something*."""
-        import edge_tts
-        from openai import AsyncOpenAI
-        from fastapi import Response
-
-        agent = body.agent_name or config.load_settings().agent_name
-
-        # ── personality presets ──
-        personality_instructions = {
-            "professional": "Nada bicara: formal, ringkas, to-the-point. Seperti asisten eksekutif.",
-            "friendly": "Nada bicara: santai, hangat, supportive. Seperti teman kerja yang ramah.",
-            "jarvis": "Tone: formal British, elegant and composed. Speak in English like a gentleman's valet.",
-        }
-        personality_line = personality_instructions.get(
-            body.personality, personality_instructions["professional"]
-        )
-
-        system_prompt = (
-            f"Kamu adalah {agent}, asisten AI yang cerdas dan natural.\n\n"
-            "TUGASMU: Rangkum respons berikut menjadi kalimat lisan SINGKAT "
-            f"(maksimal 2 kalimat, maksimal {body.max_words} kata) "
-            "yang akan diucapkan oleh text-to-speech.\n\n"
-            "ATURAN:\n"
-            '1. Bicara sebagai orang pertama ("Saya sudah...", "Ini hasilnya...")\n'
-            "2. JANGAN sebut simbol markdown, tabel, atau format teknis\n"
-            "3. JANGAN ulangi seluruh isi \u2014 sampaikan INTI dan KESIMPULAN saja\n"
-            "4. Gunakan bahasa yang sama dengan respons asli (Indonesia/Inggris)\n"
-            "5. Jika respons berisi daftar/perbandingan \u2192 sebutkan rekomendasi utama saja\n"
-            "6. Jika respons berisi konfirmasi aksi \u2192 konfirmasi singkat apa yang sudah dilakukan\n"
-            "7. Jika respons berisi error \u2192 jelaskan masalah dan solusi singkat\n"
-            f"8. {personality_line}\n\n"
-            "KONTEKS EMOSIONAL (pilih otomatis berdasarkan isi):\n"
-            "- Jika respons berisi keberhasilan/konfirmasi \u2192 nada percaya diri dan positif\n"
-            "- Jika respons berisi error/warning \u2192 nada serius dan solutif\n"
-            "- Jika respons berisi pertanyaan balik \u2192 nada sopan dan mengundang\n"
-            "- Jika respons berisi salam/greeting \u2192 nada hangat dan ramah\n"
-        )
-
-        summary_text = ""
-        try:
-            secrets = config.load_secrets()
-            if not secrets.nvidia_api_key:
-                raise ValueError("no API key")
-            settings = config.load_settings()
-            client = AsyncOpenAI(
-                base_url=settings.nvidia_base_url,
-                api_key=secrets.nvidia_api_key,
-                timeout=15,
-            )
-            resp = await client.chat.completions.create(
-                model=settings.chat_model or settings.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": body.text},
-                ],
-                temperature=settings.chat_temperature,
-                max_tokens=120,
-            )
-            summary_text = (resp.choices[0].message.content or "").strip()
-        except Exception:
-            # Fallback: first 200 chars, stripped of markdown
-            pass
-
-        if not summary_text:
-            # Fallback to simple truncation
-            fallback = body.text
-            fallback = re.sub(r"```[\s\S]*?```", " ", fallback)
-            fallback = re.sub(r"`[^`]+`", "", fallback)
-            fallback = re.sub(r"#{1,6}\s*", "", fallback)
-            fallback = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", fallback)
-            fallback = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "", fallback)
-            fallback = re.sub(r"\s+", " ", fallback).strip()
-            summary_text = fallback[:200] if fallback else "Tidak ada yang bisa dirangkum."
-
-        # Synthesise with edge-tts
-        try:
-            communicate = edge_tts.Communicate(summary_text, body.voice)
-            mp3_bytes = b""
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    mp3_bytes += chunk["data"]
-            if not mp3_bytes:
-                return Response(status_code=204)
-            return Response(content=mp3_bytes, media_type="audio/mpeg")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
 
     return app

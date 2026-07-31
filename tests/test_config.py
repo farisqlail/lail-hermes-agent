@@ -137,3 +137,21 @@ def test_stt_language_rejects_non_language_tokens():
     for bad in ["indonesian", "id-ID", "i d", "id1"]:
         with pytest.raises(ValidationError):
             config.Settings(stt_language=bad)
+
+
+def test_tts_defaults():
+    s = config.Settings()
+    assert s.tts_enabled is False
+    assert s.tts_voice == "id-ID-ArdiNeural"
+    assert s.tts_mode == "smart"
+    assert s.tts_max_words == 40
+    assert s.tts_greeting is True
+    assert s.tts_task_notify is False
+    assert s.tts_personality == "professional"
+
+def test_tts_voice_validation():
+    s = config.Settings(tts_voice="en-US-JennyNeural")
+    assert s.tts_voice == "en-US-JennyNeural"
+
+    with pytest.raises(ValidationError):
+        config.Settings(tts_voice="invalid; voice")

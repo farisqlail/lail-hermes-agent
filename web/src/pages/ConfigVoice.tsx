@@ -9,30 +9,24 @@ import {
   TTS_VOICES_FALLBACK,
   TtsMode,
   TtsPersonality,
-  loadTtsEnabled,
-  loadTtsVoice,
-  loadTtsMode,
-  loadTtsMaxWords,
-  loadTtsGreeting,
-  loadTtsTaskNotify,
-  loadTtsPersonality,
+  loadTtsSettings,
   saveTtsSettings,
-  saveSmartTtsSettings,
+  ttsRequest,
 } from '../tts';
 
 export function ConfigVoice() {
   const { toast } = useToast();
 
-  const [ttsEnabled, setTtsEnabled] = useState<boolean>(loadTtsEnabled);
-  const [ttsVoice, setTtsVoice] = useState<string>(loadTtsVoice);
+  const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
+  const [ttsVoice, setTtsVoice] = useState<string>('id-ID-ArdiNeural');
   const [voices, setVoices] = useState<TtsVoice[]>(TTS_VOICES_FALLBACK);
 
   // Smart TTS settings
-  const [ttsMode, setTtsMode] = useState<TtsMode>(loadTtsMode);
-  const [maxWords, setMaxWords] = useState<number>(loadTtsMaxWords);
-  const [greeting, setGreeting] = useState<boolean>(loadTtsGreeting);
-  const [taskNotify, setTaskNotify] = useState<boolean>(loadTtsTaskNotify);
-  const [personality, setPersonality] = useState<TtsPersonality>(loadTtsPersonality);
+  const [ttsMode, setTtsMode] = useState<TtsMode>('smart');
+  const [maxWords, setMaxWords] = useState<number>(40);
+  const [greeting, setGreeting] = useState<boolean>(true);
+  const [taskNotify, setTaskNotify] = useState<boolean>(false);
+  const [personality, setPersonality] = useState<TtsPersonality>('professional');
 
   const [saving, setSaving] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
@@ -48,10 +42,25 @@ export function ConfigVoice() {
     fetchSttStatus()
       .then((s) => {
         setSttStatus(s);
-        setSttEnabled(s.enabled);
-        setSttLanguage(s.language);
       })
       .catch(() => setSttStatus(null));
+
+    // Load TTS settings from server
+    loadTtsSettings().then((s) => {
+      setTtsEnabled(s.tts_enabled);
+      setTtsVoice(s.tts_voice);
+      setTtsMode(s.tts_mode);
+      setMaxWords(s.tts_max_words);
+      setGreeting(s.tts_greeting);
+      setTaskNotify(s.tts_task_notify);
+      setPersonality(s.tts_personality);
+    }).catch(() => {});
+
+    // Load STT settings from server
+    api.getSettings().then((s) => {
+      setSttEnabled(s.stt_enabled);
+      setSttLanguage(s.stt_language);
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -69,8 +78,15 @@ export function ConfigVoice() {
     e.preventDefault();
     setSaving(true);
     try {
-      saveTtsSettings(ttsEnabled, ttsVoice);
-      saveSmartTtsSettings(ttsMode, maxWords, greeting, taskNotify, personality);
+      await saveTtsSettings({
+        tts_enabled: ttsEnabled,
+        tts_voice: ttsVoice,
+        tts_mode: ttsMode,
+        tts_max_words: maxWords,
+        tts_greeting: greeting,
+        tts_task_notify: taskNotify,
+        tts_personality: personality,
+      });
       const current = await api.getSettings();
       await api.saveSettings({
         ...current,
@@ -88,15 +104,13 @@ export function ConfigVoice() {
   const testVoice = async () => {
     setTestLoading(true);
     try {
-      const endpoint = ttsMode === 'smart' ? '/api/tts/smart' : '/api/tts';
-      const payload: Record<string, unknown> = {
-        text: 'Halo! Saya sudah siap membantu Anda hari ini. Ada yang bisa saya kerjakan?',
+      const { endpoint, payload } = ttsRequest(ttsMode, 'summary', {
         voice: ttsVoice,
-      };
-      if (ttsMode === 'smart') {
-        payload.max_words = maxWords;
-        payload.personality = personality;
-      }
+        agentName: '',
+        maxWords,
+        personality,
+        text: 'Halo! Saya sudah siap membantu Anda hari ini. Ada yang bisa saya kerjakan?',
+      });
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

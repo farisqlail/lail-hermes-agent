@@ -568,7 +568,7 @@ async def test_tasks_events_sse_streams_live_updates(hermes_home):
     store = Store(paths.db_path()); store.init_schema()
 
     app = create_app(store)
-    route = next(r for r in app.routes if r.path == "/api/tasks/events")
+    route = next(r for r in app.routes if getattr(r, "path", None) == "/api/tasks/events")
     handler = route.endpoint
 
     class FakeRequest:
@@ -676,53 +676,7 @@ def test_static_serving_bundle_missing(hermes_home, monkeypatch):
     assert "text/html" in r.headers.get("content-type", "")
 
 
-def _install_fake_edge_tts(monkeypatch, recorder):
-    """Stub edge_tts so the TTS route never touches the network."""
-    import sys, types
 
-    class FakeCommunicate:
-        def __init__(self, text, voice):
-            recorder["text"] = text
-            recorder["voice"] = voice
-
-        async def stream(self):
-            yield {"type": "WordBoundary"}
-            yield {"type": "audio", "data": b"ID3fake"}
-
-    module = types.ModuleType("edge_tts")
-    module.Communicate = FakeCommunicate
-    monkeypatch.setitem(sys.modules, "edge_tts", module)
-
-def test_tts_post_reads_json_body(hermes_home, monkeypatch):
-    paths.ensure_dirs()
-    store = Store(paths.db_path()); store.init_schema()
-    recorder = {}
-    _install_fake_edge_tts(monkeypatch, recorder)
-    client = TestClient(create_app(store))
-
-    r = client.post("/api/tts", json={"text": "**Halo** tuan", "voice": "id-ID-ArdiNeural"})
-    assert r.status_code == 200, r.text
-    assert r.headers["content-type"] == "audio/mpeg"
-    assert r.content == b"ID3fake"
-    # markdown emphasis is stripped before synthesis
-    assert recorder["text"] == "Halo tuan"
-    assert recorder["voice"] == "id-ID-ArdiNeural"
-
-def test_tts_post_defaults_voice_and_skips_empty_text(hermes_home, monkeypatch):
-    paths.ensure_dirs()
-    store = Store(paths.db_path()); store.init_schema()
-    recorder = {}
-    _install_fake_edge_tts(monkeypatch, recorder)
-    client = TestClient(create_app(store))
-
-    r = client.post("/api/tts", json={"text": "hello"})
-    assert r.status_code == 200
-    # an omitted voice falls back to Indonesian, not to an English voice
-    assert recorder["voice"] == "id-ID-ArdiNeural"
-
-    # text that cleans down to nothing yields No Content, not audio
-    r = client.post("/api/tts", json={"text": "---\n**`  `**"})
-    assert r.status_code == 204
 
 def test_session_rename_reads_json_body(hermes_home):
     paths.ensure_dirs()
@@ -735,23 +689,7 @@ def test_session_rename_reads_json_body(hermes_home):
     titles = [s["title"] for s in client.get("/api/sessions").json()]
     assert "Rencana rilis" in titles
 
-def test_tts_voices_list_is_indonesian_first(hermes_home):
-    paths.ensure_dirs()
-    store = Store(paths.db_path()); store.init_schema()
-    client = TestClient(create_app(store))
 
-    r = client.get("/api/tts/voices")
-    assert r.status_code == 200
-    voices = r.json()
-    ids = [v["id"] for v in voices]
-    # the two native id-ID neural voices lead the list, and the first one is the
-    # server-side default so an omitted voice never lands on an English one
-    assert ids[:2] == ["id-ID-ArdiNeural", "id-ID-GadisNeural"]
-    from hermes.web_ui import TTS_VOICE_DEFAULT
-    assert TTS_VOICE_DEFAULT == ids[0]
-    # Javanese/Sundanese/Malay are different languages — they must not be offered
-    assert not any(v["id"].startswith(("jv-", "su-", "ms-")) for v in voices)
-    assert all(v["name"] for v in voices)
 
 async def test_web_task_awaiting_confirm_is_listed_and_runnable(hermes_home):
     """The chat pane draws its Run button from a task in GET /api/tasks whose
@@ -929,3 +867,20 @@ def test_stt_returns_500_when_the_model_fails(hermes_home, monkeypatch):
     r = client.post("/api/stt", content=b"fake-webm")
     assert r.status_code == 500
     assert "ctranslate2 blew up" in r.json()["detail"]
+
+
+def test_tts_smart_route_registered_once(hermes_home):
+    """A duplicate route definition is dead code: Starlette matches in
+    registration order, so the second copy never runs and silently rots."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    app = create_app(store)
+    smart = []
+    for r in app.routes:
+        if getattr(r, "path", None) == "/api/tts/smart":
+            smart.append(r)
+        elif type(r).__name__ == "_IncludedRouter":
+            for ir in r.original_router.routes:
+                if getattr(ir, "path", None) == "/api/tts/smart":
+                    smart.append(ir)
+    assert len(smart) == 1

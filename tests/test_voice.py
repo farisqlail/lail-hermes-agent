@@ -1,0 +1,174 @@
+from hermes import voice
+
+def test_clean_for_speech_strips_every_markdown_form():
+    # each of these used to be handled by only one of the two cleaners
+    assert voice.clean_for_speech("**Halo** tuan") == "Halo tuan"
+    assert voice.clean_for_speech("| a | b |\n| - | - |") == ""
+    assert voice.clean_for_speech("```py\nprint(1)\n```") == ""
+    assert voice.clean_for_speech("lihat [dokumen](http://x/y)") == "lihat dokumen"
+    assert voice.clean_for_speech("# Judul\n> kutipan") == "Judul\nkutipan"
+    assert voice.clean_for_speech("---\n**`  `**") == ""
+
+def test_voices_list_is_indonesian_first():
+    ids = [v["id"] for v in voice.TTS_VOICES]
+    # the two native id-ID neural voices lead, and the first is the default so
+    # an omitted voice never lands on an English one reading Bahasa
+    assert ids[:2] == ["id-ID-ArdiNeural", "id-ID-GadisNeural"]
+    assert voice.TTS_VOICE_DEFAULT == ids[0]
+    # Javanese/Sundanese/Malay are different languages — never offered
+    assert not any(i.startswith(("jv-", "su-", "ms-")) for i in ids)
+
+
+from fastapi.testclient import TestClient
+from hermes.web_ui import create_app
+from hermes.session_store import Store
+from hermes import paths
+
+def install_fake_edge_tts(monkeypatch, recorder):
+    """Stub edge_tts so the TTS routes never touch the network.
+
+    Patches the name bound in hermes.voice, not sys.modules: voice.py imports
+    edge_tts at module scope, so a sys.modules swap would come too late.
+    """
+    class FakeCommunicate:
+        def __init__(self, text, voice):
+            recorder["text"] = text
+            recorder["voice"] = voice
+
+        async def stream(self):
+            yield {"type": "WordBoundary"}
+            yield {"type": "audio", "data": b"ID3fake"}
+
+    class FakeEdgeTts:
+        Communicate = FakeCommunicate
+
+    monkeypatch.setattr(voice, "edge_tts", FakeEdgeTts)
+
+def _client(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    return TestClient(create_app(store))
+
+def test_tts_post_reads_json_body(hermes_home, monkeypatch):
+    recorder = {}
+    install_fake_edge_tts(monkeypatch, recorder)
+    r = _client(hermes_home).post(
+        "/api/tts", json={"text": "**Halo** tuan", "voice": "id-ID-ArdiNeural"})
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "audio/mpeg"
+    assert r.content == b"ID3fake"
+    assert recorder["text"] == "Halo tuan"
+    assert recorder["voice"] == "id-ID-ArdiNeural"
+
+def test_tts_post_defaults_voice_and_skips_empty_text(hermes_home, monkeypatch):
+    recorder = {}
+    install_fake_edge_tts(monkeypatch, recorder)
+    client = _client(hermes_home)
+
+    r = client.post("/api/tts", json={"text": "hello"})
+    assert r.status_code == 200
+    # an omitted voice falls back to Indonesian, not to an English voice
+    assert recorder["voice"] == "id-ID-ArdiNeural"
+
+    # text that cleans down to nothing yields No Content, not audio
+    r = client.post("/api/tts", json={"text": "---\n**`  `**"})
+    assert r.status_code == 204
+
+def test_tts_voices_endpoint_serves_the_module_list(hermes_home):
+    r = _client(hermes_home).get("/api/tts/voices")
+    assert r.status_code == 200
+    assert [v["id"] for v in r.json()] == [v["id"] for v in voice.TTS_VOICES]
+    assert all(v["name"] for v in r.json())
+
+
+from datetime import datetime
+
+def test_time_of_day_buckets():
+    assert voice.time_of_day(datetime(2026, 7, 31, 8, 0)) == "pagi"
+    assert voice.time_of_day(datetime(2026, 7, 31, 13, 0)) == "siang"
+    assert voice.time_of_day(datetime(2026, 7, 31, 17, 0)) == "sore"
+    assert voice.time_of_day(datetime(2026, 7, 31, 21, 0)) == "malam"
+
+def test_greeting_content_carries_no_instructions():
+    body = voice.SmartTtsRequest(intent="greeting")
+    content = voice.build_user_content(body, now=datetime(2026, 7, 31, 9, 30))
+    # the content slot is data only — the verbs live in the system prompt
+    assert "09:30" in content
+    assert "pagi" in content
+    assert "Sapa" not in content
+    assert "Rangkum" not in content
+
+def test_notify_content_carries_task_data_only():
+    body = voice.SmartTtsRequest(intent="notify", task_text="jalankan pengujian",
+                                 task_status="failed")
+    content = voice.build_user_content(body)
+    assert "jalankan pengujian" in content
+    assert "gagal" in content
+    assert "Ringkas" not in content
+
+def test_system_prompt_task_line_differs_per_intent():
+    args = ("Lail Agent", 40, "professional")
+    summary = voice.build_system_prompt("summary", *args)
+    greeting = voice.build_system_prompt("greeting", *args)
+    notify = voice.build_system_prompt("notify", *args)
+    assert "Rangkum" in summary and "Sapa" not in summary
+    assert "Sapa" in greeting and "Rangkum" not in greeting
+    assert "Umumkan" in notify
+    # personality and identity are shared by all three
+    for p in (summary, greeting, notify):
+        assert "Lail Agent" in p
+        assert "asisten eksekutif" in p
+
+def test_fallback_is_speakable_per_intent():
+    now = datetime(2026, 7, 31, 9, 30)
+    greet = voice.fallback_text(voice.SmartTtsRequest(intent="greeting"),
+                                "Lail Agent", now=now)
+    # never the instruction text, and never the generic "nothing to summarise"
+    assert "Lail Agent" in greet and "pagi" in greet
+    assert "Sapa" not in greet
+
+    notify = voice.fallback_text(
+        voice.SmartTtsRequest(intent="notify", task_text="build rilis",
+                              task_status="done"), "Lail Agent")
+    assert "build rilis" in notify and "berhasil" in notify
+
+    summ = voice.fallback_text(
+        voice.SmartTtsRequest(text="# Judul\nisi panjang"), "Lail Agent")
+    assert summ.startswith("Judul")
+
+    empty = voice.fallback_text(voice.SmartTtsRequest(text=""), "Lail Agent")
+    assert empty == "Tidak ada yang bisa dirangkum."
+
+def test_smart_rejects_unknown_intent(hermes_home):
+    r = _client(hermes_home).post("/api/tts/smart",
+                                  json={"text": "x", "intent": "sing"})
+    assert r.status_code == 422
+
+def test_smart_greeting_speaks_fallback_without_api_key(hermes_home, monkeypatch):
+    """No API key is the common first-run state; the operator must still be
+    greeted, and must never hear the prompt we would have sent the model."""
+    recorder = {}
+    install_fake_edge_tts(monkeypatch, recorder)
+    r = _client(hermes_home).post("/api/tts/smart", json={"intent": "greeting"})
+    assert r.status_code == 200, r.text
+    assert "Lail Agent" in recorder["text"]
+    assert "Sapa pengguna" not in recorder["text"]
+
+
+def test_smart_summary_speaks_fallback_without_api_key(hermes_home, monkeypatch):
+    recorder = {}
+    install_fake_edge_tts(monkeypatch, recorder)
+    r = _client(hermes_home).post("/api/tts/smart", json={"intent": "summary", "text": "# Judul\nIsi teks"})
+    assert r.status_code == 200, r.text
+    assert recorder["text"] == "Judul\nIsi teks"
+
+
+def test_smart_notify_speaks_fallback_without_api_key(hermes_home, monkeypatch):
+    recorder = {}
+    install_fake_edge_tts(monkeypatch, recorder)
+    r = _client(hermes_home).post(
+        "/api/tts/smart",
+        json={"intent": "notify", "task_text": "run test suite", "task_status": "done"}
+    )
+    assert r.status_code == 200, r.text
+    assert recorder["text"] == "run test suite sudah berhasil."

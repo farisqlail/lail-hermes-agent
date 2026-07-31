@@ -6,7 +6,11 @@ import { Markdown } from '../components/Markdown';
 import { Button } from '../components/Button';
 import { useToast } from '../components/Toast';
 import { useTasksContext } from '../api/events';
-import { loadTtsEnabled, loadTtsVoice, loadTtsMode, loadTtsMaxWords, loadTtsGreeting, loadTtsTaskNotify, loadTtsPersonality } from '../tts';
+import {
+  loadTtsSettings, TtsMode, TtsPersonality,
+  ttsRequest, TtsIntent, TtsRequestOptions,
+  hasGreeted, markGreeted,
+} from '../tts';
 import { VoiceRecorder, transcribeBlob } from '../stt';
 
 interface Message {
@@ -166,15 +170,13 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [agentName, setAgentName] = useState('Lail Agent');
 
-  const [ttsEnabled] = useState<boolean>(loadTtsEnabled);
-  const [ttsVoice] = useState<string>(loadTtsVoice);
-  const [ttsMode] = useState(loadTtsMode);
-  const [ttsMaxWords] = useState(loadTtsMaxWords);
-  const [ttsGreeting] = useState(loadTtsGreeting);
-  const [ttsTaskNotify] = useState(loadTtsTaskNotify);
-  const [ttsPersonality] = useState(loadTtsPersonality);
-  const greetingFiredRef = useRef(false);
-
+  const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
+  const [ttsVoice, setTtsVoice] = useState<string>('id-ID-ArdiNeural');
+  const [ttsMode, setTtsMode] = useState<TtsMode>('smart');
+  const [ttsMaxWords, setTtsMaxWords] = useState<number>(40);
+  const [ttsGreeting, setTtsGreeting] = useState<boolean>(true);
+  const [ttsTaskNotify, setTtsTaskNotify] = useState<boolean>(false);
+  const [ttsPersonality, setTtsPersonality] = useState<TtsPersonality>('professional');
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
@@ -184,6 +186,16 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
       }
     }).catch(() => {});
 
+    loadTtsSettings().then(s => {
+      setTtsEnabled(s.tts_enabled);
+      setTtsVoice(s.tts_voice);
+      setTtsMode(s.tts_mode);
+      setTtsMaxWords(s.tts_max_words);
+      setTtsGreeting(s.tts_greeting);
+      setTtsTaskNotify(s.tts_task_notify);
+      setTtsPersonality(s.tts_personality);
+    }).catch(() => {});
+
     return () => {
       if (audioRef.current) {
         audioRef.current.pause();
@@ -191,18 +203,16 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     };
   }, []);
 
-  const speakText = async (text: string) => {
+  const speak = async (intent: TtsIntent, opts: Partial<TtsRequestOptions> = {}) => {
     if (!ttsEnabled) return;
     try {
-      const useSmartMode = ttsMode === 'smart';
-      const endpoint = useSmartMode ? '/api/tts/smart' : '/api/tts';
-      const payload: Record<string, unknown> = { text, voice: ttsVoice };
-      if (useSmartMode) {
-        payload.agent_name = agentName;
-        payload.max_words = ttsMaxWords;
-        payload.personality = ttsPersonality;
-      }
-
+      const { endpoint, payload } = ttsRequest(ttsMode, intent, {
+        voice: ttsVoice,
+        agentName,
+        maxWords: ttsMaxWords,
+        personality: ttsPersonality,
+        ...opts,
+      });
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -212,13 +222,13 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
       if (!res.ok) throw new Error('Gagal memuat audio TTS');
       const blob = await res.blob();
       const audioUrl = URL.createObjectURL(blob);
-      
+
       let audio = audioRef.current;
       if (!audio) {
         audio = new Audio();
         audioRef.current = audio;
       }
-      
+
       audio.pause();
       audio.src = audioUrl;
       audio.onended = () => {
@@ -235,20 +245,13 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     if (
       !ttsEnabled ||
       !ttsGreeting ||
-      greetingFiredRef.current ||
+      hasGreeted(sessionId || null) ||
       loadingHistory ||
       messages.length > 0
     ) return;
-    greetingFiredRef.current = true;
-    const hour = new Date().getHours();
-    const timeOfDay = hour < 11 ? 'pagi' : hour < 15 ? 'siang' : hour < 18 ? 'sore' : 'malam';
-    const now = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-    const greetingPrompt =
-      `Sapa pengguna dengan hangat. Perkenalkan diri sebagai ${agentName}. ` +
-      `Tanyakan apa yang bisa dibantu hari ini. Maksimal 1 kalimat. ` +
-      `Waktu sekarang: ${now} (${timeOfDay}).`;
-    speakText(greetingPrompt);
-  }, [ttsEnabled, ttsGreeting, loadingHistory, messages.length, agentName]);
+    markGreeted(sessionId || null);
+    speak('greeting');
+  }, [ttsEnabled, ttsGreeting, loadingHistory, messages.length, sessionId]);
 
   // ── Voice notification on task completion ──
   const prevTasksRef = useRef<Map<string, string>>(new Map());
@@ -258,10 +261,7 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     for (const t of tasks) {
       const oldStatus = prev.get(t.task_id);
       if (oldStatus && oldStatus !== t.status && (t.status === 'done' || t.status === 'failed')) {
-        const statusLabel = t.status === 'done' ? 'berhasil' : 'gagal';
-        const notifyText =
-          `Task "${t.text}" sudah selesai dengan status: ${statusLabel}. Ringkas jadi 1 kalimat.`;
-        speakText(notifyText);
+        speak('notify', { taskText: t.text, taskStatus: t.status });
         break; // one notification at a time
       }
     }
@@ -481,7 +481,7 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
         usage: accumulatedUsage || undefined,
       };
       setMessages((prev) => [...prev, assistantMsg]);
-      speakText(accumulatedText);
+      speak('summary', { text: accumulatedText });
       if (onRefreshSessions) {
         onRefreshSessions();
       }

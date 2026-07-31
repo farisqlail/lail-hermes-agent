@@ -32,6 +32,13 @@ export interface Settings {
   timeout_test_s: number;
   stt_enabled: boolean;
   stt_language: string;
+  tts_enabled: boolean;
+  tts_voice: string;
+  tts_mode: 'smart' | 'verbatim';
+  tts_max_words: number;
+  tts_greeting: boolean;
+  tts_task_notify: boolean;
+  tts_personality: 'professional' | 'friendly' | 'jarvis';
   mcp_servers: McpServer[];
 }
 

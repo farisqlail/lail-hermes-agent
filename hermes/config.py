@@ -62,6 +62,13 @@ class Settings(BaseModel):
     mcp_servers: list[McpServer] = Field(default_factory=list)
     stt_enabled: bool = True
     stt_language: str = "id"
+    tts_enabled: bool = False
+    tts_voice: str = "id-ID-ArdiNeural"
+    tts_mode: Literal["smart", "verbatim"] = "smart"
+    tts_max_words: int = 40
+    tts_greeting: bool = True
+    tts_task_notify: bool = False
+    tts_personality: Literal["professional", "friendly", "jarvis"] = "professional"
 
     @field_validator("claude_model")
     @classmethod
@@ -98,6 +105,17 @@ class Settings(BaseModel):
                 "stt language must be a two-letter ISO-639-1 code, e.g. 'id' "
                 "or 'en', or empty to auto-detect")
         return v.lower()
+
+    @field_validator("tts_voice")
+    @classmethod
+    def _tts_voice_shape(cls, v: str) -> str:
+        # edge-tts voice id, e.g. "id-ID-ArdiNeural". Must contain letters,
+        # digits, and hyphens only — no shell characters or path components.
+        if v and not re.fullmatch(r"[A-Za-z0-9-]+", v):
+            raise ValueError(
+                "tts voice must contain letters, digits, and hyphens only, "
+                "e.g. 'id-ID-ArdiNeural'")
+        return v
 
     @field_validator("projects")
     @classmethod
