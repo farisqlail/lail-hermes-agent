@@ -6,7 +6,7 @@ import { Markdown } from '../components/Markdown';
 import { Button } from '../components/Button';
 import { useToast } from '../components/Toast';
 import { useTasksContext } from '../api/events';
-import { loadTtsEnabled, loadTtsVoice } from '../tts';
+import { loadTtsEnabled, loadTtsVoice, loadTtsMode, loadTtsMaxWords, loadTtsGreeting, loadTtsTaskNotify, loadTtsPersonality } from '../tts';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -165,10 +165,14 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [agentName, setAgentName] = useState('Lail Agent');
 
-  // Read-only here: the Voice Output config tab owns these settings. The
-  // Dashboard remounts on navigation, so it picks up a save without a listener.
   const [ttsEnabled] = useState<boolean>(loadTtsEnabled);
   const [ttsVoice] = useState<string>(loadTtsVoice);
+  const [ttsMode] = useState(loadTtsMode);
+  const [ttsMaxWords] = useState(loadTtsMaxWords);
+  const [ttsGreeting] = useState(loadTtsGreeting);
+  const [ttsTaskNotify] = useState(loadTtsTaskNotify);
+  const [ttsPersonality] = useState(loadTtsPersonality);
+  const greetingFiredRef = useRef(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -189,10 +193,19 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
   const speakText = async (text: string) => {
     if (!ttsEnabled) return;
     try {
-      const res = await fetch('/api/tts', {
+      const useSmartMode = ttsMode === 'smart';
+      const endpoint = useSmartMode ? '/api/tts/smart' : '/api/tts';
+      const payload: Record<string, unknown> = { text, voice: ttsVoice };
+      if (useSmartMode) {
+        payload.agent_name = agentName;
+        payload.max_words = ttsMaxWords;
+        payload.personality = ttsPersonality;
+      }
+
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: ttsVoice }),
+        body: JSON.stringify(payload),
       });
       if (res.status === 204) return;
       if (!res.ok) throw new Error('Gagal memuat audio TTS');
@@ -215,6 +228,46 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
       console.warn('Gagal memutar audio TTS:', e);
     }
   };
+
+  // ── Proactive greeting on fresh session ──
+  useEffect(() => {
+    if (
+      !ttsEnabled ||
+      !ttsGreeting ||
+      greetingFiredRef.current ||
+      loadingHistory ||
+      messages.length > 0
+    ) return;
+    greetingFiredRef.current = true;
+    const hour = new Date().getHours();
+    const timeOfDay = hour < 11 ? 'pagi' : hour < 15 ? 'siang' : hour < 18 ? 'sore' : 'malam';
+    const now = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+    const greetingPrompt =
+      `Sapa pengguna dengan hangat. Perkenalkan diri sebagai ${agentName}. ` +
+      `Tanyakan apa yang bisa dibantu hari ini. Maksimal 1 kalimat. ` +
+      `Waktu sekarang: ${now} (${timeOfDay}).`;
+    speakText(greetingPrompt);
+  }, [ttsEnabled, ttsGreeting, loadingHistory, messages.length, agentName]);
+
+  // ── Voice notification on task completion ──
+  const prevTasksRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    if (!ttsEnabled || !ttsTaskNotify) return;
+    const prev = prevTasksRef.current;
+    for (const t of tasks) {
+      const oldStatus = prev.get(t.task_id);
+      if (oldStatus && oldStatus !== t.status && (t.status === 'done' || t.status === 'failed')) {
+        const statusLabel = t.status === 'done' ? 'berhasil' : 'gagal';
+        const notifyText =
+          `Task "${t.text}" sudah selesai dengan status: ${statusLabel}. Ringkas jadi 1 kalimat.`;
+        speakText(notifyText);
+        break; // one notification at a time
+      }
+    }
+    const next = new Map<string, string>();
+    for (const t of tasks) next.set(t.task_id, t.status);
+    prevTasksRef.current = next;
+  }, [tasks, ttsEnabled, ttsTaskNotify]);
   
   const [inputText, setInputText] = useState('');
   const [streaming, setStreaming] = useState(false);

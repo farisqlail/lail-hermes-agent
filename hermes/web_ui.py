@@ -47,6 +47,13 @@ class TtsRequest(BaseModel):
     text: str
     voice: str = TTS_VOICE_DEFAULT
 
+class SmartTtsRequest(BaseModel):
+    text: str
+    voice: str = TTS_VOICE_DEFAULT
+    agent_name: str = ""
+    max_words: int = 40
+    personality: str = "professional"  # professional | friendly | jarvis
+
 # The web operator holds one continuous conversation. Localhost, single user,
 # so a fixed id is enough; a per-browser session id is only needed once the
 # dashboard is multi-user.
@@ -706,6 +713,190 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
                     mp3_bytes += chunk["data"]
+            return Response(content=mp3_bytes, media_type="audio/mpeg")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/tts/smart")
+    async def post_tts_smart(body: SmartTtsRequest):
+        """Voice summarizer: condenses a full LLM response into 1-3 spoken
+        sentences via a second LLM call, then synthesises the summary with
+        edge-tts.  Falls back to the verbatim /api/tts path on any LLM
+        failure so the operator always hears *something*."""
+        import edge_tts
+        from openai import AsyncOpenAI
+        from fastapi import Response
+
+        agent = body.agent_name or config.load_settings().agent_name
+
+        # ── personality presets ──
+        personality_instructions = {
+            "professional": "Nada bicara: formal, ringkas, to-the-point. Seperti asisten eksekutif.",
+            "friendly": "Nada bicara: santai, hangat, supportive. Seperti teman kerja yang ramah.",
+            "jarvis": "Tone: formal British, elegant and composed. Speak in English like a gentleman's valet.",
+        }
+        personality_line = personality_instructions.get(
+            body.personality, personality_instructions["professional"]
+        )
+
+        system_prompt = (
+            f"Kamu adalah {agent}, asisten AI yang cerdas dan natural.\n\n"
+            "TUGASMU: Rangkum respons berikut menjadi kalimat lisan SINGKAT "
+            f"(maksimal 2 kalimat, maksimal {body.max_words} kata) "
+            "yang akan diucapkan oleh text-to-speech.\n\n"
+            "ATURAN:\n"
+            '1. Bicara sebagai orang pertama ("Saya sudah...", "Ini hasilnya...")\n'
+            "2. JANGAN sebut simbol markdown, tabel, atau format teknis\n"
+            "3. JANGAN ulangi seluruh isi — sampaikan INTI dan KESIMPULAN saja\n"
+            "4. Gunakan bahasa yang sama dengan respons asli (Indonesia/Inggris)\n"
+            "5. Jika respons berisi daftar/perbandingan → sebutkan rekomendasi utama saja\n"
+            "6. Jika respons berisi konfirmasi aksi → konfirmasi singkat apa yang sudah dilakukan\n"
+            "7. Jika respons berisi error → jelaskan masalah dan solusi singkat\n"
+            f"8. {personality_line}\n\n"
+            "KONTEKS EMOSIONAL (pilih otomatis berdasarkan isi):\n"
+            "- Jika respons berisi keberhasilan/konfirmasi → nada percaya diri dan positif\n"
+            "- Jika respons berisi error/warning → nada serius dan solutif\n"
+            "- Jika respons berisi pertanyaan balik → nada sopan dan mengundang\n"
+            "- Jika respons berisi salam/greeting → nada hangat dan ramah\n"
+        )
+
+        summary_text = ""
+        try:
+            secrets = config.load_secrets()
+            if not secrets.nvidia_api_key:
+                raise ValueError("no API key")
+            settings = config.load_settings()
+            client = AsyncOpenAI(
+                base_url=settings.nvidia_base_url,
+                api_key=secrets.nvidia_api_key,
+                timeout=15,
+            )
+            resp = await client.chat.completions.create(
+                model=settings.chat_model or settings.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": body.text},
+                ],
+                temperature=settings.chat_temperature,
+                max_tokens=120,
+            )
+            summary_text = (resp.choices[0].message.content or "").strip()
+        except Exception:
+            # Fallback: first 200 chars, stripped of markdown
+            pass
+
+        if not summary_text:
+            # Fallback to simple truncation
+            fallback = body.text
+            fallback = re.sub(r"```[\s\S]*?```", " ", fallback)
+            fallback = re.sub(r"`[^`]+`", "", fallback)
+            fallback = re.sub(r"#{1,6}\s*", "", fallback)
+            fallback = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", fallback)
+            fallback = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "", fallback)
+            fallback = re.sub(r"\s+", " ", fallback).strip()
+            summary_text = fallback[:200] if fallback else "Tidak ada yang bisa dirangkum."
+
+        # Synthesise with edge-tts
+        try:
+            communicate = edge_tts.Communicate(summary_text, body.voice)
+            mp3_bytes = b""
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    mp3_bytes += chunk["data"]
+            if not mp3_bytes:
+                return Response(status_code=204)
+            return Response(content=mp3_bytes, media_type="audio/mpeg")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/tts/smart")
+    async def post_tts_smart(body: SmartTtsRequest):
+        """Voice summarizer: condenses a full LLM response into 1-3 spoken
+        sentences via a second LLM call, then synthesises the summary with
+        edge-tts.  Falls back to the verbatim /api/tts path on any LLM
+        failure so the operator always hears *something*."""
+        import edge_tts
+        from openai import AsyncOpenAI
+        from fastapi import Response
+
+        agent = body.agent_name or config.load_settings().agent_name
+
+        # ── personality presets ──
+        personality_instructions = {
+            "professional": "Nada bicara: formal, ringkas, to-the-point. Seperti asisten eksekutif.",
+            "friendly": "Nada bicara: santai, hangat, supportive. Seperti teman kerja yang ramah.",
+            "jarvis": "Tone: formal British, elegant and composed. Speak in English like a gentleman's valet.",
+        }
+        personality_line = personality_instructions.get(
+            body.personality, personality_instructions["professional"]
+        )
+
+        system_prompt = (
+            f"Kamu adalah {agent}, asisten AI yang cerdas dan natural.\n\n"
+            "TUGASMU: Rangkum respons berikut menjadi kalimat lisan SINGKAT "
+            f"(maksimal 2 kalimat, maksimal {body.max_words} kata) "
+            "yang akan diucapkan oleh text-to-speech.\n\n"
+            "ATURAN:\n"
+            '1. Bicara sebagai orang pertama ("Saya sudah...", "Ini hasilnya...")\n'
+            "2. JANGAN sebut simbol markdown, tabel, atau format teknis\n"
+            "3. JANGAN ulangi seluruh isi \u2014 sampaikan INTI dan KESIMPULAN saja\n"
+            "4. Gunakan bahasa yang sama dengan respons asli (Indonesia/Inggris)\n"
+            "5. Jika respons berisi daftar/perbandingan \u2192 sebutkan rekomendasi utama saja\n"
+            "6. Jika respons berisi konfirmasi aksi \u2192 konfirmasi singkat apa yang sudah dilakukan\n"
+            "7. Jika respons berisi error \u2192 jelaskan masalah dan solusi singkat\n"
+            f"8. {personality_line}\n\n"
+            "KONTEKS EMOSIONAL (pilih otomatis berdasarkan isi):\n"
+            "- Jika respons berisi keberhasilan/konfirmasi \u2192 nada percaya diri dan positif\n"
+            "- Jika respons berisi error/warning \u2192 nada serius dan solutif\n"
+            "- Jika respons berisi pertanyaan balik \u2192 nada sopan dan mengundang\n"
+            "- Jika respons berisi salam/greeting \u2192 nada hangat dan ramah\n"
+        )
+
+        summary_text = ""
+        try:
+            secrets = config.load_secrets()
+            if not secrets.nvidia_api_key:
+                raise ValueError("no API key")
+            settings = config.load_settings()
+            client = AsyncOpenAI(
+                base_url=settings.nvidia_base_url,
+                api_key=secrets.nvidia_api_key,
+                timeout=15,
+            )
+            resp = await client.chat.completions.create(
+                model=settings.chat_model or settings.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": body.text},
+                ],
+                temperature=settings.chat_temperature,
+                max_tokens=120,
+            )
+            summary_text = (resp.choices[0].message.content or "").strip()
+        except Exception:
+            # Fallback: first 200 chars, stripped of markdown
+            pass
+
+        if not summary_text:
+            # Fallback to simple truncation
+            fallback = body.text
+            fallback = re.sub(r"```[\s\S]*?```", " ", fallback)
+            fallback = re.sub(r"`[^`]+`", "", fallback)
+            fallback = re.sub(r"#{1,6}\s*", "", fallback)
+            fallback = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", fallback)
+            fallback = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "", fallback)
+            fallback = re.sub(r"\s+", " ", fallback).strip()
+            summary_text = fallback[:200] if fallback else "Tidak ada yang bisa dirangkum."
+
+        # Synthesise with edge-tts
+        try:
+            communicate = edge_tts.Communicate(summary_text, body.voice)
+            mp3_bytes = b""
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    mp3_bytes += chunk["data"]
+            if not mp3_bytes:
+                return Response(status_code=204)
             return Response(content=mp3_bytes, media_type="audio/mpeg")
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))

@@ -39,3 +39,47 @@ export function saveTtsSettings(enabled: boolean, voice: string): void {
   localStorage.setItem(ENABLED_KEY, enabled.toString());
   localStorage.setItem(VOICE_KEY, voice);
 }
+
+// ── Smart TTS (Jarvis voice) settings ──
+const MODE_KEY = 'hermes_tts_mode';
+const MAX_WORDS_KEY = 'hermes_tts_max_words';
+const GREETING_KEY = 'hermes_tts_greeting';
+const TASK_NOTIFY_KEY = 'hermes_tts_task_notify';
+const PERSONALITY_KEY = 'hermes_tts_personality';
+
+export type TtsMode = 'smart' | 'verbatim';
+export type TtsPersonality = 'professional' | 'friendly' | 'jarvis';
+
+export function loadTtsMode(): TtsMode {
+  return (localStorage.getItem(MODE_KEY) as TtsMode) || 'smart';
+}
+
+export function loadTtsMaxWords(): number {
+  return parseInt(localStorage.getItem(MAX_WORDS_KEY) || '40', 10);
+}
+
+export function loadTtsGreeting(): boolean {
+  return localStorage.getItem(GREETING_KEY) !== 'false'; // default true
+}
+
+export function loadTtsTaskNotify(): boolean {
+  return localStorage.getItem(TASK_NOTIFY_KEY) === 'true'; // default false
+}
+
+export function loadTtsPersonality(): TtsPersonality {
+  return (localStorage.getItem(PERSONALITY_KEY) as TtsPersonality) || 'professional';
+}
+
+export function saveSmartTtsSettings(
+  mode: TtsMode,
+  maxWords: number,
+  greeting: boolean,
+  taskNotify: boolean,
+  personality: TtsPersonality,
+): void {
+  localStorage.setItem(MODE_KEY, mode);
+  localStorage.setItem(MAX_WORDS_KEY, maxWords.toString());
+  localStorage.setItem(GREETING_KEY, greeting.toString());
+  localStorage.setItem(TASK_NOTIFY_KEY, taskNotify.toString());
+  localStorage.setItem(PERSONALITY_KEY, personality);
+}
