@@ -12,6 +12,11 @@ import {
   loadTtsSettings,
   saveTtsSettings,
   ttsRequest,
+  loadVoiceSettings,
+  saveVoiceSettings,
+  VoiceSettings,
+  VOICE_SETTINGS_DEFAULT,
+  VadSensitivity,
 } from '../tts';
 
 export function ConfigVoice() {
@@ -30,6 +35,8 @@ export function ConfigVoice() {
 
   const [saving, setSaving] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
+  const [voice, setVoice] = useState<VoiceSettings>(VOICE_SETTINGS_DEFAULT);
+
 
   // Voice input lives in server Settings, not localStorage: the model runs on
   // the server, and a wake-word service later will need to read the same
@@ -61,7 +68,11 @@ export function ConfigVoice() {
       setSttEnabled(s.stt_enabled);
       setSttLanguage(s.stt_language);
     }).catch(() => {});
+
+    // Load voice settings from server
+    loadVoiceSettings().then(setVoice).catch(() => {});
   }, []);
+
 
   useEffect(() => {
     fetch('/api/tts/voices')
@@ -87,6 +98,7 @@ export function ConfigVoice() {
         tts_task_notify: taskNotify,
         tts_personality: personality,
       });
+      await saveVoiceSettings(voice);
       const current = await api.getSettings();
       await api.saveSettings({
         ...current,
@@ -320,6 +332,78 @@ export function ConfigVoice() {
               <span>Notifikasi suara saat task selesai</span>
             </label>
           </div>
+        </Field>
+      </section>
+
+      {/* Section 5: Percakapan */}
+      <section style={sectionStyle}>
+        <h3 style={headingStyle}>🗣️ Percakapan</h3>
+
+        <Field
+          label="Sela Otomatis (Barge-in)"
+          helpText="Bicara kapan saja untuk menghentikan asisten yang sedang berbicara. Butuh mikrofon dengan peredam gema — pakai headset bila suara asisten menyela dirinya sendiri."
+        >
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: 'var(--text)', marginTop: '8px' }}>
+            <input
+              type="checkbox"
+              checked={voice.voice_barge_in}
+              onChange={(e) => setVoice({ ...voice, voice_barge_in: e.target.checked })}
+              style={checkboxStyle}
+            />
+            <span>Boleh menyela asisten dengan suara</span>
+          </label>
+        </Field>
+
+        <div style={{ height: '12px' }} />
+
+        <Field
+          label="Mode Bebas Tangan (Hands-free)"
+          helpText="Mikrofon terus mendengar; ucapan dikirim otomatis saat Anda berhenti bicara — tanpa menahan Ctrl+Space."
+        >
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: 'var(--text)', marginTop: '8px' }}>
+            <input
+              type="checkbox"
+              checked={voice.voice_handsfree}
+              onChange={(e) => setVoice({ ...voice, voice_handsfree: e.target.checked })}
+              style={checkboxStyle}
+            />
+            <span>Aktifkan mode bebas tangan</span>
+          </label>
+        </Field>
+
+        <div style={{ height: '16px' }} />
+
+        <Field
+          label={`Jeda Akhir Bicara: ${voice.voice_silence_ms} ms`}
+          helpText="Berapa lama hening sebelum ucapan dianggap selesai dan dikirim"
+        >
+          <input
+            type="range"
+            min={300}
+            max={3000}
+            step={100}
+            value={voice.voice_silence_ms}
+            onChange={(e) => setVoice({ ...voice, voice_silence_ms: parseInt(e.target.value, 10) })}
+            style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }}
+          />
+        </Field>
+
+        <div style={{ height: '16px' }} />
+
+        <Field
+          label="Sensitivitas Mikrofon"
+          helpText="Turunkan bila ruangan berisik dan asisten sering terpotong sendiri"
+        >
+          <select
+            className="field-select"
+            value={voice.voice_sensitivity}
+            onChange={(e) => setVoice({ ...voice, voice_sensitivity: e.target.value as VadSensitivity })}
+            style={selectStyle}
+          >
+            <option value="low">Rendah — ruangan berisik</option>
+            <option value="medium">Sedang — default</option>
+            <option value="high">Tinggi — ruangan sunyi / headset</option>
+          </select>
         </Field>
       </section>
 

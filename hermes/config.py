@@ -70,6 +70,14 @@ class Settings(BaseModel):
     tts_task_notify: bool = False
     tts_personality: Literal["professional", "friendly", "jarvis"] = "professional"
 
+    # Conversation behaviour. Barge-in is free when TTS is off, so it defaults
+    # on. Hands-free is not: a microphone that transcribes without the operator
+    # asking is a surprise, and on a shared desk a rude one.
+    voice_barge_in: bool = True
+    voice_handsfree: bool = False
+    voice_silence_ms: int = 800
+    voice_sensitivity: Literal["low", "medium", "high"] = "medium"
+
     @field_validator("claude_model")
     @classmethod
     def _claude_model_shape(cls, v: str) -> str:
@@ -115,6 +123,15 @@ class Settings(BaseModel):
             raise ValueError(
                 "tts voice must contain letters, digits, and hyphens only, "
                 "e.g. 'id-ID-ArdiNeural'")
+        return v
+
+    @field_validator("voice_silence_ms")
+    @classmethod
+    def _voice_silence_range(cls, v: int) -> int:
+        # below ~300ms a normal mid-sentence pause ends the turn; above 3s the
+        # operator assumes the microphone died
+        if not 300 <= v <= 3000:
+            raise ValueError("voice silence must be between 300 and 3000 ms")
         return v
 
     @field_validator("projects")

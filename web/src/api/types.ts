@@ -39,6 +39,10 @@ export interface Settings {
   tts_greeting: boolean;
   tts_task_notify: boolean;
   tts_personality: 'professional' | 'friendly' | 'jarvis';
+  voice_barge_in: boolean;
+  voice_handsfree: boolean;
+  voice_silence_ms: number;
+  voice_sensitivity: 'low' | 'medium' | 'high';
   mcp_servers: McpServer[];
 }
 

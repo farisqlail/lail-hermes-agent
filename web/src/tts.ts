@@ -4,6 +4,9 @@
  *  hermes/voice.py. */
 
 import { api } from './api/client';
+import type { VadSensitivity } from './vad';
+export type { VadSensitivity };
+
 
 export interface TtsVoice {
   id: string;
@@ -123,3 +126,34 @@ export function markGreeted(sessionId: string | null): void {
   if (!sessionId || typeof sessionStorage === 'undefined') return;
   sessionStorage.setItem(GREETED_PREFIX + sessionId, 'true');
 }
+
+export interface VoiceSettings {
+  voice_barge_in: boolean;
+  voice_handsfree: boolean;
+  voice_silence_ms: number;
+  voice_sensitivity: VadSensitivity;
+}
+
+export const VOICE_SETTINGS_DEFAULT: VoiceSettings = {
+  voice_barge_in: true,
+  voice_handsfree: false,
+  voice_silence_ms: 800,
+  voice_sensitivity: 'medium',
+};
+
+export async function loadVoiceSettings(): Promise<VoiceSettings> {
+  const s = await api.getSettings();
+  return {
+    voice_barge_in: s.voice_barge_in ?? VOICE_SETTINGS_DEFAULT.voice_barge_in,
+    voice_handsfree: s.voice_handsfree ?? VOICE_SETTINGS_DEFAULT.voice_handsfree,
+    voice_silence_ms: s.voice_silence_ms ?? VOICE_SETTINGS_DEFAULT.voice_silence_ms,
+    voice_sensitivity: (s.voice_sensitivity as VadSensitivity)
+      ?? VOICE_SETTINGS_DEFAULT.voice_sensitivity,
+  };
+}
+
+export async function saveVoiceSettings(s: Partial<VoiceSettings>): Promise<void> {
+  const current = await api.getSettings();
+  await api.saveSettings({ ...current, ...s });
+}
+

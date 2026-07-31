@@ -155,3 +155,26 @@ def test_tts_voice_validation():
 
     with pytest.raises(ValidationError):
         config.Settings(tts_voice="invalid; voice")
+
+def test_conversation_defaults(hermes_home):
+    s = config.Settings()
+    # barge-in is free when TTS is off, so it defaults on; hands-free is not —
+    # a mic that transcribes unprompted has to be opted into
+    assert s.voice_barge_in is True
+    assert s.voice_handsfree is False
+    assert s.voice_silence_ms == 800
+    assert s.voice_sensitivity == "medium"
+
+def test_voice_silence_ms_is_bounded(hermes_home):
+    import pytest
+    # under ~300ms a normal pause ends the turn mid-sentence; over 3s the
+    # operator thinks the mic died
+    for bad in (100, 10_000):
+        with pytest.raises(Exception):
+            config.Settings(voice_silence_ms=bad)
+    assert config.Settings(voice_silence_ms=1500).voice_silence_ms == 1500
+
+def test_voice_sensitivity_rejects_unknown_levels(hermes_home):
+    import pytest
+    with pytest.raises(Exception):
+        config.Settings(voice_sensitivity="paranoid")
