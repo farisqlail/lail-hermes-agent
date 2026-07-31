@@ -16,6 +16,7 @@ import { SpeechQueue, HtmlAudioSink, fetchSpeech } from '../audio';
 import { splitSentences, flushSentence } from '../sentences';
 import { useVoiceLoop } from '../hooks/useVoiceLoop';
 import { STOP_ACK } from '../commands';
+import { VoiceTagExtractor } from '../voicetag';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -399,7 +400,12 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
 
     let accumulatedText = '';
     let speechBuffer = '';
+    // The extractor runs in every mode: even when nothing will speak the line,
+    // the tag must never reach the screen or the stored thread.
+    const extractor = new VoiceTagExtractor();
     const streamSpeech = ttsEnabled && ttsMode === 'verbatim';
+    // Smart mode's fast path — the <voice> line replaces the second LLM call.
+    const wantsVoiceTag = ttsEnabled && ttsMode === 'smart';
     let accumulatedUsage: { total: number } | null = null;
 
     try {
@@ -428,13 +434,21 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
 
         for (const ev of events) {
           if (ev.delta) {
-            accumulatedText += ev.delta;
-            setStreamContent(accumulatedText);
-            if (streamSpeech) {
-              speechBuffer += ev.delta;
-              const { sentences, remainder } = splitSentences(speechBuffer);
-              speechBuffer = remainder;
-              for (const s of sentences) speak('summary', { text: s });
+            const { display, voice: spoken } = extractor.push(ev.delta);
+            if (spoken && wantsVoiceTag) {
+              // First audio starts here, while the rest of the reply is still
+              // arriving. This is the whole point of the tag.
+              speak('summary', { text: spoken });
+            }
+            if (display) {
+              accumulatedText += display;
+              setStreamContent(accumulatedText);
+              if (streamSpeech) {
+                speechBuffer += display;
+                const { sentences, remainder } = splitSentences(speechBuffer);
+                speechBuffer = remainder;
+                for (const s of sentences) speak('summary', { text: s });
+              }
             }
           }
           if (ev.usage) {
@@ -447,6 +461,12 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
         }
       }
 
+      const tail = extractor.flush();
+      if (tail.display) {
+        accumulatedText += tail.display;
+        setStreamContent(accumulatedText);
+      }
+
       // Finish streaming and push assistant message
       const assistantMsg: Message = {
         role: 'assistant',
@@ -455,8 +475,17 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
       };
       setMessages((prev) => [...prev, assistantMsg]);
       if (streamSpeech) {
+        if (tail.display) {
+          speechBuffer += tail.display;
+          const { sentences, remainder } = splitSentences(speechBuffer);
+          speechBuffer = remainder;
+          for (const s of sentences) speak('summary', { text: s });
+        }
         for (const s of flushSentence(speechBuffer)) speak('summary', { text: s });
-      } else {
+      } else if (!extractor.sawTag) {
+        // The model ignored the instruction, or speech is on in a mode that
+        // does not ask for the tag. The summariser round trip still works —
+        // it is only slower, which is what this path exists to avoid.
         speak('summary', { text: accumulatedText });
       }
       if (onRefreshSessions) {
