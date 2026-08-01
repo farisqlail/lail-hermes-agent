@@ -9,7 +9,9 @@ sounddevice (the mic). available() reports whether the feature can run at all;
 the tray helper degrades to a manual hotkey when it cannot.
 """
 from __future__ import annotations
+import re
 import threading
+from pathlib import Path
 from typing import Callable, Optional
 
 # openWakeWord's native frame: 80 ms of 16 kHz mono PCM. Feeding it this exact
@@ -17,6 +19,60 @@ from typing import Callable, Optional
 # but waste a resample.
 SAMPLE_RATE = 16000
 FRAME_SAMPLES = 1280
+
+# Wake words openWakeWord ships pre-trained. A model is a specific phrase, not a
+# free variable — you cannot ask for "Hey <anyname>" without training one — so
+# an agent named "Jarvis" gets a working wake word for free, while any other
+# name needs a custom model dropped in the wakewords dir.
+BUNDLED_MODELS = frozenset({
+    "alexa", "hey_mycroft", "hey_jarvis", "hey_rhasspy", "timer", "weather",
+})
+
+
+def wake_slug(agent_name: str) -> str:
+    """The lowercased, alphanumeric first word of the agent's name — the token a
+    "hey_<slug>" model is keyed on. "Lail Agent" -> "lail", "Jarvis" -> "jarvis"."""
+    first = (agent_name or "").strip().split()
+    if not first:
+        return ""
+    return re.sub(r"[^a-z0-9]", "", first[0].lower())
+
+
+def expected_phrase(agent_name: str) -> str:
+    """The phrase the operator actually says, derived from the name. Shown in the
+    UI so "Hey Jarvis" / "Hey Ev" tracks whatever the agent is called."""
+    slug = wake_slug(agent_name)
+    return f"Hey {slug.capitalize()}" if slug else "Hey"
+
+
+def resolve_model(agent_name: str, configured: str,
+                  model_dir: Optional[Path] = None) -> str:
+    """Pick the wake-word model to load.
+
+    * An explicit `configured` value (a bundled name or a path) always wins.
+    * "auto" / "" derives from the agent's name: a bundled "hey_<slug>" if one
+      exists (so "Jarvis" just works), else a custom "hey_<slug>.onnx" in
+      `model_dir` if the operator has trained and dropped one.
+    * Returns "" when nothing usable is found — the caller then leaves the wake
+      word off and tells the operator to train a model for `expected_phrase`.
+    """
+    if configured and configured.strip().lower() != "auto":
+        return configured.strip()
+
+    slug = wake_slug(agent_name)
+    if not slug:
+        return ""
+
+    bundled = f"hey_{slug}"
+    if bundled in BUNDLED_MODELS:
+        return bundled
+
+    if model_dir is not None:
+        custom = Path(model_dir) / f"hey_{slug}.onnx"
+        if custom.exists():
+            return str(custom)
+
+    return ""
 
 
 class WakeUnavailable(RuntimeError):

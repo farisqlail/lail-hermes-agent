@@ -123,15 +123,28 @@ class TrayApp:
         handle_wake(_post_wake, lambda: webbrowser.open(DASHBOARD_URL))
 
     def _start_listener(self) -> None:
-        from . import wakeword
+        from . import wakeword, paths
         if not wakeword.available():
             return
         s = config.load_settings()
         if not s.wakeword_enabled:
             return
+        # The spoken phrase follows the agent's name: "auto" turns "Jarvis" into
+        # the bundled hey_jarvis, or any other name into a trained
+        # hey_<name>.onnx in the wakewords dir.
+        model = wakeword.resolve_model(
+            s.agent_name, s.wakeword_model, paths.wakewords_dir())
+        if not model:
+            # No bundled match and no custom model trained yet. Leave the wake
+            # word off; the manual "Picu" menu item still starts a capture.
+            phrase = wakeword.expected_phrase(s.agent_name)
+            print(f"[tray] wake word off: no model for '{phrase}'. Train "
+                  f"hey_{wakeword.wake_slug(s.agent_name)}.onnx into "
+                  f"{paths.wakewords_dir()}, or set wakeword_model explicitly.")
+            return
         self._listener = wakeword.WakeWordListener(
             on_wake=self._on_wake,
-            model=s.wakeword_model,
+            model=model,
             threshold=s.wakeword_threshold,
             cooldown_ms=s.wakeword_cooldown_ms,
         )
@@ -139,16 +152,18 @@ class TrayApp:
             self._listener.start()
         except Exception:
             # No input device, or a bad model path — the tray still runs, with
-            # the manual "Picu (Hey Ev)" menu item as the fallback trigger.
+            # the manual "Picu" menu item as the fallback trigger.
             self._listener = None
 
     def _menu(self):
         import pystray
+        from . import wakeword
+        phrase = wakeword.expected_phrase(config.load_settings().agent_name)
         return pystray.Menu(
             pystray.MenuItem("Buka Dashboard",
                              lambda: webbrowser.open(DASHBOARD_URL),
                              default=True),
-            pystray.MenuItem("Picu (Hey Ev)", lambda: self._on_wake()),
+            pystray.MenuItem(f"Picu ({phrase})", lambda: self._on_wake()),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Keluar", self._quit),
         )

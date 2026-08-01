@@ -26,8 +26,25 @@ class FakeModel:
 @pytest.fixture
 def fake_model(monkeypatch):
     model = FakeModel()
-    monkeypatch.setattr(stt, "_load_model", lambda: model)
+    # _load_model now takes a model_size argument; swallow it in the fake.
+    monkeypatch.setattr(stt, "_load_model", lambda *a, **k: model)
     return model
+
+
+def test_resolve_size_defaults_and_validates():
+    assert stt._resolve_size(None) == "base"
+    assert stt._resolve_size("small") == "small"
+    assert stt._resolve_size("SMALL") == "small"       # case-insensitive
+    assert stt._resolve_size("bogus") == "base"        # unknown -> default
+    assert stt._resolve_size("") == "base"
+
+
+def test_transcribe_forwards_model_size(monkeypatch):
+    seen = []
+    monkeypatch.setattr(stt, "_load_model",
+                        lambda size=None: seen.append(size) or FakeModel())
+    stt.transcribe(b"fake-webm-bytes", model_size="small")
+    assert seen == ["small"]
 
 
 def test_transcribe_joins_segments_and_strips(fake_model):

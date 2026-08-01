@@ -677,7 +677,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         return {
             "available": stt.available(),
             "loaded": stt.is_loaded(),
-            "model": stt.MODEL_SIZE,
+            "model": s.stt_model,
             "enabled": s.stt_enabled,
             "language": s.stt_language,
         }
@@ -714,7 +714,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         # SSE feed the dashboard lives on and any chat stream in flight.
         try:
             text = await asyncio.to_thread(
-                stt.transcribe, audio, settings.stt_language)
+                stt.transcribe, audio, settings.stt_language, settings.stt_model)
         except stt.SttUnavailable as e:
             raise HTTPException(status_code=503, detail=str(e))
         except ValueError as e:

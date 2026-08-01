@@ -43,6 +43,7 @@ export function ConfigVoice() {
   // values without a browser.
   const [sttEnabled, setSttEnabled] = useState(true);
   const [sttLanguage, setSttLanguage] = useState('id');
+  const [sttModel, setSttModel] = useState<'tiny' | 'base' | 'small' | 'medium' | 'large'>('base');
   const [sttStatus, setSttStatus] = useState<SttStatus | null>(null);
 
   useEffect(() => {
@@ -67,6 +68,7 @@ export function ConfigVoice() {
     api.getSettings().then((s) => {
       setSttEnabled(s.stt_enabled);
       setSttLanguage(s.stt_language);
+      setSttModel(s.stt_model ?? 'base');
     }).catch(() => {});
 
     // Load voice settings from server
@@ -104,6 +106,7 @@ export function ConfigVoice() {
         ...current,
         stt_enabled: sttEnabled,
         stt_language: sttLanguage,
+        stt_model: sttModel,
       });
       toast('Konfigurasi suara berhasil disimpan!', 'ok');
     } catch (err) {
@@ -413,9 +416,11 @@ export function ConfigVoice() {
         <p style={{ color: 'var(--text-faint)', marginBottom: '12px', fontSize: 'var(--t-sm)' }}>
           Dijalankan oleh tray helper: <code>python -m hermes.tray</code> (butuh{' '}
           <code>pip install -e .[desktop]</code>). Mikrofon tetap hidup meski jendela
-          browser ditutup; ucapkan kata pemicu untuk mulai bicara. Model bawaan{' '}
-          <code>hey_jarvis</code> dipakai sebagai placeholder sampai model kustom
-          "Hey Ev" dilatih — ganti lewat kolom Model di bawah.
+          browser ditutup; ucapkan "Hey [nama agent]" untuk mulai bicara. Model{' '}
+          <code>auto</code> mengikuti Nama Agent: <b>Jarvis</b> langsung pakai model
+          bawaan <code>hey_jarvis</code>. Nama lain (mis. <b>Ev</b>) perlu model
+          terlatih <code>hey_ev.onnx</code> di folder <code>wakewords</code> pada
+          HERMES_HOME — sampai itu ada, wake word mati (tetap bisa Picu manual).
         </p>
 
         <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', cursor: 'pointer', color: 'var(--text)' }}>
@@ -430,14 +435,14 @@ export function ConfigVoice() {
 
         <Field
           label="Model Wake Word"
-          helpText="Nama bawaan openWakeWord (hey_jarvis, alexa, hey_mycroft) atau path ke file .onnx/.tflite model kustom"
+          helpText="'auto' = ikut Nama Agent. Atau paksa: nama bawaan openWakeWord (hey_jarvis, alexa, hey_mycroft) / path ke file .onnx/.tflite kustom"
         >
           <input
             type="text"
             className="field-input"
             value={voice.wakeword_model}
             onChange={(e) => setVoice({ ...voice, wakeword_model: e.target.value })}
-            placeholder="hey_jarvis"
+            placeholder="auto"
             style={{ width: '100%' }}
           />
         </Field>
@@ -508,6 +513,24 @@ export function ConfigVoice() {
           <option value="en">Inggris</option>
           <option value="">Deteksi otomatis</option>
         </select>
+
+        <label style={{ display: 'block', margin: '16px 0 8px' }}>
+          Model Transkripsi (kecepatan vs akurasi)
+        </label>
+        <select
+          style={selectStyle}
+          value={sttModel}
+          onChange={(e) => setSttModel(e.target.value as typeof sttModel)}
+        >
+          <option value="tiny">Tiny — tercepat, akurasi rendah</option>
+          <option value="base">Base — cepat, seimbang (default)</option>
+          <option value="small">Small — lebih akurat, ~3x lebih lambat</option>
+          <option value="medium">Medium — paling akurat, paling lambat</option>
+        </select>
+        <p style={{ opacity: 0.7, marginTop: '6px', fontSize: 'var(--t-sm)' }}>
+          Turunkan bila jeda sebelum asisten menjawab terasa lama. Nama seperti
+          "Jarvis" tetap terbantu oleh hotwords meski di <code>base</code>.
+        </p>
 
         <p style={{ opacity: 0.7, marginTop: '12px', fontSize: 'var(--t-sm)' }}>
           Model: <code>{sttStatus?.model ?? '—'}</code>

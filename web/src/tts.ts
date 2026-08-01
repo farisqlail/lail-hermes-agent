@@ -150,7 +150,7 @@ export const VOICE_SETTINGS_DEFAULT: VoiceSettings = {
   voice_silence_ms: 800,
   voice_sensitivity: 'medium',
   wakeword_enabled: false,
-  wakeword_model: 'hey_jarvis',
+  wakeword_model: 'auto',
   wakeword_threshold: 0.5,
   wakeword_cooldown_ms: 2000,
 };

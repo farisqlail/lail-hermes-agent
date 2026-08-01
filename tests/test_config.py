@@ -160,7 +160,7 @@ def test_tts_voice_validation():
 def test_wakeword_defaults():
     s = config.Settings()
     assert s.wakeword_enabled is False
-    assert s.wakeword_model == "hey_jarvis"
+    assert s.wakeword_model == "auto"
     assert s.wakeword_threshold == 0.5
     assert s.wakeword_cooldown_ms == 2000
 

@@ -13,6 +13,10 @@ def projects_dir() -> Path:
 def artifacts_dir() -> Path:
     return home() / "artifacts"
 
+def wakewords_dir() -> Path:
+    # Custom wake-word models ("hey_<name>.onnx") the tray helper loads by name.
+    return home() / "wakewords"
+
 def db_path() -> Path:
     return home() / "hermes.db"
 

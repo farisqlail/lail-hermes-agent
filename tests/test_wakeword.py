@@ -55,6 +55,42 @@ def test_zero_cooldown_allows_back_to_back_edges():
     assert gate.push(0.9, 2) is True
 
 
+def test_wake_slug_takes_first_alphanumeric_word():
+    assert wakeword.wake_slug("Jarvis") == "jarvis"
+    assert wakeword.wake_slug("Lail Agent") == "lail"
+    assert wakeword.wake_slug("  Ev-9! ") == "ev9"
+    assert wakeword.wake_slug("") == ""
+
+
+def test_expected_phrase_follows_the_name():
+    assert wakeword.expected_phrase("Jarvis") == "Hey Jarvis"
+    assert wakeword.expected_phrase("ev") == "Hey Ev"
+    assert wakeword.expected_phrase("Lail Agent") == "Hey Lail"
+    assert wakeword.expected_phrase("") == "Hey"
+
+
+def test_resolve_model_explicit_value_wins():
+    assert wakeword.resolve_model("Jarvis", "alexa") == "alexa"
+    assert wakeword.resolve_model("Jarvis", "C:/m/x.onnx") == "C:/m/x.onnx"
+
+
+def test_resolve_model_auto_uses_bundled_for_jarvis():
+    assert wakeword.resolve_model("Jarvis", "auto") == "hey_jarvis"
+    assert wakeword.resolve_model("Jarvis", "") == "hey_jarvis"
+
+
+def test_resolve_model_auto_falls_back_to_custom_file(tmp_path):
+    # No bundled model for "Ev": nothing until a trained file is dropped in.
+    assert wakeword.resolve_model("Ev", "auto", tmp_path) == ""
+    f = tmp_path / "hey_ev.onnx"
+    f.write_bytes(b"x")
+    assert wakeword.resolve_model("Ev", "auto", tmp_path) == str(f)
+
+
+def test_resolve_model_empty_name_is_empty():
+    assert wakeword.resolve_model("", "auto", None) == ""
+
+
 def test_resolve_model_arg_distinguishes_name_from_path():
     # A bundled name passes through as a one-element list.
     assert wakeword._resolve_model_arg("hey_jarvis") == ["hey_jarvis"]

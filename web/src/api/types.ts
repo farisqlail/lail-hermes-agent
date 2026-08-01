@@ -32,6 +32,7 @@ export interface Settings {
   timeout_test_s: number;
   stt_enabled: boolean;
   stt_language: string;
+  stt_model: 'tiny' | 'base' | 'small' | 'medium' | 'large';
   tts_enabled: boolean;
   tts_voice: string;
   tts_mode: 'smart' | 'verbatim';

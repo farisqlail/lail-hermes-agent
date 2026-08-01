@@ -62,6 +62,10 @@ class Settings(BaseModel):
     mcp_servers: list[McpServer] = Field(default_factory=list)
     stt_enabled: bool = True
     stt_language: str = "id"
+    # Whisper model size: the biggest lever on how long after you stop talking
+    # the assistant can start replying. "base" is fast; "small"/"medium" are more
+    # accurate but multiply CPU transcribe time. See hermes/stt.py.
+    stt_model: Literal["tiny", "base", "small", "medium", "large"] = "base"
     tts_enabled: bool = False
     # Multilingual by default: replies mix Bahasa with English technical terms,
     # and a multilingual voice pronounces both natively. See TTS_VOICES in
@@ -81,13 +85,14 @@ class Settings(BaseModel):
     voice_silence_ms: int = 800
     voice_sensitivity: Literal["low", "medium", "high"] = "medium"
 
-    # Wake word ("Hey Ev"), run by the native tray helper so the mic stays live
-    # with the browser closed. Off by default: an always-listening microphone is
-    # opt-in. `wakeword_model` is either an openWakeWord bundled name
-    # ("hey_jarvis", "alexa", "hey_mycroft") used as a placeholder until a custom
-    # "Hey Ev" model is trained, or an absolute path to a .onnx/.tflite model.
+    # Wake word, run by the native tray helper so the mic stays live with the
+    # browser closed. Off by default: an always-listening microphone is opt-in.
+    # "auto" derives the phrase from `agent_name` ("Jarvis" -> "Hey Jarvis",
+    # using the bundled hey_jarvis model; another name needs a trained
+    # hey_<name>.onnx in the wakewords dir). An explicit value overrides: a
+    # bundled openWakeWord name or a path to a .onnx/.tflite model.
     wakeword_enabled: bool = False
-    wakeword_model: str = "hey_jarvis"
+    wakeword_model: str = "auto"
     wakeword_threshold: float = 0.5      # openWakeWord score in [0, 1]
     wakeword_cooldown_ms: int = 2000     # ignore repeats within this window
 
