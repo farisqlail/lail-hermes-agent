@@ -7,6 +7,14 @@ if "%HERMES_HOME%"=="" set HERMES_HOME=C:\Hermes
 cd /d %~dp0..
 call .venv\Scripts\activate.bat
 
+REM Launch the 9Router local AI gateway (OpenAI-compatible, port 20128) in the
+REM background so Hermes can route LLM calls through its token and models. Point
+REM Hermes at it via base_url http://127.0.0.1:20128/v1 and the token from its
+REM dashboard (http://localhost:20128/dashboard). Started once here, before the
+REM restart loop, so a Hermes crash-restart never spawns a second gateway; it
+REM no-ops when a gateway is already listening on the port.
+where 9router >nul 2>nul && start "9Router" /min 9router -t -n --skip-update
+
 :loop
 cls
 color 0B
