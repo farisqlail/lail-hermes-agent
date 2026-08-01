@@ -5,7 +5,8 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import config, paths, stt, voice, desktop_api
+from . import config, paths, stt, voice, desktop_api, mcp_risk
+from .pending_actions import PendingStore
 from .session_store import Store
 from .telegram_bridge import new_task_id
 
@@ -187,13 +188,21 @@ def load_index_html() -> str:
         "</body></html>"
     )
 
-def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan=None) -> FastAPI:
+def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan=None, hub=None) -> FastAPI:
     # lifespan carries the ask MCP server's session manager when main.py mounts
     # it here: a mounted sub-app's own lifespan is ignored by Starlette, so the
     # manager has to be started by the parent or the /ask-mcp endpoint is dead.
     app = FastAPI(lifespan=lifespan)
     app.state.bridge = bridge
     app.state.ask_registry = ask_registry
+    # The MCP hub gives the chat agent the same file/browser/gmail/calendar tools
+    # the planner has. None disables the feature (the chat then runs on CHAT_TOOLS
+    # alone). Discovery is cached: list_tools opens transports, too costly per turn.
+    app.state.hub = hub
+    app.state._mcp_tools_cache = None
+    # Write actions the chat agent proposed, awaiting operator approval (button
+    # or voice). Executed only from the resolve endpoint, never in the tool loop.
+    app.state.pending = PendingStore()
 
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR), check_dir=False), name="static")
 
@@ -261,11 +270,101 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                         {"task_id": new_id, "status": "awaiting_confirm",
                          "note": "Task diantre; menunggu operator menekan Run sebelum berjalan."},
                         ensure_ascii=False)
+                # MCP integration tools (file / browser / gmail / calendar). Reads
+                # run straight through; a write/send/delete is gated — returned to
+                # the model as "needs confirmation" and NOT executed, so the chat
+                # agent can never silently mutate data. The operator runs a gated
+                # action deliberately (Telegram /task, or a later confirm card).
+                hub = getattr(app.state, "hub", None)
+                if hub is not None and mcp_risk.is_mcp_name(name):
+                    if mcp_risk.is_risky_tool(name):
+                        # Park it for the operator to approve (button or voice),
+                        # do NOT execute here. The model is told it is pending so
+                        # it never claims the action was done.
+                        pa = app.state.pending.add(name, args, session_id)
+                        return json.dumps({
+                            "status": "pending_confirmation",
+                            "pending_id": pa.id,
+                            "tool": name, "args": args,
+                            "note": ("Aksi menulis/mengirim/mengubah data ini TERTAHAN, "
+                                     "menunggu persetujuan operator (tombol atau ucapkan "
+                                     "'konfirmasi' / 'batal'). BELUM dijalankan — jangan "
+                                     "mengaku sudah melakukannya."),
+                        }, ensure_ascii=False)
+                    result = await hub.call(name, args)
+                    return result if isinstance(result, str) \
+                        else json.dumps(result, ensure_ascii=False)
                 return json.dumps({"error": f"tool tak dikenal: {name}"}, ensure_ascii=False)
             except Exception as e:  # a tool failure is data for the model, not a 500
                 safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
                 return json.dumps({"error": f"tool gagal: {safe}"}, ensure_ascii=False)
         return chat_dispatch
+
+    from .mcp_hub import to_openai_tools
+
+    async def _chat_tools():
+        """CHAT_TOOLS plus whatever the MCP hub exposes, discovered once and
+        cached. On any discovery failure the chat still works on CHAT_TOOLS."""
+        base = list(CHAT_TOOLS)
+        hub = getattr(app.state, "hub", None)
+        if hub is None:
+            return base
+        cache = app.state._mcp_tools_cache
+        if cache is None:
+            try:
+                cache = await hub.list_tools()
+            except Exception:
+                cache = []
+            app.state._mcp_tools_cache = cache
+        return base + to_openai_tools(cache)
+
+    async def _resolve_pending(pa, approved: bool) -> dict:
+        """Run or drop one parked write action, and record the outcome in the
+        conversation so the thread (and the next model turn) stays truthful."""
+        app.state.pending.pop(pa.id)
+        if not approved:
+            store.add_message(pa.conv_id, "assistant",
+                              f"❌ Aksi dibatalkan: {pa.summary()}.")
+            return {"id": pa.id, "approved": False, "tool": pa.tool}
+        hub = getattr(app.state, "hub", None)
+        if hub is None:
+            store.add_message(pa.conv_id, "assistant",
+                              f"⚠️ Tidak bisa menjalankan {pa.summary()}: MCP tidak tersedia.")
+            return {"id": pa.id, "approved": True, "error": "hub tidak tersedia"}
+        try:
+            result = await hub.call(pa.tool, pa.args)
+        except Exception as e:
+            safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
+            store.add_message(pa.conv_id, "assistant",
+                              f"⚠️ Gagal menjalankan {pa.summary()}: {safe}")
+            return {"id": pa.id, "approved": True, "error": safe}
+        text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+        store.add_message(pa.conv_id, "assistant",
+                          f"✅ {pa.summary()} selesai.\n\n{text[:800]}")
+        return {"id": pa.id, "approved": True, "result": text}
+
+    @app.get("/api/chat/pending")
+    def get_chat_pending():
+        """Write actions awaiting approval — rendered as cards and polled by the
+        voice loop so 'konfirmasi' knows whether anything is pending."""
+        return [{"id": a.id, "tool": a.tool, "summary": a.summary(), "args": a.args}
+                for a in app.state.pending.list()]
+
+    class _ResolveBody(BaseModel):
+        id: str | None = None
+        approved: bool
+
+    @app.post("/api/chat/pending/resolve")
+    async def resolve_chat_pending(body: _ResolveBody):
+        """Approve/decline a parked action. No `id` resolves the oldest — the
+        shape a voice 'konfirmasi' / 'batal' uses, since speech carries no id."""
+        pending = app.state.pending
+        items = pending.list()
+        pa = pending.get(body.id) if body.id else (items[0] if items else None)
+        if pa is None:
+            return {"ok": False, "error": "tidak ada aksi tertunda"}
+        out = await _resolve_pending(pa, body.approved)
+        return {"ok": True, **out}
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
@@ -451,7 +550,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             else:
                 try:
                     history = store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)
-                    reply = await chat(history, tools=CHAT_TOOLS, dispatch=make_chat_dispatch(sid))
+                    reply = await chat(history, tools=await _chat_tools(), dispatch=make_chat_dispatch(sid))
                 except Exception as e:
                     # A NIM outage or missing key must not 500 the chat pane;
                     # surface it as the assistant's turn so the thread stays
@@ -563,7 +662,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                 history = store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)
                 try:
                     async for kind, payload in chat.stream(
-                            history, tools=CHAT_TOOLS, dispatch=make_chat_dispatch(sid)):
+                            history, tools=await _chat_tools(), dispatch=make_chat_dispatch(sid)):
                         if kind == "token":
                             acc += payload
                             yield sse({"delta": payload})

@@ -31,3 +31,24 @@ test('empty and non-command input yields null', () => {
   assert.equal(matchLocalCommand('   '), null);
   assert.equal(matchLocalCommand('jalankan pengujian di myprofit'), null);
 });
+
+test('recognises confirm words', () => {
+  for (const s of ['ya', 'iya', 'setuju', 'konfirmasi', 'oke', 'lanjut',
+                   'yes', 'confirm', 'do it', 'go ahead']) {
+    assert.equal(matchLocalCommand(s), 'confirm', s);
+  }
+});
+
+test('recognises decline words', () => {
+  for (const s of ['tidak', 'batal', 'batalkan', 'jangan', 'tolak',
+                   'no', 'cancel', 'decline', 'abort']) {
+    assert.equal(matchLocalCommand(s), 'decline', s);
+  }
+});
+
+test('a confirm word inside a longer sentence is not a command', () => {
+  // whole-utterance only — a spoken instruction that happens to contain "ya"
+  // must reach the chat, not be swallowed as a confirmation
+  assert.equal(matchLocalCommand('ya tolong buka file itu'), null);
+  assert.equal(matchLocalCommand('jangan lupa jalankan tes dulu'), null);
+});

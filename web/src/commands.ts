@@ -4,7 +4,7 @@
  *  a round trip to learn the operator wants silence, which is the one request
  *  where latency is the whole point. */
 
-export type LocalCommand = 'stop';
+export type LocalCommand = 'stop' | 'confirm' | 'decline';
 
 /** Spoken after a recognised stop, so the operator gets confirmation in the
  *  thread that the command landed rather than wondering if the mic heard it. */
@@ -24,6 +24,27 @@ const STOP_PHRASES = new Set([
   'hush', 'silence',
 ]);
 
+/** Approve / decline a parked write action by voice. Whole-utterance only, and
+ *  the caller ignores them when nothing is pending — so a bare "ya" mid-chat is
+ *  still sent as normal text, not swallowed as a confirmation. */
+const CONFIRM_PHRASES = new Set([
+  // Indonesian
+  'ya', 'iya', 'ya betul', 'betul', 'setuju', 'oke', 'ok', 'oke lanjut',
+  'lanjut', 'lanjutkan', 'konfirmasi', 'konfirmasi ya', 'jalankan', 'kirim',
+  'ya jalankan', 'ya kirim', 'boleh', 'silakan', 'gas',
+  // English
+  'yes', 'yeah', 'confirm', 'approve', 'approved', 'do it', 'go ahead',
+  'proceed', 'send it',
+]);
+
+const DECLINE_PHRASES = new Set([
+  // Indonesian
+  'tidak', 'nggak', 'gak', 'jangan', 'batal', 'batalkan', 'tolak', 'tolak ya',
+  'jangan kirim', 'jangan jalankan', 'stop jangan', 'no jangan',
+  // English
+  'no', 'nope', 'cancel', 'decline', 'reject', 'abort', 'do not', "don't",
+]);
+
 export function matchLocalCommand(text: string): LocalCommand | null {
   const normalised = text
     .toLowerCase()
@@ -31,5 +52,8 @@ export function matchLocalCommand(text: string): LocalCommand | null {
     .trim()
     .replace(/\s+/g, ' ');
   if (!normalised) return null;
-  return STOP_PHRASES.has(normalised) ? 'stop' : null;
+  if (STOP_PHRASES.has(normalised)) return 'stop';
+  if (CONFIRM_PHRASES.has(normalised)) return 'confirm';
+  if (DECLINE_PHRASES.has(normalised)) return 'decline';
+  return null;
 }

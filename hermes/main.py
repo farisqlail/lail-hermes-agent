@@ -211,6 +211,14 @@ def build_nim_chat(settings, secrets):
         "TIDAK bisa menekan Run. Arahkan ke kartu task di panel chat ini — "
         "kartu itu punya tombol Run/Cancel dan tautan 'Lihat Log & Langkah "
         "Lengkap'. Jangan mengarang lokasi menu lain.\n\n"
+        "ALAT INTEGRASI (bila terpasang lewat MCP: file, browser, email, "
+        "kalender): pakai untuk menjalankan perintah pengguna secara nyata. "
+        "Alat BACA (membaca file, mencari email, melihat kalender, screenshot) "
+        "langsung dijalankan. Alat TULIS/KIRIM/HAPUS (kirim email, buat/ubah "
+        "event, tulis/hapus file, klik/isi form browser) DITAHAN untuk "
+        "konfirmasi operator — hasil alat akan berkata 'needs_confirmation'. "
+        "Bila itu terjadi, sampaikan ke pengguna bahwa aksi menunggu persetujuan "
+        "dan JANGAN mengaku sudah melakukannya.\n\n"
         "Bila pengguna bertanya tentang cara mengantre task atau cara kerja start_task/start task, format jawabanmu wajib mengikuti pola ini secara persis (tanpa menggunakan backslash/garis miring terbalik pada tanda kutip):\n"
         "Tentu! Berikut cara kerja start task di Lail Hermes:\n\n"
         "## 📝 Cara mengantre task\n\n"
@@ -754,7 +762,7 @@ async def run():
     # streamable_http_app() creates the session manager; the parent lifespan
     # runs it, because Starlette ignores a mounted sub-app's own lifespan.
     ask_asgi = ask_mcp.streamable_http_app()
-    web = create_app(store, bridge=bridge, ask_registry=ask_registry, chat=chat, lifespan=lambda _app: ask_mcp.session_manager.run())
+    web = create_app(store, bridge=bridge, ask_registry=ask_registry, chat=chat, hub=hub, lifespan=lambda _app: ask_mcp.session_manager.run())
     web.mount(ask_server.MOUNT_PREFIX, ask_asgi)
     web.state.mcp_factory = real_mcp_session_factory
     server = uvicorn.Server(uvicorn.Config(web, host="127.0.0.1", port=8799, log_level="info"))

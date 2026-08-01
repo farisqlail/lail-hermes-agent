@@ -28,6 +28,15 @@ interface Message {
   };
 }
 
+/** A write action (send email, delete file, …) the chat agent proposed and the
+ *  operator must approve — by button or by voice ("konfirmasi" / "batal"). */
+interface PendingAction {
+  id: string;
+  tool: string;
+  summary: string;
+  args: Record<string, unknown>;
+}
+
 function findTaskIds(text: string): string[] {
   const TASK_ID_REGEX = /\b(\d{8}-\d{6}-[0-9a-f]{6})\b/g;
   const matches: string[] = [];
@@ -200,6 +209,10 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   const [speaking, setSpeaking] = useState(false);
   const [firstAudioMs, setFirstAudioMs] = useState<number | null>(null);
   const speakingRef = useRef(false);
+  // Write actions the chat agent proposed, awaiting approval (button or voice).
+  const [pending, setPending] = useState<PendingAction[]>([]);
+  const pendingRef = useRef<PendingAction[]>([]);
+  pendingRef.current = pending;
   const sinkRef = useRef<HtmlAudioSink | null>(null);
   const queueRef = useRef<SpeechQueue | null>(null);
 
@@ -313,10 +326,16 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     sensitivity: voice.voice_sensitivity,
     isSpeaking: () => speakingRef.current,
     onBargeIn: shutUp,
-    onCommand: (cmd) => {
-      if (cmd !== 'stop') return;
-      shutUp();
-      toast(STOP_ACK, 'ok');
+    onCommand: (cmd, text) => {
+      if (cmd === 'stop') {
+        shutUp();
+        toast(STOP_ACK, 'ok');
+        return;
+      }
+      // confirm / decline: only act when something is actually parked. With
+      // nothing pending, a bare "ya" is ordinary speech — send it to the chat.
+      if (pendingRef.current.length === 0) { void submitText(text); return; }
+      void resolvePending(undefined, cmd === 'confirm');
     },
     onTranscript: (text) => {
       if (streaming) {
@@ -377,6 +396,42 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   useEffect(() => {
     fetchChatHistory();
   }, [fetchChatHistory]);
+
+  const fetchPending = useCallback(async () => {
+    try {
+      const res = await fetch('/api/chat/pending');
+      if (res.ok) setPending(await res.json());
+    } catch { /* transient; next poll retries */ }
+  }, []);
+
+  // Poll parked write actions so cards appear and voice "konfirmasi" knows
+  // whether anything is pending.
+  useEffect(() => {
+    fetchPending();
+    const id = setInterval(fetchPending, 1500);
+    return () => clearInterval(id);
+  }, [fetchPending]);
+
+  /** Approve or decline a parked action. `id` omitted resolves the oldest — the
+   *  shape a voice command uses, since speech carries no id. The backend appends
+   *  the outcome to the thread, so refetch both. */
+  const resolvePending = useCallback(async (id: string | undefined, approved: boolean) => {
+    try {
+      const res = await fetch('/api/chat/pending/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(id ? { id, approved } : { approved }),
+      });
+      const data = res.ok ? await res.json() : null;
+      if (data?.ok === false) toast('Tidak ada aksi tertunda', 'warn');
+      else toast(approved ? 'Aksi dijalankan' : 'Aksi dibatalkan', approved ? 'ok' : 'warn');
+    } catch {
+      toast('Gagal memproses aksi', 'err');
+    } finally {
+      void fetchPending();
+      void fetchChatHistory();
+    }
+  }, [fetchPending, fetchChatHistory, toast]);
 
   const handleConfirmTask = async (tid: string, approved: boolean) => {
     setConfirmingMap(prev => ({ ...prev, [tid]: true }));
@@ -960,6 +1015,47 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
             </g>
           </svg>
         </div>
+
+        {/* Parked write actions awaiting approval (button or voice) */}
+        {pending.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', margin: '0 0 10px' }}>
+            {pending.map((p) => (
+              <div key={p.id} style={{
+                padding: '10px 12px',
+                border: '1px solid var(--warn)',
+                borderRadius: 'var(--r-sm)',
+                background: 'rgba(240,170,40,0.06)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <span style={{ color: 'var(--warn)', fontWeight: 'bold', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
+                    ⚠️ PERLU KONFIRMASI
+                  </span>
+                  <span style={{ fontWeight: 600 }}>{p.summary}</span>
+                </div>
+                <code style={{
+                  fontSize: '11px', color: 'var(--text-dim)', whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word', maxHeight: '80px', overflow: 'auto',
+                }}>
+                  {JSON.stringify(p.args)}
+                </code>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <Button variant="primary" size="small" onClick={() => resolvePending(p.id, true)}>
+                    Jalankan
+                  </Button>
+                  <Button variant="danger" size="small" onClick={() => resolvePending(p.id, false)}>
+                    Batalkan
+                  </Button>
+                  <span style={{ fontSize: '10px', color: 'var(--text-faint)', alignSelf: 'center' }}>
+                    atau ucapkan "konfirmasi" / "batal"
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Bottom prompt input bar form */}
         <form onSubmit={handleSend} className="ask-prompt-form">

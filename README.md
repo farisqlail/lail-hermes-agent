@@ -146,8 +146,11 @@ flowchart TD
   - **Prerequisites**: `pip install -e .[voice]`. Audio transcription runs locally via faster-whisper (int8, CPU).
 - **Wake word & Windows tray (`python -m hermes.tray`)** — an optional native helper keeps the microphone alive with the browser closed. It runs a local wake word via openWakeWord and shows a system-tray icon whose colour tracks the voice state. The spoken phrase follows the agent's name: `"auto"` turns **Jarvis** into the bundled `hey_jarvis`; any other name (e.g. **Ev**) needs a trained `hey_<name>.onnx` in `%HERMES_HOME%\wakewords`. On wake it starts a hands-free capture, opening the dashboard first if no tab is open. `pip install -e .[desktop]` (openwakeword, sounddevice, pystray, Pillow); launch alongside Hermes via `deploy\tray.bat`.
 - **Pluggable LLM endpoint** — the planner/chat/voice-summary calls go to any OpenAI-compatible `base_url`. Point it at a local **9Router** gateway (`http://127.0.0.1:20128/v1`, launched from `start.bat`) to route through its token and 100+ models, or at NVIDIA NIM / DeepSeek directly. The coding engines (`claude`/`agy` CLIs) are separate and unaffected.
-- **MCP bridge** exposing MCP tools to the NIM brain as OpenAI function calls (stdio + HTTP/SSE
-  transports, lazily connected, every remote call time-bounded).
+- **MCP bridge** exposing MCP tools to both the planner and the web-chat/voice agent as OpenAI
+  function calls (stdio + HTTP/SSE, lazily connected, every remote call time-bounded). Add
+  file / browser / Gmail / calendar servers to control them by command — in chat, reads run
+  immediately while writes/sends are gated for confirmation (`hermes/mcp_risk.py`). See
+  [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 - **Existing projects** — register a name-to-path map in settings, then aim a task at it with
   `/task @myprofit fix login`. Without `@`, a fresh workspace is created as before.
 - **Confirmation gate** — tasks that `git push`, delete files, touch paths outside the project
@@ -332,6 +335,7 @@ See [`docs/TODO.md`](docs/TODO.md) for the full backlog history.
 ## Docs
 
 - [`docs/design-spec.md`](docs/design-spec.md) — architecture and decisions
+- [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) — connect file / browser / Gmail / calendar via MCP
 - [`docs/SMOKE.md`](docs/SMOKE.md) — smoke-test checklist
 - [`docs/superpowers/specs/`](docs/superpowers/specs/) — feature design specs
   (project registry, startup recovery)

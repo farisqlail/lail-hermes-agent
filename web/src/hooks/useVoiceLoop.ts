@@ -17,7 +17,7 @@ export interface VoiceLoopOptions {
   isSpeaking: () => boolean;
   onBargeIn: () => void;
   onTranscript: (text: string) => void;
-  onCommand: (cmd: LocalCommand) => void;
+  onCommand: (cmd: LocalCommand, text: string) => void;
   onError: (message: string) => void;
 }
 
@@ -61,7 +61,7 @@ export function useVoiceLoop(opts: VoiceLoopOptions) {
       const text = await transcribeBlob(await recorder.stop());
       if (text) {
         const cmd = matchLocalCommand(text);
-        if (cmd) optsRef.current.onCommand(cmd);
+        if (cmd) optsRef.current.onCommand(cmd, text);
         else optsRef.current.onTranscript(text);
       }
     } catch (err) {
