@@ -7,9 +7,11 @@
 
 .field-label {
   font-family: var(--font-main);
-  font-size: var(--t-sm);
-  font-weight: 600;
-  color: var(--text-dim);
+  font-size: var(--t-xs);
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
 }
 
 .field-control {
@@ -21,13 +23,13 @@
 .field-textarea {
   width: 100%;
   padding: var(--s2) var(--s3);
-  background-color: var(--surface-2);
+  background-color: rgba(6, 10, 15, 0.6);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   color: var(--text);
-  font-family: var(--font-main);
-  font-size: var(--t-base);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  transition: all 0.25s cubic-bezier(0.19, 1, 0.22, 1);
 }
 
 .field-input:focus,
@@ -35,32 +37,40 @@
 .field-textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  box-shadow: var(--border-glow);
+  background-color: rgba(6, 10, 15, 0.85);
 }
 
 .field-input::placeholder {
   color: var(--text-faint);
+  opacity: 0.6;
 }
 
 .field-help {
   font-size: var(--t-xs);
   color: var(--text-faint);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  margin-top: 2px;
 }
 
 .field-error {
   font-size: var(--t-xs);
   color: var(--err);
-  font-weight: 500;
+  font-weight: bold;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
 }
 
 .form-field.has-error .field-input,
 .form-field.has-error .field-select,
 .form-field.has-error .field-textarea {
   border-color: var(--err);
+  box-shadow: 0 0 8px rgba(255, 0, 80, 0.2);
 }
 
 .form-field.has-error .field-input:focus,
 .form-field.has-error .field-select:focus,
 .form-field.has-error .field-textarea:focus {
-  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+  box-shadow: 0 0 10px var(--err);
 }

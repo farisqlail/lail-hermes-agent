@@ -6,6 +6,11 @@
 
 body {
   background-color: var(--surface-0);
+  background-image: 
+    linear-gradient(rgba(180, 100, 50, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(180, 100, 50, 0.03) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: center;
   color: var(--text);
   font-family: var(--font-main);
   font-size: var(--t-base);
@@ -15,6 +20,33 @@ body {
   overflow: hidden;
   height: 100vh;
   width: 100vw;
+  position: relative;
+}
+
+/* Sci-fi Scanline Overlay */
+body::before {
+  content: " ";
+  display: block;
+  position: absolute;
+  top: 0; left: 0; bottom: 0; right: 0;
+  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+  z-index: 9999;
+  background-size: 100% 4px, 6px 100%;
+  pointer-events: none;
+  opacity: 0.4;
+}
+
+/* Ambient glow animations */
+@keyframes cyber-pulse {
+  0% { box-shadow: 0 0 5px hsla(180, 100%, 50%, 0.2); }
+  50% { box-shadow: 0 0 15px hsla(180, 100%, 50%, 0.4); }
+  100% { box-shadow: 0 0 5px hsla(180, 100%, 50%, 0.2); }
+}
+
+@keyframes text-flicker {
+  0% { opacity: 0.98; }
+  50% { opacity: 1; }
+  100% { opacity: 0.98; }
 }
 
 button, input, select, textarea {
@@ -34,23 +66,26 @@ a {
   text-decoration: none;
 }
 
-/* Custom Scrollbars */
+/* Custom High-Tech Scrollbars */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
   background: var(--surface-0);
+  border-left: 1px solid var(--border);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
+  background: var(--accent);
+  box-shadow: var(--border-glow);
   border-radius: var(--r-sm);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-faint);
+  background: var(--text);
+  box-shadow: 0 0 10px var(--accent);
 }
 
 /* Markdown Rendering Styles */
@@ -63,6 +98,7 @@ a {
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   overflow: hidden;
+  box-shadow: 0 0 10px rgba(180, 100, 50, 0.05);
 }
 
 .md-table th, .md-table td {
@@ -72,9 +108,12 @@ a {
 }
 
 .md-table th {
-  background-color: var(--surface-2);
+  background-color: hsla(180, 100%, 50%, 0.08);
   font-weight: 600;
-  color: var(--text);
+  color: var(--accent);
+  border-bottom: 2px solid var(--border-strong);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .md-table tr:last-child td {
@@ -82,7 +121,7 @@ a {
 }
 
 .md-table tr:hover {
-  background-color: var(--surface-2);
+  background-color: var(--surface-3);
 }
 
 .md-blockquote {
@@ -93,25 +132,44 @@ a {
   border-radius: 0 var(--r-md) var(--r-md) 0;
   color: var(--text-dim);
   font-style: italic;
+  box-shadow: inset 3px 0 6px rgba(180, 100, 50, 0.05);
 }
 
 .md-hr {
   border: none;
-  border-top: 1px solid var(--border-strong);
+  border-top: 1px solid var(--border);
   margin: 20px 0;
+  position: relative;
+}
+
+.md-hr::after {
+  content: "SYS.PRTCL";
+  position: absolute;
+  top: -8px;
+  left: 24px;
+  font-size: 8px;
+  color: var(--accent);
+  background-color: var(--surface-0);
+  padding: 0 8px;
+  letter-spacing: 0.1em;
 }
 
 /* Headings in chat thread */
 .chat-thread h1, .chat-thread h2, .chat-thread h3 {
   font-family: var(--font-title);
-  color: var(--text);
+  color: var(--accent);
   margin-top: 18px;
   margin-bottom: 8px;
-  font-weight: 600;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 4px hsla(180, 100%, 50%, 0.3);
 }
 
 .chat-thread h1 {
   font-size: var(--t-xl);
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 4px;
 }
 
 .chat-thread h2 {

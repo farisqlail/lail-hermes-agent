@@ -8,36 +8,38 @@
 }
 
 .toggle-switch {
-  width: 36px;
-  height: 20px;
-  background-color: var(--surface-2);
+  width: 38px;
+  height: 18px;
+  background-color: rgba(6, 10, 15, 0.6);
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-sm);
   position: relative;
-  transition: background-color 0.2s ease, border-color 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.19, 1, 0.22, 1);
   flex-shrink: 0;
-  margin-top: 2px;
+  margin-top: 3px;
 }
 
 .toggle-switch.checked {
-  background-color: var(--accent);
+  background-color: rgba(180, 100, 50, 0.1);
   border-color: var(--accent);
+  box-shadow: var(--border-glow);
 }
 
 .toggle-handle {
-  width: 14px;
-  height: 14px;
-  background-color: var(--text);
-  border-radius: 50%;
+  width: 12px;
+  height: 12px;
+  background-color: var(--text-dim);
+  border-radius: 0px; /* square corner tech handle */
   position: absolute;
   top: 2px;
   left: 2px;
-  transition: transform 0.2s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: all 0.2s cubic-bezier(0.19, 1, 0.22, 1);
 }
 
 .toggle-switch.checked .toggle-handle {
-  transform: translateX(16px);
+  transform: translateX(20px);
+  background-color: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
 }
 
 .toggle-info {
@@ -47,12 +49,16 @@
 
 .toggle-label {
   font-size: var(--t-sm);
-  font-weight: 600;
+  font-weight: bold;
+  font-family: var(--font-main);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   color: var(--text);
 }
 
 .toggle-help {
   font-size: var(--t-xs);
   color: var(--text-faint);
-  margin-top: var(--s1);
+  font-family: var(--font-mono);
+  margin-top: 2px;
 }

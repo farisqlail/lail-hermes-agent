@@ -74,8 +74,8 @@ export function ConfigSecrets() {
 
   return (
     <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '600px' }}>
-      <section style={{ backgroundColor: 'var(--surface-1)', padding: '20px', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
-        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: 'var(--t-lg)', fontWeight: '600', marginBottom: '16px', color: 'var(--accent)' }}>🔑 API Keys & Bot Tokens</h3>
+      <section className="cyber-section">
+        <h3 className="cyber-section-header">🔑 API Keys & Bot Tokens</h3>
 
         <Field
           label="AI API Key (NVIDIA NIM / DeepSeek / Custom)"

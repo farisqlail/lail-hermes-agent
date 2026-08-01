@@ -31,6 +31,7 @@ function AppContent() {
 
   const [sessions, setSessions] = useState<{ session_id: string; title: string; created: number }[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(true);
+  const [focusedNode, setFocusedNode] = useState<{ id: string; label: string; type: string; details?: string; status?: string } | null>(null);
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -100,7 +101,44 @@ function AppContent() {
       {/* Permanent Left Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <span>⬢</span> Lail Hermes
+          <div className="sidebar-logo-text">
+            <span>⬡</span> LAIL HERMES
+          </div>
+          <div className="sidebar-logo-badge">SYS</div>
+        </div>
+
+        {/* INSPECTOR */}
+        <div className="inspector-card">
+          <div className="inspector-title">Inspector</div>
+          <div className="inspector-body">
+            {focusedNode ? (
+              <div>
+                <div style={{ color: 'var(--accent)', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase' }}>
+                  [{focusedNode.type}]
+                </div>
+                <div style={{ color: 'var(--text)', fontSize: '12px', marginBottom: '6px', wordBreak: 'break-all' }}>
+                  {focusedNode.label}
+                </div>
+                <div style={{ fontSize: '10px', color: 'var(--text-faint)' }}>
+                  ID: {focusedNode.id}
+                </div>
+                {focusedNode.status && (
+                  <div style={{ fontSize: '10px', marginTop: '4px' }}>
+                    STATUS: <span style={{ color: 'var(--accent)' }}>{focusedNode.status.toUpperCase()}</span>
+                  </div>
+                )}
+                {focusedNode.details && (
+                  <div style={{ marginTop: '6px', fontSize: '10px', borderTop: '1px solid var(--border)', paddingTop: '6px' }}>
+                    {focusedNode.details}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{ color: 'var(--text-faint)', fontStyle: 'italic' }}>
+                Click a node to focus it. Shift-click a second to trace the path.
+              </div>
+            )}
+          </div>
         </div>
 
         <nav className="sidebar-nav">
@@ -129,24 +167,27 @@ function AppContent() {
               border: 'none',
               color: 'var(--accent)',
               cursor: 'pointer',
-              fontSize: 'var(--t-sm)',
+              fontSize: '11px',
+              fontFamily: 'var(--font-mono)',
               padding: '2px 8px',
               borderRadius: 'var(--r-sm)',
-              fontWeight: '600',
+              fontWeight: 'bold',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
             }}
             title="Percakapan Baru"
           >
-            + New
+            [+ NEW]
           </button>
         </div>
         <div className="task-list">
           {loadingSessions ? (
-            <div style={{ padding: 'var(--s2) var(--s3)', color: 'var(--text-faint)', fontSize: 'var(--t-xs)' }}>
-              Memuat percakapan...
+            <div style={{ padding: 'var(--s2) var(--s3)', color: 'var(--text-faint)', fontSize: 'var(--t-xs)', fontFamily: 'var(--font-mono)' }}>
+              CONNECTING TO DATA STREAMS...
             </div>
           ) : sessions.length === 0 ? (
-            <div style={{ padding: 'var(--s2) var(--s3)', color: 'var(--text-faint)', fontSize: 'var(--t-xs)' }}>
-              Belum ada percakapan.
+            <div style={{ padding: 'var(--s2) var(--s3)', color: 'var(--text-faint)', fontSize: 'var(--t-xs)', fontFamily: 'var(--font-mono)' }}>
+              NO CHAT LOGS FOUND
             </div>
           ) : (
             sessions.map((s) => (
@@ -177,7 +218,7 @@ function AppContent() {
                     border: 'none',
                     color: 'var(--text-faint)',
                     cursor: 'pointer',
-                    fontSize: '12px',
+                    fontSize: '11px',
                     padding: '4px',
                     zIndex: 2,
                   }}
@@ -193,11 +234,11 @@ function AppContent() {
         <div className="sidebar-footer">
           <div className="status-indicator">
             <span className={`status-dot ${secretsStatus?.telegram_bot_token_set ? 'ready' : 'error'}`}></span>
-            <span>Bot: {secretsStatus?.telegram_bot_token_set ? 'Active' : 'Missing'}</span>
+            <span>BOT: {secretsStatus?.telegram_bot_token_set ? 'ONLINE' : 'OFFLINE'}</span>
           </div>
           <div className="status-indicator">
             <span className={`status-dot ${secretsStatus?.nvidia_api_key_set ? 'ready' : 'error'}`}></span>
-            <span>NIM: {secretsStatus?.nvidia_api_key_set ? 'Ready' : 'Missing'}</span>
+            <span>NIM: {secretsStatus?.nvidia_api_key_set ? 'STABLE' : 'MISSING'}</span>
           </div>
         </div>
       </aside>
@@ -205,12 +246,12 @@ function AppContent() {
       {/* Main Content Area */}
       <main className="main-content">
         <div className="page-container">
-          {path === '/' && <Dashboard sessionId={sessionId} onRefreshSessions={fetchSessions} />}
+          {path === '/' && <Dashboard sessionId={sessionId} onRefreshSessions={fetchSessions} onSelectNode={setFocusedNode} />}
 
           {path === '/task' && <TaskDetail />}
 
           {isConfigRoute && (
-            <div>
+            <div className="config-container">
               <header className="page-header">
                 <h1 className="page-title">Configuration</h1>
                 <p className="page-subtitle">Atur setting utama, API keys, MCP servers, dan proyek Anda</p>

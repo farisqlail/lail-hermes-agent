@@ -3,19 +3,21 @@
   align-items: center;
   justify-content: center;
   padding: var(--s2) var(--s4);
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   font-family: var(--font-main);
   font-size: var(--t-sm);
-  font-weight: 600;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   cursor: pointer;
-  transition: background-color 0.2s ease, opacity 0.2s ease, transform 0.1s ease;
-  border: 1px solid transparent;
+  transition: all 0.25s cubic-bezier(0.19, 1, 0.22, 1);
+  border: 1px solid var(--border);
   outline: none;
   min-height: 38px;
+  position: relative;
+  overflow: hidden;
 }
 
-/* Inline card/row buttons. min-height has to be overridden explicitly: the
-   call sites set their own padding, but .btn's 38px floor kept winning. */
 .btn-small {
   min-height: 26px;
   padding: var(--s1) var(--s3);
@@ -23,51 +25,67 @@
 }
 
 .btn:active {
-  transform: scale(0.98);
+  transform: scale(0.96);
+  filter: brightness(1.2);
 }
 
 .btn:disabled {
-  opacity: 0.6;
+  opacity: 0.4;
   cursor: not-allowed;
   transform: none;
+  box-shadow: none !important;
 }
 
 .btn-primary {
-  background-color: var(--accent);
-  color: var(--text);
+  background-color: var(--surface-2);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  box-shadow: var(--border-glow);
+  text-shadow: 0 0 4px hsla(180, 100%, 50%, 0.4);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background-color: hsl(217, 100%, 66%);
+  background-color: var(--accent);
+  color: var(--surface-0);
+  box-shadow: 0 0 12px var(--accent);
+  text-shadow: none;
 }
 
 .btn-secondary {
-  background-color: var(--surface-2);
+  background-color: rgba(6, 10, 15, 0.4);
   border-color: var(--border);
   color: var(--text-dim);
 }
 
 .btn-secondary:hover:not(:disabled) {
-  background-color: var(--border-strong);
-  color: var(--text);
+  background-color: var(--surface-3);
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: var(--border-glow);
 }
 
 .btn-danger {
-  background-color: var(--err);
-  color: var(--text);
+  background-color: rgba(255, 0, 80, 0.08);
+  border: 1px solid var(--err);
+  color: var(--err);
+  box-shadow: 0 0 8px rgba(255, 0, 80, 0.15);
+  text-shadow: 0 0 4px rgba(255, 0, 80, 0.4);
 }
 
 .btn-danger:hover:not(:disabled) {
-  background-color: hsl(346, 74%, 60%);
+  background-color: var(--err);
+  color: var(--text);
+  box-shadow: 0 0 12px var(--err);
+  text-shadow: none;
 }
 
 /* Spinner Animation */
 .btn-spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
+  border: 2px solid rgba(180, 100, 50, 0.2);
   border-radius: 50%;
-  border-top-color: #fff;
+  border-top-color: var(--accent);
   animation: spin 0.8s linear infinite;
 }
 

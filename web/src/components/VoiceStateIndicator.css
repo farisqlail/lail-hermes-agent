@@ -2,48 +2,48 @@
   display: inline-flex;
   align-items: center;
   gap: var(--s2);
-  padding: var(--s1) var(--s3);
-  border-radius: var(--r-md);
-  background-color: var(--surface-1);
+  padding: 4px var(--s3);
+  border-radius: var(--r-sm);
+  background-color: rgba(6, 10, 15, 0.6);
   border: 1px solid var(--border);
-  font-size: var(--t-sm);
-  font-weight: 600;
-  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
   user-select: none;
   white-space: nowrap;
-  /* --c is the state colour; each state overrides it below. */
   --c: var(--text-faint);
-  border-left: 3px solid var(--c);
+  border-left: 2px solid var(--c);
+  box-shadow: inset 0 0 4px rgba(180, 100, 50, 0.05);
 }
 
 .voice-state--idle   { --c: var(--text-faint); }
-.voice-state--listen { --c: var(--ok); }
-.voice-state--think  { --c: var(--warn); }
-.voice-state--speak  { --c: var(--accent, var(--ok)); }
+.voice-state--listen { --c: var(--ok); color: var(--ok); text-shadow: 0 0 4px hsla(150, 100%, 50%, 0.4); }
+.voice-state--think  { --c: var(--warn); color: var(--warn); text-shadow: 0 0 4px hsla(35, 100%, 55%, 0.4); }
+.voice-state--speak  { --c: var(--accent); color: var(--accent); text-shadow: 0 0 4px hsla(180, 100%, 50%, 0.4); }
 
 .voice-state__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 0px; /* square corner indicator for tech style */
   background-color: var(--c);
   flex-shrink: 0;
+  box-shadow: 0 0 8px var(--c);
 }
 
-/* Every non-idle state pulses so an operator catches the change in peripheral
-   vision. Idle stays still on purpose — a pulsing "nothing happening" light is
-   noise. Respect reduced-motion: the colour still carries the state. */
 .voice-state--listen .voice-state__dot,
 .voice-state--think .voice-state__dot,
 .voice-state--speak .voice-state__dot {
-  animation: voice-pulse 1.2s ease-in-out infinite;
+  animation: voice-pulse 1.0s cubic-bezier(0.19, 1, 0.22, 1) infinite;
 }
 
-.voice-state__icon { font-size: var(--t-sm); line-height: 1; }
-.voice-state__label { line-height: 1; }
+.voice-state__icon { font-size: var(--t-xs); line-height: 1; }
+.voice-state__label { line-height: 1; font-weight: bold; }
 
 @keyframes voice-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 var(--c); opacity: 1; }
-  50%      { box-shadow: 0 0 0 4px transparent; opacity: 0.5; }
+  0%, 100% { box-shadow: 0 0 0 0 var(--c); opacity: 1; transform: scale(1); }
+  50%      { box-shadow: 0 0 8px 4px transparent; opacity: 0.4; transform: scale(1.2); }
 }
 
 @media (prefers-reduced-motion: reduce) {

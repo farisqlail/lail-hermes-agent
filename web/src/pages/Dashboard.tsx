@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useRoute } from '../router';
 import { useTasks } from '../hooks/useTasks';
 import { parseStreamBuffer, StreamEvent } from '../api/stream';
 import { errorMessage, api } from '../api/client';
@@ -49,68 +50,59 @@ interface InlineTaskCardProps {
 function InlineTaskCard({ taskId, tasks, confirming, onConfirm }: InlineTaskCardProps) {
   const task = tasks.find(t => t.task_id === taskId);
 
-  // An id in the prose with no task behind it. Rendering null here hid the
-  // problem: the assistant can quote a task id it never queued, and the reply
-  // then reads as if work is waiting while no card, no log link and no Run
-  // button appear. Say so instead — an id that resolves to nothing is a
-  // failure the operator must see, not a blank space.
   if (!task) {
     return (
       <div style={{
-        marginTop: '12px',
-        padding: '10px 14px',
-        backgroundColor: 'var(--surface-1)',
+        marginTop: '8px',
+        padding: '8px 12px',
+        backgroundColor: 'rgba(6,10,15,0.7)',
         border: '1px dashed var(--err)',
-        borderRadius: 'var(--r-md)',
+        borderRadius: 'var(--r-sm)',
         alignSelf: 'stretch',
-        fontSize: 'var(--t-sm)',
+        fontSize: '11px',
         color: 'var(--text-dim)',
       }}>
-        <span style={{ color: 'var(--err)', fontWeight: '600' }}>⚠️ Task tidak ditemukan</span>
+        <span style={{ color: 'var(--err)', fontWeight: 'bold' }}>⚠️ TASK NOT FOUND</span>
         {' — '}
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)' }}>{taskId}</span>
-        <div style={{ marginTop: '4px', fontSize: 'var(--t-xs)' }}>
-          ID ini tidak ada di daftar task, jadi tidak ada tombol Run untuknya.
-          Minta asisten memakai <code>recent_tasks</code> untuk menyebut ID yang benar,
-          atau antrekan ulang tasknya.
-        </div>
+        <span style={{ fontFamily: 'var(--font-mono)' }}>{taskId}</span>
       </div>
     );
   }
 
   const statusColors: Record<string, string> = {
-    queued: 'var(--text-faint)',
+    queued: '#888',
     running: 'var(--accent)',
-    done: 'var(--ready)',
+    done: 'var(--ok)',
     failed: 'var(--err)',
-    cancelled: 'var(--text-faint)',
+    cancelled: '#888',
     interrupted: 'var(--warn)',
     awaiting_confirm: 'var(--warn)',
   };
 
   return (
     <div style={{
-      marginTop: '12px',
-      padding: '12px 16px',
-      backgroundColor: 'var(--surface-1)',
+      marginTop: '8px',
+      padding: '10px 12px',
+      backgroundColor: 'rgba(6, 10, 15, 0.75)',
       border: '1px solid var(--border)',
-      borderRadius: 'var(--r-md)',
+      borderRadius: 'var(--r-sm)',
       display: 'flex',
       flexDirection: 'column',
-      gap: '8px',
-      fontSize: 'var(--t-sm)',
+      gap: '6px',
+      fontSize: '12px',
       alignSelf: 'stretch',
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontWeight: '600', color: 'var(--text)' }}>
-          ⚙️ Task: <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)' }}>{taskId}</span>
+        <span style={{ fontWeight: 'bold', color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
+          ⚙️ TASK: {taskId.substring(0, 8)}...
         </span>
         <span style={{
-          padding: '2px 8px',
+          padding: '1px 6px',
           borderRadius: 'var(--r-sm)',
-          fontSize: 'var(--t-xs)',
-          fontWeight: '600',
-          backgroundColor: 'rgba(255,255,255,0.05)',
+          fontSize: '9px',
+          fontFamily: 'var(--font-mono)',
+          fontWeight: 'bold',
+          backgroundColor: 'rgba(255,255,255,0.03)',
           color: statusColors[task.status] || 'var(--text)',
           border: `1px solid ${statusColors[task.status] || 'var(--border)'}`,
         }}>
@@ -118,31 +110,31 @@ function InlineTaskCard({ taskId, tasks, confirming, onConfirm }: InlineTaskCard
         </span>
       </div>
 
-      <div style={{ color: 'var(--text-dim)', fontStyle: 'italic' }}>
+      <div style={{ color: 'var(--text-dim)', fontStyle: 'italic', fontSize: '11px' }}>
         "{task.text}"
       </div>
 
-      <div style={{ display: 'flex', gap: '8px', marginTop: '4px', alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: '8px', marginTop: '2px', alignItems: 'center', flexWrap: 'wrap' }}>
         <a
           href={`#/task/${taskId}`}
           style={{
             color: 'var(--accent)',
-            textDecoration: 'none',
-            fontWeight: '600',
-            fontSize: 'var(--t-xs)',
+            textDecoration: 'underline',
+            fontSize: '10px',
+            fontFamily: 'var(--font-mono)',
           }}
         >
-          Lihat Log & Langkah Lengkap ↗
+          VIEW LOGS ↗
         </a>
 
         {task.status === 'awaiting_confirm' && (
-          <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
+          <div style={{ display: 'flex', gap: '6px', marginLeft: 'auto' }}>
             <Button
               variant="primary"
               size="small"
               onClick={() => onConfirm(true)}
               disabled={confirming}
-              style={{ padding: '4px 12px', fontSize: 'var(--t-xs)' }}
+              style={{ padding: '2px 8px', fontSize: '9px', minHeight: '20px' }}
             >
               Run
             </Button>
@@ -151,7 +143,7 @@ function InlineTaskCard({ taskId, tasks, confirming, onConfirm }: InlineTaskCard
               size="small"
               onClick={() => onConfirm(false)}
               disabled={confirming}
-              style={{ padding: '4px 12px', fontSize: 'var(--t-xs)' }}
+              style={{ padding: '2px 8px', fontSize: '9px', minHeight: '20px' }}
             >
               Cancel
             </Button>
@@ -162,16 +154,35 @@ function InlineTaskCard({ taskId, tasks, confirming, onConfirm }: InlineTaskCard
   );
 }
 
+interface GraphNode {
+  id: string;
+  label: string;
+  type: 'core' | 'session' | 'task';
+  status?: string;
+  details?: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+}
+
+interface GraphLink {
+  source: string;
+  target: string;
+}
+
 interface DashboardProps {
   sessionId?: string;
   onRefreshSessions?: () => void;
+  onSelectNode?: (node: { id: string; label: string; type: string; details?: string; status?: string } | null) => void;
 }
 
-export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
+export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: DashboardProps) {
   const { isConnected } = useTasks();
   const { tasks } = useTasksContext();
   const { toast } = useToast();
-  
+  const { navigate } = useRoute();
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [agentName, setAgentName] = useState('Lail Agent');
@@ -192,6 +203,25 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
   const sinkRef = useRef<HtmlAudioSink | null>(null);
   const queueRef = useRef<SpeechQueue | null>(null);
 
+  const [sessions, setSessions] = useState<{ session_id: string; title: string; created: number }[]>([]);
+
+  // ── Retrieve active sessions ──
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res = await fetch('/api/sessions');
+      if (res.ok) {
+        const data = await res.json();
+        setSessions(data);
+      }
+    } catch (err) {
+      console.error('Gagal memuat sesi:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSessions();
+  }, [fetchSessions, sessionId]);
+
   if (queueRef.current === null && typeof window !== 'undefined') {
     sinkRef.current = new HtmlAudioSink();
     queueRef.current = new SpeechQueue(fetchSpeech, sinkRef.current, {
@@ -204,8 +234,6 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     });
   }
 
-  /** Queue one utterance. Everything spoken goes through here, so barge-in has
-   *  exactly one thing to stop. */
   const speak = useCallback((intent: TtsIntent, opts: Partial<TtsRequestOptions> = {}) => {
     if (!ttsEnabled) return;
     const { endpoint, payload } = ttsRequest(ttsMode, intent, {
@@ -245,7 +273,6 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     };
   }, []);
 
-  // ── Proactive greeting on fresh session ──
   useEffect(() => {
     if (
       !ttsEnabled ||
@@ -258,7 +285,6 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     speak('greeting');
   }, [ttsEnabled, ttsGreeting, loadingHistory, messages.length, sessionId]);
 
-  // ── Voice notification on task completion ──
   const prevTasksRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
     if (!ttsEnabled || !ttsTaskNotify) return;
@@ -267,7 +293,7 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
       const oldStatus = prev.get(t.task_id);
       if (oldStatus && oldStatus !== t.status && (t.status === 'done' || t.status === 'failed')) {
         speak('notify', { taskText: t.text, taskStatus: t.status });
-        break; // one notification at a time
+        break;
       }
     }
     const next = new Map<string, string>();
@@ -276,10 +302,6 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
   }, [tasks, ttsEnabled, ttsTaskNotify]);
   
   const [inputText, setInputText] = useState('');
-
-  // ── Voice input ──
-  // Distinguishes a hold (Ctrl+Space) from a click. Without it, releasing
-  // Space would also stop a recording the operator started by clicking.
   const holdingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -294,14 +316,9 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     onCommand: (cmd) => {
       if (cmd !== 'stop') return;
       shutUp();
-      // Confirm in the thread: without it the operator cannot tell whether the
-      // mic heard "diam" or the assistant simply finished.
       toast(STOP_ACK, 'ok');
     },
     onTranscript: (text) => {
-      // Voice transcripts auto-send in every mode (push-to-talk and hands-free
-      // alike). If a reply is still streaming, submitText would drop the text,
-      // so park it in the input for the operator to send once the turn ends.
       if (streaming) {
         setInputText((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
         inputRef.current?.focus();
@@ -312,8 +329,6 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     onError: (message) => toast(message, 'err'),
   });
 
-  // Hold Ctrl+Space to talk. Ctrl rather than Space alone so the shortcut
-  // cannot fire while the operator is typing a message.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code !== 'Space' || !e.ctrlKey || e.repeat) return;
@@ -334,6 +349,7 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
       window.removeEventListener('keyup', onKeyUp);
     };
   }, [pushToTalkStart, pushToTalkStop]);
+
   const [streaming, setStreaming] = useState(false);
   const [streamContent, setStreamContent] = useState('');
   const [streamUsage, setStreamUsage] = useState<{ total: number } | null>(null);
@@ -382,7 +398,6 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     }
   };
 
-  // Scroll to bottom when messages or streamContent updates
   const scrollToBottom = useCallback(() => {
     if (chatThreadRef.current) {
       chatThreadRef.current.scrollTop = chatThreadRef.current.scrollHeight;
@@ -406,7 +421,6 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     queueRef.current?.markTurnStart();
     if (ttsEnabled) sinkRef.current?.unlock();
 
-    // Append user message immediately
     const userMsg: Message = { role: 'user', content: text };
     setMessages((prev) => [...prev, userMsg]);
 
@@ -415,11 +429,8 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
 
     let accumulatedText = '';
     let speechBuffer = '';
-    // The extractor runs in every mode: even when nothing will speak the line,
-    // the tag must never reach the screen or the stored thread.
     const extractor = new VoiceTagExtractor();
     const streamSpeech = ttsEnabled && ttsMode === 'verbatim';
-    // Smart mode's fast path — the <voice> line replaces the second LLM call.
     const wantsVoiceTag = ttsEnabled && ttsMode === 'smart';
     let accumulatedUsage: { total: number } | null = null;
 
@@ -451,8 +462,6 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
           if (ev.delta) {
             const { display, voice: spoken } = extractor.push(ev.delta);
             if (spoken && wantsVoiceTag) {
-              // First audio starts here, while the rest of the reply is still
-              // arriving. This is the whole point of the tag.
               speak('summary', { text: spoken });
             }
             if (display) {
@@ -482,7 +491,6 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
         setStreamContent(accumulatedText);
       }
 
-      // Finish streaming and push assistant message
       const assistantMsg: Message = {
         role: 'assistant',
         content: accumulatedText || '(tidak ada balasan)',
@@ -498,21 +506,20 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
         }
         for (const s of flushSentence(speechBuffer)) speak('summary', { text: s });
       } else if (!extractor.sawTag) {
-        // The model ignored the instruction, or speech is on in a mode that
-        // does not ask for the tag. The summariser round trip still works —
-        // it is only slower, which is what this path exists to avoid.
         speak('summary', { text: accumulatedText });
       }
       if (onRefreshSessions) {
         onRefreshSessions();
       }
+      // Reload sessions list
+      fetchSessions();
     } catch (err) {
       shutUp();
       if (err instanceof Error && err.name === 'AbortError') {
         const assistantMsg: Message = {
           role: 'assistant',
           content: accumulatedText || '(dihentikan oleh operator)',
-          usage: { total: 0 }, // Sentinel for aborted
+          usage: { total: 0 },
         };
         setMessages((prev) => [...prev, assistantMsg]);
         toast('Aliran chat dihentikan', 'warn');
@@ -565,9 +572,6 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     micActive: micState === 'listening' || micState === 'recording',
   });
 
-  // Heartbeat: tell the server our voice state so the tray icon can mirror it,
-  // and so the tray knows a tab is open. Posts on every change and every 5s as
-  // a keepalive — the server's presence window is a small multiple of that.
   useEffect(() => {
     const post = () => {
       void fetch('/api/voice/state', {
@@ -581,9 +585,6 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     return () => clearInterval(id);
   }, [voiceState]);
 
-  // Wake poll: pick up a "Hey Ev" the tray helper latched and start a capture.
-  // Skipped while a reply streams — barge-in already owns that case, and a wake
-  // mid-reply would race the stream.
   useEffect(() => {
     const id = setInterval(() => {
       if (streaming) return;
@@ -595,261 +596,571 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     return () => clearInterval(id);
   }, [streaming, startWakeCapture]);
 
+  // ── Force-directed Graph Layout Physics Engine ──
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 320, y: 220 });
+  const [showLabels, setShowLabels] = useState(true);
+
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const bgRectRef = useRef<SVGRectElement | null>(null);
+  const draggedNodeIdRef = useRef<string | null>(null);
+  const isPanningRef = useRef(false);
+  const panStartRef = useRef({ x: 0, y: 0 });
+
+  const nodesStateRef = useRef<Record<string, { x: number; y: number; vx: number; vy: number }>>({});
+
+  // Derive graph structure
+  const initialGraph = useMemo(() => {
+    const nodes: GraphNode[] = [
+      { id: 'core', label: 'Hermes Core', type: 'core', status: 'stable', details: 'Cognitive system coordinator core mainframe.', x: 0, y: 0, vx: 0, vy: 0 }
+    ];
+    const links: GraphLink[] = [];
+
+    // Session nodes
+    sessions.forEach((s) => {
+      const cached = nodesStateRef.current[s.session_id] || {
+        x: (Math.random() - 0.5) * 160,
+        y: (Math.random() - 0.5) * 160,
+        vx: 0,
+        vy: 0
+      };
+      nodesStateRef.current[s.session_id] = cached;
+      nodes.push({
+        id: s.session_id,
+        label: s.title,
+        type: 'session',
+        status: sessionId === s.session_id ? 'active' : 'idle',
+        details: `Chat logs sequence. Timestamp: ${new Date(s.created * 1000).toLocaleString()}`,
+        ...cached
+      });
+      links.push({ source: 'core', target: s.session_id });
+    });
+
+    // Task nodes connected to active session
+    tasks.forEach((t) => {
+      const targetSessionId = (t as any).session_id || sessionId || 'core';
+      const cached = nodesStateRef.current[t.task_id] || {
+        x: (Math.random() - 0.5) * 320,
+        y: (Math.random() - 0.5) * 320,
+        vx: 0,
+        vy: 0
+      };
+      nodesStateRef.current[t.task_id] = cached;
+      nodes.push({
+        id: t.task_id,
+        label: t.text.length > 25 ? t.text.substring(0, 22) + '...' : t.text,
+        type: 'task',
+        status: t.status,
+        details: `Task Instruction: "${t.text}"`,
+        ...cached
+      });
+      links.push({ source: targetSessionId, target: t.task_id });
+    });
+
+    return { nodes, links };
+  }, [sessions, tasks, sessionId]);
+
+  const [graphNodes, setGraphNodes] = useState<GraphNode[]>([]);
+  const [graphLinks, setGraphLinks] = useState<GraphLink[]>([]);
+
+  // Simulation physics loop
+  useEffect(() => {
+    let animId: number;
+    const runSimulation = () => {
+      const { nodes: cNodes, links: cLinks } = initialGraph;
+      if (cNodes.length === 0) return;
+
+      const kRepel = 240;
+      const kLink = 0.05;
+      const linkLen = 80;
+      const kGravity = 0.015;
+      const damping = 0.8;
+
+      // Charge repulsion
+      for (let i = 0; i < cNodes.length; i++) {
+        const n1 = cNodes[i];
+        for (let j = i + 1; j < cNodes.length; j++) {
+          const n2 = cNodes[j];
+          const dx = n2.x - n1.x;
+          const dy = n2.y - n1.y;
+          const distSq = dx * dx + dy * dy + 1;
+          const dist = Math.sqrt(distSq);
+          if (dist < 220) {
+            const force = kRepel / distSq;
+            const fx = (dx / dist) * force;
+            const fy = (dy / dist) * force;
+            n1.vx -= fx;
+            n1.vy -= fy;
+            n2.vx += fx;
+            n2.vy += fy;
+          }
+        }
+      }
+
+      // Link attraction
+      cLinks.forEach((link) => {
+        const sourceNode = cNodes.find(n => n.id === link.source);
+        const targetNode = cNodes.find(n => n.id === link.target);
+        if (sourceNode && targetNode) {
+          const dx = targetNode.x - sourceNode.x;
+          const dy = targetNode.y - sourceNode.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
+          const delta = dist - linkLen;
+          const force = delta * kLink;
+          const fx = (dx / dist) * force;
+          const fy = (dy / dist) * force;
+          sourceNode.vx += fx;
+          sourceNode.vy += fy;
+          targetNode.vx -= fx;
+          targetNode.vy -= fy;
+        }
+      });
+
+      // Update positions
+      cNodes.forEach((node) => {
+        node.vx -= node.x * kGravity;
+        node.vy -= node.y * kGravity;
+
+        if (node.id === draggedNodeIdRef.current) {
+          node.vx = 0;
+          node.vy = 0;
+        } else {
+          node.x += node.vx;
+          node.y += node.vy;
+          node.vx *= damping;
+          node.vy *= damping;
+        }
+
+        if (nodesStateRef.current[node.id]) {
+          nodesStateRef.current[node.id].x = node.x;
+          nodesStateRef.current[node.id].y = node.y;
+          nodesStateRef.current[node.id].vx = node.vx;
+          nodesStateRef.current[node.id].vy = node.vy;
+        }
+      });
+
+      setGraphNodes([...cNodes]);
+      setGraphLinks([...cLinks]);
+      animId = requestAnimationFrame(runSimulation);
+    };
+
+    animId = requestAnimationFrame(runSimulation);
+    return () => cancelAnimationFrame(animId);
+  }, [initialGraph]);
+
+  // Pan & Zoom Drag listeners
+  const handleSvgMouseDown = (e: React.MouseEvent) => {
+    if (e.target === svgRef.current || e.target === bgRectRef.current) {
+      isPanningRef.current = true;
+      panStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+    }
+  };
+
+  const handleSvgMouseMove = (e: React.MouseEvent) => {
+    if (isPanningRef.current) {
+      setPan({
+        x: e.clientX - panStartRef.current.x,
+        y: e.clientY - panStartRef.current.y
+      });
+    } else if (draggedNodeIdRef.current) {
+      const svgRect = svgRef.current?.getBoundingClientRect();
+      if (svgRect) {
+        const mx = (e.clientX - svgRect.left - pan.x) / zoom;
+        const my = (e.clientY - svgRect.top - pan.y) / zoom;
+        const node = graphNodes.find(n => n.id === draggedNodeIdRef.current);
+        if (node) {
+          node.x = mx;
+          node.y = my;
+          if (nodesStateRef.current[node.id]) {
+            nodesStateRef.current[node.id].x = mx;
+            nodesStateRef.current[node.id].y = my;
+          }
+        }
+      }
+    }
+  };
+
+  const handleSvgMouseUp = () => {
+    isPanningRef.current = false;
+    draggedNodeIdRef.current = null;
+  };
+
+  const handleWheel = (e: React.WheelEvent) => {
+    const scale = e.deltaY < 0 ? 1.05 : 0.95;
+    setZoom(z => Math.max(0.3, Math.min(3, z * scale)));
+  };
+
+  const handleFit = () => {
+    setZoom(1);
+    setPan({ x: 320, y: 220 });
+  };
+
+  // Node interactivity
+  const handleNodeMouseDown = (e: React.MouseEvent, nodeId: string) => {
+    e.stopPropagation();
+    draggedNodeIdRef.current = nodeId;
+  };
+
+  const handleNodeClick = (node: GraphNode) => {
+    if (onSelectNode) {
+      onSelectNode({
+        id: node.id,
+        label: node.label,
+        type: node.type,
+        status: node.status,
+        details: node.details
+      });
+    }
+  };
+
+  const handleNodeDoubleClick = (node: GraphNode) => {
+    if (node.type === 'session') {
+      navigate(`#/session/${node.id}`);
+    }
+  };
+
+  // Right sidebar counts
+  const taskCounts = useMemo(() => {
+    const counts = { queued: 0, running: 0, done: 0, failed: 0, pending: 0 };
+    tasks.forEach(t => {
+      if (t.status === 'queued') counts.queued++;
+      else if (t.status === 'running') counts.running++;
+      else if (t.status === 'done') counts.done++;
+      else if (t.status === 'failed') counts.failed++;
+      else counts.pending++;
+    });
+    return counts;
+  }, [tasks]);
+
+  // Readouts showing latest messages
+  const lastMessages = useMemo(() => {
+    return messages.slice(-3);
+  }, [messages]);
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
-      {/* Reconnect Warning Bar */}
+    <div style={{ display: 'flex', flexDirection: 'row', width: '100%', height: '100%', position: 'relative' }}>
+      
+      {/* Reconnect Warning HUD Bar */}
       {!isConnected && (
         <div
           style={{
             position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            backgroundColor: 'var(--warn)',
-            color: 'var(--surface-0)',
-            padding: '8px 16px',
+            top: 0, left: 0, right: 0,
+            backgroundColor: 'var(--err)',
+            color: 'var(--text)',
+            padding: '6px 16px',
             textAlign: 'center',
-            fontWeight: '600',
-            fontSize: 'var(--t-sm)',
+            fontWeight: 'bold',
+            fontFamily: 'var(--font-mono)',
+            fontSize: '10px',
+            textTransform: 'uppercase',
+            letterSpacing: '0.1em',
             zIndex: 10,
-            boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
+            boxShadow: '0 0 15px var(--err)',
+            borderBottom: '1px solid rgba(255, 0, 80, 0.4)',
           }}
         >
-          ⚠️ Koneksi terputus. Mencoba menghubungkan kembali...
+          ⚠️ ALERT: INTERFACE COGNITIVE SERVER OFFLINE. CONNECTING...
         </div>
       )}
 
-      {/* Main chat layout */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', paddingBottom: '80px' }}>
-        <header className="page-header" style={{ flexShrink: 0, marginTop: !isConnected ? '40px' : '0' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <h1 className="page-title">Live Chat & Dashboard</h1>
-                <VoiceStateIndicator state={voiceState} />
-              </div>
-              <p className="page-subtitle">Instruksikan asisten AI Hermes untuk melakukan tugas kustom</p>
-            </div>
-            <Button variant="secondary" onClick={handleReset} disabled={streaming || messages.length === 0}>
-              Reset Chat
-            </Button>
-          </div>
-        </header>
-
-        {/* Messages list */}
-        <div
-          ref={chatThreadRef}
-          className="chat-thread"
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '16px',
-            padding: '16px',
-            backgroundColor: 'var(--surface-1)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--r-lg)',
-            minHeight: '200px',
-          }}
-        >
-          {loadingHistory ? (
-            <div style={{ color: 'var(--text-dim)', textAlign: 'center', margin: 'auto' }}>Memuat riwayat chat...</div>
-          ) : messages.length === 0 && !streaming ? (
-            <div style={{ color: 'var(--text-faint)', textAlign: 'center', margin: 'auto', maxWidth: '400px' }}>
-              <span style={{ fontSize: '2rem', display: 'block', marginBottom: '8px' }}>🤖</span>
-              Halo! Saya adalah <strong>{agentName}</strong>.<br />
-              Ketik instruksi di bawah (mis. <code>buat counter app dengan Flutter</code> atau <code>jalankan test</code>) untuk memulai.
-            </div>
-          ) : (
-            <>
-              {messages.map((m, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
-                    maxWidth: '80%',
-                    backgroundColor: m.role === 'user' ? 'var(--surface-2)' : 'transparent',
-                    border: m.role === 'user' ? '1px solid var(--border-strong)' : 'none',
-                    borderRadius: 'var(--r-lg)',
-                    padding: m.role === 'user' ? '12px 16px' : '0',
-                    color: 'var(--text)',
-                  }}
-                >
-                  {m.role === 'user' ? (
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>
-                  ) : (
-                    <div
-                      style={{
-                        backgroundColor: 'var(--surface-0)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 'var(--r-lg)',
-                        padding: '16px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'flex-start',
-                      }}
-                    >
-                      <Markdown content={m.content} />
-                      {findTaskIds(m.content).map(tid => (
-                        <InlineTaskCard
-                          key={tid}
-                          taskId={tid}
-                          tasks={tasks}
-                          confirming={!!confirmingMap[tid]}
-                          onConfirm={(approved) => handleConfirmTask(tid, approved)}
-                        />
-                      ))}
-                      {m.usage && m.usage.total > 0 && (
-                        <div style={{ fontSize: 'var(--t-xs)', color: 'var(--text-faint)', marginTop: '8px', borderTop: '1px dashed var(--border)', paddingTop: '6px', alignSelf: 'stretch', display: 'flex', gap: '12px', alignItems: 'center' }}>
-                          <span>💡 Total token: {m.usage.total}</span>
-                          {m === messages[messages.length - 1] && firstAudioMs !== null && (
-                            <span
-                              title="Waktu sampai suara pertama terdengar (target di bawah 1500 ms)"
-                              style={{ color: firstAudioMs <= 1500 ? 'var(--text-faint)' : 'var(--warn)' }}
-                            >
-                              🔊 {firstAudioMs} ms
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {m.usage && m.usage.total === 0 && (
-                        <div style={{ fontSize: 'var(--t-xs)', color: 'var(--text-faint)', marginTop: '8px', fontStyle: 'italic' }}>
-                          (Dihentikan oleh operator)
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-
-              {/* Streaming Content */}
-              {streaming && (
-                <div
-                  style={{
-                    alignSelf: 'flex-start',
-                    maxWidth: '85%',
-                    backgroundColor: 'var(--surface-0)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 'var(--r-lg)',
-                    padding: '16px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'flex-start',
-                  }}
-                >
-                  {streamContent ? (
-                    <>
-                      <Markdown content={streamContent} />
-                      {findTaskIds(streamContent).map(tid => (
-                        <InlineTaskCard
-                          key={tid}
-                          taskId={tid}
-                          tasks={tasks}
-                          confirming={!!confirmingMap[tid]}
-                          onConfirm={(approved) => handleConfirmTask(tid, approved)}
-                        />
-                      ))}
-                    </>
-                  ) : (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ opacity: 0.55, fontSize: 'var(--t-sm)', color: 'var(--text-dim)' }}>Hermes sedang berpikir</span>
-                      <div className="typing-indicator">
-                        <span></span>
-                        <span></span>
-                        <span></span>
-                      </div>
-                    </div>
-                  )}
-                  {(streamUsage || firstAudioMs !== null) && (
-                    <div style={{ fontSize: 'var(--t-xs)', color: 'var(--text-faint)', marginTop: '8px', borderTop: '1px dashed var(--border)', paddingTop: '6px', alignSelf: 'stretch', display: 'flex', gap: '12px', alignItems: 'center' }}>
-                      {streamUsage && <span>💡 Total token: {streamUsage.total}</span>}
-                      {firstAudioMs !== null && (
-                        <span
-                          title="Waktu sampai suara pertama terdengar (target di bawah 1500 ms)"
-                          style={{ color: firstAudioMs <= 1500 ? 'var(--text-faint)' : 'var(--warn)' }}
-                        >
-                          🔊 {firstAudioMs} ms
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          )}
+      {/* Center Viewport */}
+      <div className="dashboard-hud-container" style={{ marginTop: !isConnected ? '30px' : '0' }}>
+        
+        {/* Top Controls Toolbar */}
+        <div className="graph-controls">
+          <button className="control-btn" onClick={handleFit}>Fit</button>
+          <button className={`control-btn ${showLabels ? 'active' : ''}`} onClick={() => setShowLabels(!showLabels)}>Aa</button>
+          <div style={{ width: '1px', height: '12px', backgroundColor: 'var(--border)' }}></div>
+          <span style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-faint)', textTransform: 'uppercase' }}>
+            NODE_COUNT: {graphNodes.length}
+          </span>
         </div>
+
+        {/* Interactive SVG force graph */}
+        <div 
+          className="graph-canvas-container"
+          onMouseDown={handleSvgMouseDown}
+          onMouseMove={handleSvgMouseMove}
+          onMouseUp={handleSvgMouseUp}
+          onMouseLeave={handleSvgMouseUp}
+          onWheel={handleWheel}
+        >
+          <svg className="graph-svg" ref={svgRef}>
+            <rect ref={bgRectRef} width="100%" height="100%" fill="transparent" />
+            <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+              
+              {/* Force Link lines */}
+              {graphLinks.map((link, idx) => {
+                const sNode = graphNodes.find(n => n.id === link.source);
+                const tNode = graphNodes.find(n => n.id === link.target);
+                if (!sNode || !tNode) return null;
+                return (
+                  <line
+                    key={idx}
+                    className="graph-link"
+                    x1={sNode.x}
+                    y1={sNode.y}
+                    x2={tNode.x}
+                    y2={tNode.y}
+                  />
+                );
+              })}
+
+              {/* Force Node circles */}
+              {graphNodes.map((node) => {
+                const isFocused = sessionId === node.id;
+                let fill = 'var(--text-dim)';
+                let size = 8;
+                let stroke = 'rgba(3,6,10,0.8)';
+                let glow = 'none';
+
+                if (node.type === 'core') {
+                  fill = 'var(--accent)';
+                  size = 18;
+                  glow = 'drop-shadow(0 0 8px var(--accent))';
+                } else if (node.type === 'session') {
+                  fill = isFocused ? 'var(--accent)' : 'rgba(180, 100, 50, 0.45)';
+                  size = isFocused ? 14 : 11;
+                  glow = isFocused ? 'drop-shadow(0 0 6px var(--accent))' : 'none';
+                  stroke = isFocused ? 'var(--text)' : 'rgba(3,6,10,0.8)';
+                } else if (node.type === 'task') {
+                  size = 7;
+                  if (node.status === 'queued') fill = '#888';
+                  else if (node.status === 'running') { fill = 'var(--accent)'; glow = 'drop-shadow(0 0 4px var(--accent))'; }
+                  else if (node.status === 'done') { fill = 'var(--ok)'; glow = 'drop-shadow(0 0 4px var(--ok))'; }
+                  else if (node.status === 'failed') { fill = 'var(--err)'; glow = 'drop-shadow(0 0 4px var(--err))'; }
+                }
+
+                return (
+                  <g key={node.id} transform={`translate(${node.x}, ${node.y})`}>
+                    <circle
+                      className="graph-node"
+                      r={size}
+                      fill={fill}
+                      stroke={stroke}
+                      style={{ filter: glow }}
+                      onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
+                      onClick={() => handleNodeClick(node)}
+                      onDoubleClick={() => handleNodeDoubleClick(node)}
+                    />
+                    {showLabels && (
+                      <text
+                        y={size + 12}
+                        className={`graph-label ${isFocused ? 'focused' : ''}`}
+                        style={{ fontSize: node.type === 'core' ? '10px' : '9px' }}
+                      >
+                        {node.label}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+
+            </g>
+          </svg>
+        </div>
+
+        {/* Bottom prompt input bar form */}
+        <form onSubmit={handleSend} className="ask-prompt-form">
+          <input
+            ref={inputRef}
+            type="text"
+            className="ask-input"
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            placeholder='Ask Hermes: "plan my day" or directive...'
+            disabled={streaming}
+          />
+          <div className="ask-actions">
+            
+            {/* Audio MUTE feedback */}
+            {speaking && (
+              <button
+                type="button"
+                className="ask-action-btn active"
+                onClick={shutUp}
+                title="Hentikan suara"
+              >
+                🔇
+              </button>
+            )}
+
+            {/* Mic push to talk toggling */}
+            <button
+              type="button"
+              className={`ask-action-btn ${micState === 'recording' ? 'active' : ''}`}
+              disabled={streaming || micState === 'working'}
+              title={
+                micState === 'listening' ? 'Mendengarkan — bicara saja'
+                : micState === 'recording' ? 'Merekam — klik untuk berhenti'
+                : micState === 'working' ? 'Mentranskripsi…'
+                : 'Klik untuk bicara'
+              }
+              onClick={() => {
+                holdingRef.current = false;
+                if (micState === 'recording') pushToTalkStop();
+                else pushToTalkStart();
+              }}
+              style={{
+                borderColor: micState === 'recording' ? 'var(--err)' : 'var(--border)',
+                color: micState === 'recording' ? 'var(--err)' : 'inherit'
+              }}
+            >
+              {micState === 'recording' ? '⏹'
+                : micState === 'working' ? '⏳'
+                : micState === 'listening' ? '👂'
+                : '🎤'}
+            </button>
+
+            {streaming ? (
+              <Button variant="danger" type="button" onClick={handleStop} style={{ height: '32px', padding: '0 12px', minHeight: '32px' }}>
+                STOP
+              </Button>
+            ) : (
+              <Button variant="primary" type="submit" disabled={!inputText.trim()} style={{ height: '32px', padding: '0 12px', minHeight: '32px' }}>
+                SEND
+              </Button>
+            )}
+          </div>
+        </form>
       </div>
 
-      {/* Input box bottom bar */}
-      <form
-        onSubmit={handleSend}
-        style={{
-          position: 'absolute',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          backgroundColor: 'var(--surface-0)',
-          padding: '12px 0',
-          borderTop: '1px solid var(--border)',
-          display: 'flex',
-          gap: '12px',
-          alignItems: 'center',
-        }}
-      >
-        <Button
-          type="button"
-          variant={micState === 'recording' ? 'danger' : 'secondary'}
-          disabled={streaming || micState === 'working'}
-          title={
-            micState === 'listening' ? 'Mendengarkan — bicara saja'
-            : micState === 'recording' ? 'Merekam — klik untuk berhenti'
-            : micState === 'working' ? 'Mentranskripsi…'
-            : 'Klik atau tahan Ctrl+Space untuk bicara'
-          }
-          onClick={() => {
-            holdingRef.current = false;
-            if (micState === 'recording') pushToTalkStop();
-            else pushToTalkStart();
-          }}
-          style={{ height: '44px', width: '52px' }}
-        >
-          {micState === 'recording' ? '⏹'
-            : micState === 'working' ? '⏳'
-            : micState === 'listening' ? '👂'
-            : '🎤'}
-        </Button>
-        {speaking && (
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={shutUp}
-            title="Hentikan suara"
-            style={{ height: '44px', padding: '0 12px' }}
-          >
-            🔇 Diam
-          </Button>
-        )}
-        <input
-          ref={inputRef}
-          type="text"
-          className="field-input"
-          value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
-          placeholder="Kirim tugas ke Hermes... (mis. @myproj jalankan test)"
-          style={{ flex: 1, minHeight: '44px' }}
-          disabled={streaming}
-        />
-        {streaming ? (
-          <Button variant="danger" type="button" onClick={handleStop} style={{ height: '44px', width: '90px' }}>
-            Stop
-          </Button>
-        ) : (
-          <Button variant="primary" type="submit" disabled={!inputText.trim()} style={{ height: '44px', width: '90px' }}>
-            Send
-          </Button>
-        )}
-      </form>
+      {/* Right Sidebar Column */}
+      <div className="right-hud-panel" style={{ marginTop: !isConnected ? '30px' : '0' }}>
+        
+        {/* Filters Widget */}
+        <div>
+          <div className="right-section-title">
+            <span>Filter</span>
+            <span>Tasks</span>
+          </div>
+          <div className="filter-list">
+            <div className="filter-item">
+              <div className="filter-item-label">
+                <span className="filter-dot" style={{ backgroundColor: 'var(--accent)' }}></span>
+                <span>Active / Running</span>
+              </div>
+              <span className="filter-count">{taskCounts.running}</span>
+            </div>
+            <div className="filter-item">
+              <div className="filter-item-label">
+                <span className="filter-dot" style={{ backgroundColor: 'var(--ok)' }}></span>
+                <span>Completed</span>
+              </div>
+              <span className="filter-count">{taskCounts.done}</span>
+            </div>
+            <div className="filter-item">
+              <div className="filter-item-label">
+                <span className="filter-dot" style={{ backgroundColor: 'var(--err)' }}></span>
+                <span>Failed</span>
+              </div>
+              <span className="filter-count">{taskCounts.failed}</span>
+            </div>
+            <div className="filter-item">
+              <div className="filter-item-label">
+                <span className="filter-dot" style={{ backgroundColor: '#888' }}></span>
+                <span>Queued</span>
+              </div>
+              <span className="filter-count">{taskCounts.queued}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Current Readout Log */}
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+          <div className="right-section-title">
+            <span>Current Readout</span>
+            <span>Feed</span>
+          </div>
+          <div className="chat-preview-container" ref={chatThreadRef}>
+            {loadingHistory ? (
+              <div style={{ color: 'var(--text-faint)', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>RETRIEVING READOUTS...</div>
+            ) : lastMessages.length === 0 && !streaming ? (
+              <div style={{ color: 'var(--text-faint)', fontSize: '11px', fontStyle: 'italic', margin: 'auto' }}>Logs sequence ready. Input command.</div>
+            ) : (
+              <>
+                {lastMessages.map((m, idx) => (
+                  <div key={idx} className={`chat-preview-card ${m.role === 'user' ? 'user' : ''}`}>
+                    <div className="chat-preview-header">
+                      {m.role === 'user' ? 'OPERATOR DIRECTIVE' : `${agentName.toUpperCase()} OUTPUT`}
+                    </div>
+                    {m.role === 'user' ? (
+                      <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>{m.content}</div>
+                    ) : (
+                      <div>
+                        <Markdown content={m.content} />
+                        {findTaskIds(m.content).map(tid => (
+                          <InlineTaskCard
+                            key={tid}
+                            taskId={tid}
+                            tasks={tasks}
+                            confirming={!!confirmingMap[tid]}
+                            onConfirm={(approved) => handleConfirmTask(tid, approved)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {/* Streaming in preview */}
+                {streaming && (
+                  <div className="chat-preview-card">
+                    <div className="chat-preview-header" style={{ animation: 'cyber-blink 1s infinite' }}>
+                      INCOMING STREAM READOUT...
+                    </div>
+                    {streamContent ? (
+                      <div>
+                        <Markdown content={streamContent} />
+                        {findTaskIds(streamContent).map(tid => (
+                          <InlineTaskCard
+                            key={tid}
+                            taskId={tid}
+                            tasks={tasks}
+                            confirming={!!confirmingMap[tid]}
+                            onConfirm={(approved) => handleConfirmTask(tid, approved)}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '10px', color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>CONNECTING STREAM</span>
+                        <div className="typing-indicator">
+                          <span></span>
+                          <span></span>
+                          <span></span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Pulsing AI avatar orb */}
+        <div>
+          <div className="right-section-title">
+            <span>Hologram Link</span>
+            <span>Online</span>
+          </div>
+          <div className="avatar-stream-container">
+            <div className="avatar-stream-overlay">
+              AI_COGNITIVE_CORE: ACTIVE
+            </div>
+            <div className="avatar-glowing-circle" style={{
+              animationDuration: voiceState === 'listen' ? '6s'
+                : voiceState === 'think' ? '3s'
+                : voiceState === 'speak' ? '1.5s'
+                : '12s'
+            }}></div>
+          </div>
+        </div>
+
+      </div>
+
     </div>
   );
 }

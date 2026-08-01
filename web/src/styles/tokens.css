@@ -1,18 +1,26 @@
 :root {
-  /* surfaces — layered, not translucent */
-  --surface-0: hsl(224 25% 6%);    /* app background */
-  --surface-1: hsl(224 22% 9%);    /* cards, sidebar */
-  --surface-2: hsl(224 20% 13%);   /* inputs, hover */
-  --border:        hsl(224 18% 18%);
-  --border-strong: hsl(224 16% 26%);
+  /* Futuristic Sci-Fi Palette */
+  --surface-0: hsl(220 40% 3%);    /* Deep space black app bg */
+  --surface-1: hsla(220, 30%, 6%, 0.7); /* Holographic glass */
+  --surface-2: hsla(180, 100%, 50%, 0.05); /* Active glow panels */
+  --surface-3: hsla(180, 100%, 50%, 0.12); /* Interactive hover */
+  
+  --border:        hsla(180, 100%, 50%, 0.15); /* Neon cyan borders */
+  --border-strong: hsla(180, 100%, 50%, 0.4);  /* Highly charged neon borders */
+  --border-glow:   0 0 8px hsla(180, 100%, 50%, 0.25);
 
-  /* text — three levels is enough */
-  --text:       hsl(210 40% 96%);
-  --text-dim:   hsl(215 16% 62%);
-  --text-faint: hsl(215 14% 44%);
+  /* text - sleek sci-fi cyan/white */
+  --text:       hsl(180, 30%, 95%);
+  --text-dim:   hsl(180, 40%, 75%);
+  --text-faint: hsla(180, 40%, 60%, 0.65);
 
-  --accent: hsl(217 100% 61%);
-  --ok: hsl(142 62% 45%);  --warn: hsl(38 92% 50%);  --err: hsl(346 74% 55%);
+  /* Accents */
+  --accent:      hsl(180, 100%, 50%); /* Cyber Cyan */
+  --accent-glow: 0 0 10px hsla(180, 100%, 50%, 0.8), 0 0 20px hsla(180, 100%, 50%, 0.4);
+  
+  --ok:   hsl(150, 100%, 50%);  /* Neon green */
+  --warn: hsl(35, 100%, 55%);   /* Cyber orange */
+  --err:  hsl(350, 100%, 55%);  /* Plasma red */
 
   /* spacing: one scale, multiples of 4 */
   --s1: 4px;
@@ -23,10 +31,10 @@
   --s6: 32px;
   --s7: 48px;
 
-  /* radius: three values */
-  --r-sm: 4px;
-  --r-md: 8px;
-  --r-lg: 12px;
+  /* radius: tech angular radius */
+  --r-sm: 2px;
+  --r-md: 4px;
+  --r-lg: 8px;
 
   /* type */
   --t-xs: 11px;
@@ -36,8 +44,8 @@
   --t-xl: 20px;
   --t-2xl: 26px;
 
-  /* font families */
-  --font-main: 'Inter', sans-serif;
-  --font-title: 'Outfit', sans-serif;
+  /* font families - tech monospaced preference */
+  --font-main: 'Share Tech Mono', 'Fira Code', monospace;
+  --font-title: 'Orbitron', 'Outfit', sans-serif;
   --font-mono: 'Fira Code', monospace;
 }
