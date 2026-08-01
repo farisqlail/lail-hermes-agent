@@ -44,11 +44,12 @@ plans and drives; `claude -p` and `agy -p` do the code writing.
 flowchart TD
     TG(["📱 Telegram<br/>/task ..."])
     OP(["👤 Operator (Web/Browser)"])
+    GW["🌐 LLM endpoint<br/><sub>NVIDIA NIM · or local 9router :20128</sub>"]
 
     subgraph HERMES["🏛️ LAIL HERMES"]
         direction TB
         BR["🔐 telegram_bridge<br/><sub>whitelist · confirm gate</sub>"]
-        OR["🧠 orchestrator<br/><sub>NVIDIA NIM planner</sub>"]
+        OR["🧠 orchestrator<br/><sub>OpenAI-compatible planner</sub>"]
         HUB["🔌 mcp_hub<br/><sub>stdio / SSE tools</sub>"]
 
         subgraph EXEC["execution"]
@@ -59,24 +60,28 @@ flowchart TD
             ENG --> BLD --> TST
         end
 
-        subgraph VOICE_SYS["🎙️ Voice Pipeline"]
+        subgraph VOICE_SYS["🎙️ Voice Pipeline (browser)"]
             direction TB
-            VAD["Local VAD & Commands<br/><sub>VAD (RMS) · Stop Detector</sub>"]
-            EXT["voicetag Extractor<br/><sub>P3 Stream Splitter</sub>"]
+            VAD["Local VAD & Commands<br/><sub>VAD (RMS) · Stop Detector · auto-send</sub>"]
+            EXT["voicetag Extractor<br/><sub>stream splitter · low-latency</sub>"]
             Q["SpeechQueue<br/><sub>In-flight Fetch-Ahead</sub>"]
-            STT_SRV["STT Server<br/><sub>FastAPI · faster-whisper</sub>"]
-            TTS_SRV["TTS Server<br/><sub>FastAPI · edge-tts · NIM</sub>"]
+            IND["Voice-state indicator<br/><sub>idle · listen · think · speak</sub>"]
+            STT_SRV["STT Server<br/><sub>FastAPI · faster-whisper (model configurable)</sub>"]
+            TTS_SRV["TTS Server<br/><sub>FastAPI · edge-tts (multilingual)</sub>"]
         end
 
-        UI["🖥️ web_ui · FastAPI<br/><sub>127.0.0.1:8799</sub>"]
+        UI["🖥️ web_ui · FastAPI<br/><sub>127.0.0.1:8799 · /api/voice bridge</sub>"]
         DB[("🗄️ SQLite<br/><sub>tasks · logs · artifacts</sub>")]
 
         BR --> OR
         OR <-.->|"tool calls"| HUB
+        OR -.->|"OpenAI API · base_url"| GW
         OR --> EXEC
         OR --> DB
         UI --- DB
     end
+
+    TRAY["🛰️ tray helper · python -m hermes.tray<br/><sub>wake word (openWakeWord) · pystray · always-on mic</sub>"]
 
     TG -->|"/task"| BR
     OR -.->|"status · APK · screenshots"| TG
@@ -84,15 +89,21 @@ flowchart TD
     OP <-->|"Audio Capture (VAD)<br/>Audio Playback (Queue)"| VOICE_SYS
     VOICE_SYS <-->|"STT / TTS API"| UI
     OP <-->|"Interact"| UI
+    TRAY <-.->|"wake event · state poll<br/>(tab may be closed)"| UI
+    TRAY -.->|"'Hey &lt;name&gt;' opens dashboard"| OP
 
     classDef ext fill:#229ED9,stroke:#1a7fb0,color:#fff
     classDef brain fill:#76B900,stroke:#5a8c00,color:#fff
     classDef store fill:#f5f0e6,stroke:#c9b896,color:#333
     classDef op fill:#e06666,stroke:#a61c1c,color:#fff
+    classDef gw fill:#8a63d2,stroke:#5f3dc4,color:#fff
+    classDef tray fill:#2f2f3a,stroke:#12b5cb,color:#fff
     class TG ext
     class OR brain
     class DB store
     class OP op
+    class GW gw
+    class TRAY tray
 ```
 
 ## Features
@@ -123,13 +134,18 @@ flowchart TD
   dashboard.
 - **Voice input & conversation (VAD + STT + TTS)** — Speak naturally with the assistant using a local Voice Activity Detection (VAD) loop and edge-tts feedback:
   - **Siklus Suara (VAD)**: RMS-based VAD detects speech-start and speech-end locally, dynamically adapting to the room's noise floor. Ducking raises the threshold when the assistant is speaking to prevent self-interruption.
-  - **Hands-Free / PTT**: Toggle hands-free in settings to automatically submit after speaking (`👂 -> ⏹ -> ⏳`), or hold `Ctrl+Space` (Push-To-Talk) to dictate.
-  - **Low Latency (<1.5s) Smart path**: When Smart TTS mode is on, the model opens its stream with `<voice>One spoken sentence</voice>`. The client extracts this tag mid-stream and synthesises it immediately while the rest of the reply continues streaming.
+  - **Auto-send everywhere**: A finished transcript submits itself in every mode — push-to-talk and hands-free alike; if a reply is still streaming, the text is parked in the input rather than dropped. Hold `Ctrl+Space` for push-to-talk, or toggle hands-free to submit on silence.
+  - **Configurable STT model (latency vs accuracy)**: the Whisper model size is a setting (`tiny`/`base`/`small`/`medium`) — `base` by default, the biggest lever on how long after you stop talking the assistant can start replying. A `hotwords` bias keeps proper nouns like "Jarvis" accurate even at `base`.
+  - **Multilingual TTS**: `*MultilingualNeural` edge-tts voices (Andrew/Ava/Brian/Emma, the default) pronounce mixed Bahasa + English natively per phrase; single-locale `id-ID` voices remain for pure-Bahasa output.
+  - **Low Latency Smart path**: When Smart TTS mode is on, the model opens its stream with `<voice>One spoken sentence</voice>`. The client extracts this tag mid-stream and synthesises it immediately while the rest of the reply continues streaming.
   - **Per-sentence Verbatim path**: Streams verbatim sentence-by-sentence as the text arrives, utilizing a local sentence splitter.
   - **Ordered Speech Queue**: Plays audio chunks sequentially using `SpeechQueue` with an in-flight fetch-ahead capacity (up to 3 concurrent requests) to hide network latency.
   - **Local Interruption Commands**: Saying "diam" or "stop" locally halts the speech queue immediately without waiting for the LLM response.
+  - **Voice-state indicator**: a header pill shows the assistant's state at a glance — idle / listen / think / speak — mirrored by the tray icon's colour.
   - **Direct AEC Check**: Warns the operator if the browser's echo cancellation is missing so they can use a headset to prevent self-interruption.
-  - **Prerequisites**: `pip install -e .[voice]`. Audio transcription runs locally via faster-whisper (`base`, int8, CPU).
+  - **Prerequisites**: `pip install -e .[voice]`. Audio transcription runs locally via faster-whisper (int8, CPU).
+- **Wake word & Windows tray (`python -m hermes.tray`)** — an optional native helper keeps the microphone alive with the browser closed. It runs a local wake word via openWakeWord and shows a system-tray icon whose colour tracks the voice state. The spoken phrase follows the agent's name: `"auto"` turns **Jarvis** into the bundled `hey_jarvis`; any other name (e.g. **Ev**) needs a trained `hey_<name>.onnx` in `%HERMES_HOME%\wakewords`. On wake it starts a hands-free capture, opening the dashboard first if no tab is open. `pip install -e .[desktop]` (openwakeword, sounddevice, pystray, Pillow); launch alongside Hermes via `deploy\tray.bat`.
+- **Pluggable LLM endpoint** — the planner/chat/voice-summary calls go to any OpenAI-compatible `base_url`. Point it at a local **9Router** gateway (`http://127.0.0.1:20128/v1`, launched from `start.bat`) to route through its token and 100+ models, or at NVIDIA NIM / DeepSeek directly. The coding engines (`claude`/`agy` CLIs) are separate and unaffected.
 - **MCP bridge** exposing MCP tools to the NIM brain as OpenAI function calls (stdio + HTTP/SSE
   transports, lazily connected, every remote call time-bounded).
 - **Existing projects** — register a name-to-path map in settings, then aim a task at it with
@@ -143,7 +159,7 @@ flowchart TD
 - **Startup recovery** — on start, tasks stranded in `running`/`queued`/`awaiting_confirm` are
   retired to `interrupted` and each affected chat gets one digest telling them what died and
   what to resubmit.
-- **Self-healing launcher** — `start.bat` auto-restarts Hermes 5s after any crash/exit.
+- **Self-healing launcher** — `start.bat` auto-restarts Hermes 5s after any crash/exit, and launches the local 9Router gateway (port 20128) once in the background if it is installed.
 
 ## Working on an existing project
 
@@ -186,13 +202,14 @@ below). Neither has a required location; put them wherever suits the machine.
 ├─ config\               # config.yaml, .env (secrets), mcp.json
 ├─ projects\             # per-task workspaces
 ├─ artifacts\            # apk, screenshots, logs
+├─ wakewords\            # custom wake-word models (hey_<name>.onnx)
 ├─ hermes.db             # task history
 └─ start.bat             # stub → sets HERMES_HOME, calls deploy\start.bat in the repo
 
 <repo>\                  # app dir (this checkout) — you choose where
 ├─ hermes\               # package
 ├─ tests\
-└─ deploy\               # install.ps1 + start.bat (banner + auto-restart)
+└─ deploy\               # install.ps1 · start.bat (banner + auto-restart + 9router) · tray.bat
 ```
 
 ## Install
@@ -204,7 +221,10 @@ Prerequisites on PATH:
 - `agy` (Antigravity CLI)
 - `adb`/`emulator` (Android SDK)
 
-For browser testing, the optional `[browser]` extra installs Playwright.
+Optional extras: `[browser]` (Playwright, for browser testing), `[voice]` (faster-whisper, for
+voice input), `[desktop]` (openwakeword · sounddevice · pystray · Pillow, for the wake-word tray
+helper). To route LLM calls through a local gateway, install **9Router** (`npm i -g 9router`);
+`start.bat` launches it automatically, then point `base_url` at `http://127.0.0.1:20128/v1`.
 
 **Set `HERMES_HOME` first, explicitly.** The installer honours it and stores it for your user;
 left unset, different entry points disagree about where the data root is (see below).
