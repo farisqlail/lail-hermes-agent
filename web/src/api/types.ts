@@ -43,6 +43,10 @@ export interface Settings {
   voice_handsfree: boolean;
   voice_silence_ms: number;
   voice_sensitivity: 'low' | 'medium' | 'high';
+  wakeword_enabled: boolean;
+  wakeword_model: string;
+  wakeword_threshold: number;
+  wakeword_cooldown_ms: number;
   mcp_servers: McpServer[];
 }
 

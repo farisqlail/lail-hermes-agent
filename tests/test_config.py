@@ -142,7 +142,7 @@ def test_stt_language_rejects_non_language_tokens():
 def test_tts_defaults():
     s = config.Settings()
     assert s.tts_enabled is False
-    assert s.tts_voice == "id-ID-ArdiNeural"
+    assert s.tts_voice == "en-US-AndrewMultilingualNeural"
     assert s.tts_mode == "smart"
     assert s.tts_max_words == 40
     assert s.tts_greeting is True
@@ -155,6 +155,39 @@ def test_tts_voice_validation():
 
     with pytest.raises(ValidationError):
         config.Settings(tts_voice="invalid; voice")
+
+
+def test_wakeword_defaults():
+    s = config.Settings()
+    assert s.wakeword_enabled is False
+    assert s.wakeword_model == "hey_jarvis"
+    assert s.wakeword_threshold == 0.5
+    assert s.wakeword_cooldown_ms == 2000
+
+
+def test_wakeword_model_accepts_name_and_path():
+    assert config.Settings(wakeword_model="hey_jarvis").wakeword_model == "hey_jarvis"
+    assert config.Settings(
+        wakeword_model="C:/models/hey_ev.onnx").wakeword_model == "C:/models/hey_ev.onnx"
+    with pytest.raises(ValidationError):
+        config.Settings(wakeword_model="bad\nname")
+
+
+def test_wakeword_threshold_range():
+    assert config.Settings(wakeword_threshold=0.0).wakeword_threshold == 0.0
+    assert config.Settings(wakeword_threshold=1.0).wakeword_threshold == 1.0
+    with pytest.raises(ValidationError):
+        config.Settings(wakeword_threshold=1.5)
+    with pytest.raises(ValidationError):
+        config.Settings(wakeword_threshold=-0.1)
+
+
+def test_wakeword_cooldown_range():
+    assert config.Settings(wakeword_cooldown_ms=0).wakeword_cooldown_ms == 0
+    with pytest.raises(ValidationError):
+        config.Settings(wakeword_cooldown_ms=-1)
+    with pytest.raises(ValidationError):
+        config.Settings(wakeword_cooldown_ms=10001)
 
 def test_conversation_defaults(hermes_home):
     s = config.Settings()

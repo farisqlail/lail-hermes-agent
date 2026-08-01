@@ -18,6 +18,10 @@ dependencies = [
 [project.optional-dependencies]
 browser = ["playwright>=1.45"]
 voice = ["faster-whisper>=1.2"]
+# The native tray helper (python -m hermes.tray): always-on wake word + system
+# tray icon. Kept separate from `voice` because it only makes sense on a desktop
+# with a mic and a tray, not on a headless server.
+desktop = ["openwakeword>=0.6", "sounddevice>=0.4", "pystray>=0.19", "Pillow>=10"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [tool.pytest.ini_options]

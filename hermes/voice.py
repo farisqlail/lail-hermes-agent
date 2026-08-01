@@ -21,14 +21,26 @@ from pydantic import BaseModel
 
 from . import config
 
-# edge-tts voices offered in the UI. Indonesian first: the agent answers in
-# Bahasa, and an English voice reads Indonesian text with English phonetics.
-# id-ID-* are the only two native Indonesian neural voices edge-tts ships —
-# jv-ID (Javanese), su-ID (Sundanese) and ms-MY (Malay) are separate languages
-# and mispronounce Bahasa, so they are deliberately left out.
+# edge-tts voices offered in the UI. Multilingual first: the agent's replies mix
+# Bahasa with English technical terms ("deploy", "server"), and a single-locale
+# voice reads the other language with the wrong phonetics — id-ID-* gives English
+# words an Indonesian accent, en-US-* gives Bahasa an English one. The
+# *MultilingualNeural voices detect the language per phrase and pronounce each
+# natively within one utterance, so code-switching sounds right in both.
+#
+# id-ID-* remain for pure-Bahasa output; jv-ID (Javanese), su-ID (Sundanese) and
+# ms-MY (Malay) are separate languages that mispronounce Bahasa, so they stay out.
 TTS_VOICES = [
-    {"id": "id-ID-ArdiNeural", "name": "Ardi (Pria ID - Natural)"},
-    {"id": "id-ID-GadisNeural", "name": "Gadis (Wanita ID - Natural)"},
+    {"id": "en-US-AndrewMultilingualNeural",
+     "name": "Andrew (Pria - Multibahasa ID+EN)"},
+    {"id": "en-US-AvaMultilingualNeural",
+     "name": "Ava (Wanita - Multibahasa ID+EN)"},
+    {"id": "en-US-BrianMultilingualNeural",
+     "name": "Brian (Pria - Multibahasa ID+EN)"},
+    {"id": "en-US-EmmaMultilingualNeural",
+     "name": "Emma (Wanita - Multibahasa ID+EN)"},
+    {"id": "id-ID-ArdiNeural", "name": "Ardi (Pria ID - Bahasa saja)"},
+    {"id": "id-ID-GadisNeural", "name": "Gadis (Wanita ID - Bahasa saja)"},
     {"id": "en-GB-RyanNeural", "name": "Ryan (Male UK - Jarvis Style)"},
     {"id": "en-US-GuyNeural", "name": "Guy (Male US - Professional)"},
     {"id": "en-US-JennyNeural", "name": "Jenny (Female US - Soft)"},

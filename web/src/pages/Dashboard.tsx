@@ -15,6 +15,7 @@ import {
 import { SpeechQueue, HtmlAudioSink, fetchSpeech } from '../audio';
 import { splitSentences, flushSentence } from '../sentences';
 import { useVoiceLoop } from '../hooks/useVoiceLoop';
+import { VoiceStateIndicator, deriveVoiceState } from '../components/VoiceStateIndicator';
 import { STOP_ACK } from '../commands';
 import { VoiceTagExtractor } from '../voicetag';
 
@@ -176,7 +177,7 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
   const [agentName, setAgentName] = useState('Lail Agent');
 
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
-  const [ttsVoice, setTtsVoice] = useState<string>('id-ID-ArdiNeural');
+  const [ttsVoice, setTtsVoice] = useState<string>('en-US-AndrewMultilingualNeural');
   const [ttsMode, setTtsMode] = useState<TtsMode>('smart');
   const [ttsMaxWords, setTtsMaxWords] = useState<number>(40);
   const [ttsGreeting, setTtsGreeting] = useState<boolean>(true);
@@ -282,7 +283,7 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
   const holdingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const { micState, pushToTalkStart, pushToTalkStop } = useVoiceLoop({
+  const { micState, pushToTalkStart, pushToTalkStop, startWakeCapture } = useVoiceLoop({
     enabled: sttEnabled,
     handsfree: voice.voice_handsfree,
     bargeIn: voice.voice_barge_in,
@@ -298,9 +299,15 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
       toast(STOP_ACK, 'ok');
     },
     onTranscript: (text) => {
-      setInputText((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
-      inputRef.current?.focus();
-      if (voice.voice_handsfree) void submitText(text);
+      // Voice transcripts auto-send in every mode (push-to-talk and hands-free
+      // alike). If a reply is still streaming, submitText would drop the text,
+      // so park it in the input for the operator to send once the turn ends.
+      if (streaming) {
+        setInputText((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
+        inputRef.current?.focus();
+        return;
+      }
+      void submitText(text);
     },
     onError: (message) => toast(message, 'err'),
   });
@@ -551,6 +558,43 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
     }
   };
 
+  const voiceState = deriveVoiceState({
+    speaking,
+    streaming,
+    transcribing: micState === 'working',
+    micActive: micState === 'listening' || micState === 'recording',
+  });
+
+  // Heartbeat: tell the server our voice state so the tray icon can mirror it,
+  // and so the tray knows a tab is open. Posts on every change and every 5s as
+  // a keepalive — the server's presence window is a small multiple of that.
+  useEffect(() => {
+    const post = () => {
+      void fetch('/api/voice/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: voiceState }),
+      }).catch(() => {});
+    };
+    post();
+    const id = setInterval(post, 5000);
+    return () => clearInterval(id);
+  }, [voiceState]);
+
+  // Wake poll: pick up a "Hey Ev" the tray helper latched and start a capture.
+  // Skipped while a reply streams — barge-in already owns that case, and a wake
+  // mid-reply would race the stream.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (streaming) return;
+      void fetch('/api/voice/wake')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (d?.wake) startWakeCapture(); })
+        .catch(() => {});
+    }, 1000);
+    return () => clearInterval(id);
+  }, [streaming, startWakeCapture]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
       {/* Reconnect Warning Bar */}
@@ -580,7 +624,10 @@ export function Dashboard({ sessionId, onRefreshSessions }: DashboardProps) {
         <header className="page-header" style={{ flexShrink: 0, marginTop: !isConnected ? '40px' : '0' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
-              <h1 className="page-title">Live Chat & Dashboard</h1>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <h1 className="page-title">Live Chat & Dashboard</h1>
+                <VoiceStateIndicator state={voiceState} />
+              </div>
               <p className="page-subtitle">Instruksikan asisten AI Hermes untuk melakukan tugas kustom</p>
             </div>
             <Button variant="secondary" onClick={handleReset} disabled={streaming || messages.length === 0}>

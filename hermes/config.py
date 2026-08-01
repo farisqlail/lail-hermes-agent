@@ -63,7 +63,10 @@ class Settings(BaseModel):
     stt_enabled: bool = True
     stt_language: str = "id"
     tts_enabled: bool = False
-    tts_voice: str = "id-ID-ArdiNeural"
+    # Multilingual by default: replies mix Bahasa with English technical terms,
+    # and a multilingual voice pronounces both natively. See TTS_VOICES in
+    # voice.py. Existing configs keep whatever voice they saved.
+    tts_voice: str = "en-US-AndrewMultilingualNeural"
     tts_mode: Literal["smart", "verbatim"] = "smart"
     tts_max_words: int = 40
     tts_greeting: bool = True
@@ -77,6 +80,16 @@ class Settings(BaseModel):
     voice_handsfree: bool = False
     voice_silence_ms: int = 800
     voice_sensitivity: Literal["low", "medium", "high"] = "medium"
+
+    # Wake word ("Hey Ev"), run by the native tray helper so the mic stays live
+    # with the browser closed. Off by default: an always-listening microphone is
+    # opt-in. `wakeword_model` is either an openWakeWord bundled name
+    # ("hey_jarvis", "alexa", "hey_mycroft") used as a placeholder until a custom
+    # "Hey Ev" model is trained, or an absolute path to a .onnx/.tflite model.
+    wakeword_enabled: bool = False
+    wakeword_model: str = "hey_jarvis"
+    wakeword_threshold: float = 0.5      # openWakeWord score in [0, 1]
+    wakeword_cooldown_ms: int = 2000     # ignore repeats within this window
 
     @field_validator("claude_model")
     @classmethod
@@ -132,6 +145,38 @@ class Settings(BaseModel):
         # operator assumes the microphone died
         if not 300 <= v <= 3000:
             raise ValueError("voice silence must be between 300 and 3000 ms")
+        return v
+
+    @field_validator("wakeword_model")
+    @classmethod
+    def _wakeword_model_shape(cls, v: str) -> str:
+        # Either a bundled openWakeWord name or a filesystem path to a model.
+        # Printable ASCII only, no control chars: this string is passed to
+        # openWakeWord, never to a shell. Existence is not checked here — a
+        # missing model must not crash load_settings() into a restart loop; the
+        # listener reports it at load time, the way stt does for its model.
+        if v and (not v.isascii() or not v.isprintable()):
+            raise ValueError(
+                "wake word model must be printable ASCII — a bundled name like "
+                "'hey_jarvis' or a path to a .onnx/.tflite model")
+        return v
+
+    @field_validator("wakeword_threshold")
+    @classmethod
+    def _wakeword_threshold_range(cls, v: float) -> float:
+        # openWakeWord emits a probability. Below ~0.3 the room triggers it;
+        # at 1.0 nothing ever clears the bar.
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("wake word threshold must be between 0.0 and 1.0")
+        return v
+
+    @field_validator("wakeword_cooldown_ms")
+    @classmethod
+    def _wakeword_cooldown_range(cls, v: int) -> int:
+        # Long enough that one spoken "Hey Ev" fires once, not per frame; short
+        # enough that a second genuine call a couple seconds later still lands.
+        if not 0 <= v <= 10000:
+            raise ValueError("wake word cooldown must be between 0 and 10000 ms")
         return v
 
     @field_validator("projects")

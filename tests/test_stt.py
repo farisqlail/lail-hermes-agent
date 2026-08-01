@@ -16,9 +16,10 @@ class FakeModel:
     def __init__(self):
         self.calls = []
 
-    def transcribe(self, audio, language=None, vad_filter=False):
+    def transcribe(self, audio, language=None, vad_filter=False,
+                   hotwords=None):
         self.calls.append({"audio": audio, "language": language,
-                           "vad_filter": vad_filter})
+                           "vad_filter": vad_filter, "hotwords": hotwords})
         return (s for s in [FakeSegment(" Halo"), FakeSegment(" dunia.")]), None
 
 
@@ -38,6 +39,13 @@ def test_transcribe_passes_language_and_enables_vad(fake_model):
     call = fake_model.calls[0]
     assert call["language"] == "en"
     assert call["vad_filter"] is True
+
+
+def test_transcribe_biases_toward_hotwords(fake_model):
+    # The base model mishears proper nouns like "Jarvis" in Indonesian audio.
+    # hotwords must reach the decoder or the bias does nothing.
+    stt.transcribe(b"fake-webm-bytes")
+    assert fake_model.calls[0]["hotwords"] == stt.HOTWORDS
 
 
 def test_transcribe_empty_language_means_autodetect(fake_model):

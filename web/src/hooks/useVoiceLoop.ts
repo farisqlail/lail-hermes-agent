@@ -32,6 +32,11 @@ export function useVoiceLoop(opts: VoiceLoopOptions) {
   const recorderRef = useRef<VoiceRecorder | null>(null);
   const vadRef = useRef<MicVad | null>(null);
   const stateRef = useRef<MicState>('off');
+  // Set while a wake-word-triggered capture is in flight, so VAD ends it even
+  // when hands-free is off. The watchdog is a hard stop for the case where no
+  // VAD analyser is running (barge-in and hands-free both off) to end it.
+  const wakeCaptureRef = useRef(false);
+  const wakeWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Handlers change every render; the VAD is built once per config. Reading
   // them through a ref keeps a re-render from tearing down the microphone.
   const optsRef = useRef(opts);
@@ -46,6 +51,11 @@ export function useVoiceLoop(opts: VoiceLoopOptions) {
     const recorder = recorderRef.current;
     if (!recorder) return;
     recorderRef.current = null;
+    wakeCaptureRef.current = false;
+    if (wakeWatchdogRef.current) {
+      clearTimeout(wakeWatchdogRef.current);
+      wakeWatchdogRef.current = null;
+    }
     setState('working');
     try {
       const text = await transcribeBlob(await recorder.stop());
@@ -94,7 +104,8 @@ export function useVoiceLoop(opts: VoiceLoopOptions) {
         if (o.handsfree && stateRef.current === 'listening') void beginRecording();
       },
       onSpeechEnd: () => {
-        if (optsRef.current.handsfree && stateRef.current === 'recording') void finish();
+        if ((optsRef.current.handsfree || wakeCaptureRef.current)
+            && stateRef.current === 'recording') void finish();
       },
     });
 
@@ -136,9 +147,23 @@ export function useVoiceLoop(opts: VoiceLoopOptions) {
     void finish();
   }, [finish]);
 
+  // Triggered by the wake word ("Hey Ev") arriving from the tray helper. Starts
+  // recording and arms VAD to end the turn; a watchdog hard-stops after 15s so a
+  // capture with no VAD analyser running (barge-in and hands-free both off) can
+  // still finish and send rather than record forever.
+  const startWakeCapture = useCallback(() => {
+    if (stateRef.current === 'recording' || stateRef.current === 'working') return;
+    wakeCaptureRef.current = true;
+    if (wakeWatchdogRef.current) clearTimeout(wakeWatchdogRef.current);
+    wakeWatchdogRef.current = setTimeout(() => {
+      if (stateRef.current === 'recording') void finish();
+    }, 15000);
+    void beginRecording();
+  }, [beginRecording, finish]);
+
   // Release the mic on unmount so navigating away does not leave the browser's
   // recording indicator lit.
   useEffect(() => () => { void recorderRef.current?.stop(); }, []);
 
-  return { micState, pushToTalkStart, pushToTalkStop };
+  return { micState, pushToTalkStart, pushToTalkStop, startWakeCapture };
 }

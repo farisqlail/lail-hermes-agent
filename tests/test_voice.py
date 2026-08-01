@@ -9,12 +9,15 @@ def test_clean_for_speech_strips_every_markdown_form():
     assert voice.clean_for_speech("# Judul\n> kutipan") == "Judul\nkutipan"
     assert voice.clean_for_speech("---\n**`  `**") == ""
 
-def test_voices_list_is_indonesian_first():
+def test_voices_list_is_multilingual_first():
     ids = [v["id"] for v in voice.TTS_VOICES]
-    # the two native id-ID neural voices lead, and the first is the default so
-    # an omitted voice never lands on an English one reading Bahasa
-    assert ids[:2] == ["id-ID-ArdiNeural", "id-ID-GadisNeural"]
+    # multilingual voices lead, and the first is the default: replies mix Bahasa
+    # with English terms, so an omitted voice must land on one that speaks both
+    assert ids[0] == "en-US-AndrewMultilingualNeural"
     assert voice.TTS_VOICE_DEFAULT == ids[0]
+    assert all("Multilingual" in i for i in ids[:4])
+    # the native id-ID voices are still offered for pure-Bahasa output
+    assert "id-ID-ArdiNeural" in ids and "id-ID-GadisNeural" in ids
     # Javanese/Sundanese/Malay are different languages — never offered
     assert not any(i.startswith(("jv-", "su-", "ms-")) for i in ids)
 

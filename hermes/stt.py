@@ -7,11 +7,11 @@ from __future__ import annotations
 import io
 import threading
 
-# base int8 on CPU. Indonesian is harder for small models than English, so if
-# transcripts come back wrong on project names and technical terms, "small" is
-# the next step up — a one-line change, at roughly triple the transcribe time
-# and a ~500MB model download instead of ~145MB.
-MODEL_SIZE = "base"
+# small int8 on CPU. Indonesian is harder for small models than English, so
+# "base" mishears project names and proper nouns; "small" trades ~3x transcribe
+# time and a ~500MB model (vs ~145MB) for markedly better accuracy. Drop back
+# to "base" if CPU latency becomes the bottleneck.
+MODEL_SIZE = "small"
 DEVICE = "cpu"
 COMPUTE_TYPE = "int8"
 
@@ -19,6 +19,12 @@ COMPUTE_TYPE = "int8"
 # recorder from handing the model a file that exhausts memory, not to police
 # ordinary use — a minute of opus is well under a megabyte.
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
+
+# Proper nouns the base model has no reason to expect in Indonesian audio.
+# Without a bias, "Jarvis" decodes to phonetic garbage ("Jarfish Jara Fis").
+# hotwords nudges the decoder toward these spellings at no extra cost. Extend
+# this as the assistant gains named tools or project names it mishears.
+HOTWORDS = "Jarvis"
 
 
 class SttUnavailable(RuntimeError):
@@ -88,6 +94,7 @@ def transcribe(audio: bytes, language: str = "id") -> str:
         io.BytesIO(audio),
         language=language or None,
         vad_filter=True,
+        hotwords=HOTWORDS,
     )
     # transcribe() returns a generator — nothing runs until it is consumed.
     return "".join(segment.text for segment in segments).strip()

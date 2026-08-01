@@ -23,7 +23,7 @@ export function ConfigVoice() {
   const { toast } = useToast();
 
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
-  const [ttsVoice, setTtsVoice] = useState<string>('id-ID-ArdiNeural');
+  const [ttsVoice, setTtsVoice] = useState<string>('en-US-AndrewMultilingualNeural');
   const [voices, setVoices] = useState<TtsVoice[]>(TTS_VOICES_FALLBACK);
 
   // Smart TTS settings
@@ -404,6 +404,76 @@ export function ConfigVoice() {
             <option value="medium">Sedang — default</option>
             <option value="high">Tinggi — ruangan sunyi / headset</option>
           </select>
+        </Field>
+      </section>
+
+      {/* Section 3b: Wake Word (native tray helper) */}
+      <section style={sectionStyle}>
+        <h3 style={headingStyle}>🛰️ Kata Pemicu (Wake Word) — Mode Siaga</h3>
+        <p style={{ color: 'var(--text-faint)', marginBottom: '12px', fontSize: 'var(--t-sm)' }}>
+          Dijalankan oleh tray helper: <code>python -m hermes.tray</code> (butuh{' '}
+          <code>pip install -e .[desktop]</code>). Mikrofon tetap hidup meski jendela
+          browser ditutup; ucapkan kata pemicu untuk mulai bicara. Model bawaan{' '}
+          <code>hey_jarvis</code> dipakai sebagai placeholder sampai model kustom
+          "Hey Ev" dilatih — ganti lewat kolom Model di bawah.
+        </p>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', cursor: 'pointer', color: 'var(--text)' }}>
+          <input
+            type="checkbox"
+            style={checkboxStyle}
+            checked={voice.wakeword_enabled}
+            onChange={(e) => setVoice({ ...voice, wakeword_enabled: e.target.checked })}
+          />
+          <span>Aktifkan kata pemicu (mode siaga selalu mendengar)</span>
+        </label>
+
+        <Field
+          label="Model Wake Word"
+          helpText="Nama bawaan openWakeWord (hey_jarvis, alexa, hey_mycroft) atau path ke file .onnx/.tflite model kustom"
+        >
+          <input
+            type="text"
+            className="field-input"
+            value={voice.wakeword_model}
+            onChange={(e) => setVoice({ ...voice, wakeword_model: e.target.value })}
+            placeholder="hey_jarvis"
+            style={{ width: '100%' }}
+          />
+        </Field>
+
+        <div style={{ height: '16px' }} />
+
+        <Field
+          label={`Ambang Deteksi: ${voice.wakeword_threshold.toFixed(2)}`}
+          helpText="Naikkan bila sering salah picu; turunkan bila kata pemicu sering tak terdeteksi"
+        >
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={voice.wakeword_threshold}
+            onChange={(e) => setVoice({ ...voice, wakeword_threshold: parseFloat(e.target.value) })}
+            style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }}
+          />
+        </Field>
+
+        <div style={{ height: '16px' }} />
+
+        <Field
+          label={`Jeda Anti-Ulang: ${voice.wakeword_cooldown_ms} ms`}
+          helpText="Abaikan pemicu berulang dalam rentang ini, supaya satu 'Hey Ev' memicu sekali"
+        >
+          <input
+            type="range"
+            min={0}
+            max={10000}
+            step={250}
+            value={voice.wakeword_cooldown_ms}
+            onChange={(e) => setVoice({ ...voice, wakeword_cooldown_ms: parseInt(e.target.value, 10) })}
+            style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }}
+          />
         </Field>
       </section>
 

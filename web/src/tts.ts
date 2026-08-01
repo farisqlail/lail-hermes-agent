@@ -13,12 +13,16 @@ export interface TtsVoice {
   name: string;
 }
 
-/** Shown until GET /api/tts/voices answers. Same order as the server's list:
- *  Indonesian first, because the agent replies in Bahasa and an English voice
- *  reads Indonesian text with English phonetics. */
+/** Shown until GET /api/tts/voices answers. Same order as the server's list in
+ *  voice.py: multilingual first, because replies mix Bahasa with English terms
+ *  and a single-locale voice mispronounces the other language. */
 export const TTS_VOICES_FALLBACK: TtsVoice[] = [
-  { id: 'id-ID-ArdiNeural', name: 'Ardi (Pria ID - Natural)' },
-  { id: 'id-ID-GadisNeural', name: 'Gadis (Wanita ID - Natural)' },
+  { id: 'en-US-AndrewMultilingualNeural', name: 'Andrew (Pria - Multibahasa ID+EN)' },
+  { id: 'en-US-AvaMultilingualNeural', name: 'Ava (Wanita - Multibahasa ID+EN)' },
+  { id: 'en-US-BrianMultilingualNeural', name: 'Brian (Pria - Multibahasa ID+EN)' },
+  { id: 'en-US-EmmaMultilingualNeural', name: 'Emma (Wanita - Multibahasa ID+EN)' },
+  { id: 'id-ID-ArdiNeural', name: 'Ardi (Pria ID - Bahasa saja)' },
+  { id: 'id-ID-GadisNeural', name: 'Gadis (Wanita ID - Bahasa saja)' },
   { id: 'en-GB-RyanNeural', name: 'Ryan (Male UK - Jarvis Style)' },
   { id: 'en-US-GuyNeural', name: 'Guy (Male US - Professional)' },
   { id: 'en-US-JennyNeural', name: 'Jenny (Female US - Soft)' },
@@ -132,6 +136,12 @@ export interface VoiceSettings {
   voice_handsfree: boolean;
   voice_silence_ms: number;
   voice_sensitivity: VadSensitivity;
+  // Wake word ("Hey Ev"), run by the native tray helper. The browser only reads
+  // these to show/set them; the listener itself lives in python.
+  wakeword_enabled: boolean;
+  wakeword_model: string;
+  wakeword_threshold: number;
+  wakeword_cooldown_ms: number;
 }
 
 export const VOICE_SETTINGS_DEFAULT: VoiceSettings = {
@@ -139,6 +149,10 @@ export const VOICE_SETTINGS_DEFAULT: VoiceSettings = {
   voice_handsfree: false,
   voice_silence_ms: 800,
   voice_sensitivity: 'medium',
+  wakeword_enabled: false,
+  wakeword_model: 'hey_jarvis',
+  wakeword_threshold: 0.5,
+  wakeword_cooldown_ms: 2000,
 };
 
 export async function loadVoiceSettings(): Promise<VoiceSettings> {
@@ -149,6 +163,11 @@ export async function loadVoiceSettings(): Promise<VoiceSettings> {
     voice_silence_ms: s.voice_silence_ms ?? VOICE_SETTINGS_DEFAULT.voice_silence_ms,
     voice_sensitivity: (s.voice_sensitivity as VadSensitivity)
       ?? VOICE_SETTINGS_DEFAULT.voice_sensitivity,
+    wakeword_enabled: s.wakeword_enabled ?? VOICE_SETTINGS_DEFAULT.wakeword_enabled,
+    wakeword_model: s.wakeword_model ?? VOICE_SETTINGS_DEFAULT.wakeword_model,
+    wakeword_threshold: s.wakeword_threshold ?? VOICE_SETTINGS_DEFAULT.wakeword_threshold,
+    wakeword_cooldown_ms: s.wakeword_cooldown_ms
+      ?? VOICE_SETTINGS_DEFAULT.wakeword_cooldown_ms,
   };
 }
 

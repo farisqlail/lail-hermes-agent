@@ -1,0 +1,51 @@
+.voice-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s1) var(--s3);
+  border-radius: var(--r-md);
+  background-color: var(--surface-1);
+  border: 1px solid var(--border);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--text);
+  user-select: none;
+  white-space: nowrap;
+  /* --c is the state colour; each state overrides it below. */
+  --c: var(--text-faint);
+  border-left: 3px solid var(--c);
+}
+
+.voice-state--idle   { --c: var(--text-faint); }
+.voice-state--listen { --c: var(--ok); }
+.voice-state--think  { --c: var(--warn); }
+.voice-state--speak  { --c: var(--accent, var(--ok)); }
+
+.voice-state__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--c);
+  flex-shrink: 0;
+}
+
+/* Every non-idle state pulses so an operator catches the change in peripheral
+   vision. Idle stays still on purpose — a pulsing "nothing happening" light is
+   noise. Respect reduced-motion: the colour still carries the state. */
+.voice-state--listen .voice-state__dot,
+.voice-state--think .voice-state__dot,
+.voice-state--speak .voice-state__dot {
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+
+.voice-state__icon { font-size: var(--t-sm); line-height: 1; }
+.voice-state__label { line-height: 1; }
+
+@keyframes voice-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--c); opacity: 1; }
+  50%      { box-shadow: 0 0 0 4px transparent; opacity: 0.5; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-state__dot { animation: none !important; }
+}

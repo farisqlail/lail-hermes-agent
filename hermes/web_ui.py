@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import config, paths, stt, voice
+from . import config, paths, stt, voice, desktop_api
 from .session_store import Store
 from .telegram_bridge import new_task_id
 
@@ -200,6 +200,11 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     # Voice output has no dependency on store/bridge/ask_registry, so it lives
     # in its own module instead of this factory's closure.
     app.include_router(voice.router)
+
+    # Tray-helper <-> browser bridge (wake word + voice-state heartbeat). One
+    # DesktopState per app, kept on app.state so tests can read it back.
+    app.state.desktop = desktop_api.DesktopState()
+    app.include_router(desktop_api.build_router(app.state.desktop))
 
     # async (history, tools=, dispatch=) -> str; None when no NIM chat is wired
     # (the conversational branch then falls back to a canned reply).
