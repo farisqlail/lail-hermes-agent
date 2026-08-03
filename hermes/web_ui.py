@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import brain, config, paths, stt, voice, desktop_api, mcp_risk
+from . import brain, cleanup, config, paths, stt, voice, desktop_api, mcp_risk
 from .pending_actions import PendingStore
 from .session_store import Store
 from .telegram_bridge import new_task_id
@@ -676,7 +676,14 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
 
     @app.delete("/api/sessions/{session_id}")
     def delete_session(session_id: str):
-        store.delete_session(session_id)
+        task_ids = store.delete_session(session_id)
+        # The rows are gone; now the bytes. Deliberately after the DB delete
+        # and never able to undo it: a directory the OS refuses to remove
+        # (a file open in Explorer, an antivirus lock) must not leave the
+        # operator with a conversation they cannot delete.
+        cleanup.purge(paths.uploads_dir(), session_id)
+        for tid in task_ids:
+            cleanup.purge(paths.artifacts_dir(), tid)
         return {"ok": True}
 
     @app.get("/api/chat")
@@ -690,6 +697,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     def chat_reset(session_id: str | None = None):
         sid = session_id or CONV_WEB
         store.clear_messages(sid)
+        # With the thread gone, nothing references the files it was handed.
+        cleanup.purge(paths.uploads_dir(), sid)
         return {"ok": True}
 
     @app.post("/api/chat/stream")

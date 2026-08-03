@@ -5,7 +5,7 @@ from openai import AsyncOpenAI
 import uvicorn
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, CommandHandler, filters
-from . import brain, config, paths, voice
+from . import brain, cleanup, config, paths, voice
 from .session_store import Store
 from .mcp_hub import McpHub, RealMcpSession, to_openai_tools
 from .orchestrator import Orchestrator
@@ -561,6 +561,31 @@ async def _notify_restart(swept: list[dict], sender) -> int:
             print(f"Could not notify chat {chat_id} of restart: {_console_safe(e)}")
     return sent
 
+def sweep_orphan_files(store) -> tuple[list[str], list[str]]:
+    """Delete on-disk leftovers no live row owns any more.
+
+    Two sources, both real: conversations deleted before anything cleaned up
+    after them (every artifact directory ever created is still on disk), and
+    uploads whose request died between writing the file and recording it.
+
+    The keep-set is the union of session rows and conversations that still hold
+    messages — the second is load-bearing, since the default "web" conversation
+    has messages but no session row and would otherwise be swept every start.
+    Never raises: a failed sweep is untidy, not a reason to refuse to boot.
+    """
+    try:
+        keep = store.conversation_ids() | {s["session_id"] for s in store.list_sessions()}
+        live_tasks = {t["task_id"] for t in store.list_tasks(limit=100000)}
+        uploads = cleanup.purge_orphans(paths.uploads_dir(), keep)
+        artifacts = cleanup.purge_orphans(paths.artifacts_dir(), live_tasks)
+    except Exception as e:
+        print(f"Could not sweep orphan files: {_console_safe(e)}")
+        return ([], [])
+    if uploads or artifacts:
+        print(f"Startup cleanup: removed {len(uploads)} orphan upload folder(s) "
+              f"and {len(artifacts)} orphan artifact folder(s).")
+    return (uploads, artifacts)
+
 async def run():
     settings = config.load_settings()
     secrets = config.load_secrets()
@@ -572,6 +597,7 @@ async def run():
     swept = store.sweep_interrupted()
     if swept:
         print(f"Startup recovery: retired {len(swept)} interrupted task(s).")
+    sweep_orphan_files(store)
 
     hub = McpHub(settings.mcp_servers, session_factory=real_mcp_session_factory)
     await hub.connect()

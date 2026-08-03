@@ -1166,3 +1166,60 @@ async def test_a_voice_confirm_without_an_id_resolves_the_oldest(hermes_home):
     r = client.post("/api/chat/pending/resolve", json={"approved": False})
     assert r.status_code == 200 and r.json()["id"] == first.id
     assert [a["tool"] for a in client.get("/api/chat/pending").json()] == ["pc__move_file"]
+
+
+def test_deleting_a_session_deletes_its_files_too(hermes_home):
+    """The rows always went; the bytes never did. Every artifact directory ever
+    produced was still on disk — a Flutter build is 50-100 MB of APK that
+    outlived the task, the chat and the session row."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    store.create_session("sess-1", "Percakapan")
+    store.add_message("sess-1", "user", "halo")
+    store.create_task("task-1", 0, "kerja", session_id="sess-1")
+
+    up = paths.uploads_dir() / "sess-1"; up.mkdir(parents=True)
+    (up / "struk.png").write_bytes(b"PNG")
+    art = paths.artifacts_dir() / "task-1"; art.mkdir(parents=True)
+    (art / "app.apk").write_bytes(b"APK")
+
+    client = TestClient(create_app(store))
+    assert client.delete("/api/sessions/sess-1").status_code == 200
+
+    assert not up.exists()
+    assert not art.exists()
+    assert store.list_sessions() == []
+
+
+def test_deleting_a_session_survives_an_undeletable_file(hermes_home, monkeypatch):
+    """A file held open by Explorer or an antivirus scanner must not leave the
+    operator with a conversation they cannot delete."""
+    from hermes import cleanup
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    store.create_session("sess-1", "Percakapan")
+    up = paths.uploads_dir() / "sess-1"; up.mkdir(parents=True)
+    (up / "foto.png").write_bytes(b"PNG")
+
+    def boom(*a, **kw):
+        raise OSError("[WinError 5] Access is denied")
+    monkeypatch.setattr(cleanup.shutil, "rmtree", boom)
+
+    client = TestClient(create_app(store))
+    assert client.delete("/api/sessions/sess-1").status_code == 200
+    assert store.list_sessions() == []       # the conversation still goes
+    assert up.exists()                       # the bytes stay, and say so in the log
+
+
+def test_resetting_a_chat_drops_the_files_it_was_handed(hermes_home):
+    """With the thread gone, nothing references those uploads any more."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    store.add_message("web", "user", "halo")
+    up = paths.uploads_dir() / "web"; up.mkdir(parents=True)
+    (up / "foto.png").write_bytes(b"PNG")
+
+    client = TestClient(create_app(store))
+    assert client.post("/api/chat/reset").status_code == 200
+    assert not up.exists()
+    assert store.get_messages("web") == []

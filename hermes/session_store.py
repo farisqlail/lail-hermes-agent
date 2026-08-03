@@ -81,18 +81,26 @@ class Store:
             c.execute("UPDATE sessions SET title=? WHERE session_id=?", (title, session_id))
         self.publish({"type": "session_renamed", "session_id": session_id, "title": title})
 
-    def delete_session(self, session_id):
+    def delete_session(self, session_id) -> list[str]:
+        """Drop a conversation and everything it owns. Returns its task ids.
+
+        The ids are the caller's only handle on what the tasks left on disk:
+        this deletes the `artifacts` rows, but the APKs, screenshots and engine
+        transcripts they point at live under `artifacts/<task-id>/` and are not
+        SQLite's to remove. See `hermes/cleanup.py`.
+        """
         with self._conn() as c:
             c.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
             c.execute("DELETE FROM messages WHERE conv_id=?", (session_id,))
             tasks = c.execute("SELECT task_id FROM tasks WHERE session_id=?", (session_id,)).fetchall()
-            for t in tasks:
-                tid = t["task_id"]
+            task_ids = [t["task_id"] for t in tasks]
+            for tid in task_ids:
                 c.execute("DELETE FROM steps WHERE task_id=?", (tid,))
                 c.execute("DELETE FROM logs WHERE task_id=?", (tid,))
                 c.execute("DELETE FROM artifacts WHERE task_id=?", (tid,))
             c.execute("DELETE FROM tasks WHERE session_id=?", (session_id,))
         self.publish({"type": "session_deleted", "session_id": session_id})
+        return task_ids
 
     def list_sessions(self):
         with self._conn() as c:
@@ -206,6 +214,17 @@ class Store:
                 "SELECT role, content FROM messages WHERE conv_id=? "
                 "ORDER BY id DESC LIMIT ?", (conv_id, limit)).fetchall()
             return [dict(r) for r in reversed(rows)]
+
+    def conversation_ids(self) -> set[str]:
+        """Every conv_id that still holds messages.
+
+        Not the same question as `list_sessions`: the default web conversation
+        ("web") has messages but no `sessions` row, so a disk sweep keyed on
+        sessions alone would treat its files as orphans and delete them.
+        """
+        with self._conn() as c:
+            return {r["conv_id"] for r in
+                    c.execute("SELECT DISTINCT conv_id FROM messages")}
 
     def clear_messages(self, conv_id):
         with self._conn() as c:

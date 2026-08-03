@@ -174,6 +174,11 @@ flowchart TD
   queued message says exactly what the gate saw instead of proceeding silently.
 - **SQLite session store** — tasks, steps, logs, artifacts, chat threads and operator facts
   persist and survive restarts.
+- **Deleting a conversation deletes its bytes** — removing a session drops its uploads and
+  every artifact directory its tasks produced, not just the rows pointing at them. A startup
+  sweep clears leftovers no live row owns any more (conversations deleted before this existed,
+  uploads whose request died mid-flight). A directory the OS refuses to remove is logged and
+  skipped, never allowed to block the delete itself.
 - **Startup recovery** — on start, tasks stranded in `running`/`queued`/`awaiting_confirm` are
   retired to `interrupted` and each affected chat gets one digest telling them what died and
   what to resubmit.
@@ -219,7 +224,8 @@ below). Neither has a required location; put them wherever suits the machine.
 %HERMES_HOME%\           # data root — you choose where
 ├─ config\               # config.yaml, .env (secrets), mcp.json
 ├─ projects\             # per-task workspaces
-├─ artifacts\            # apk, screenshots, logs
+├─ artifacts\            # apk, screenshots, logs (removed with their task)
+├─ uploads\              # files handed to a conversation (removed with it)
 ├─ wakewords\            # custom wake-word models (hey_<name>.onnx)
 ├─ hermes.db             # task history
 └─ start.bat             # stub → sets HERMES_HOME, calls deploy\start.bat in the repo
