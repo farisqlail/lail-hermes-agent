@@ -22,6 +22,24 @@ def test_parse_plan_with_fences():
     steps = parse_plan(raw)
     assert steps[0]["type"] == "code"
 
+def test_parse_plan_ignores_prose_and_reasoning_blocks():
+    """The failure mode seen against task @myprofit: the planner wrapped its
+    plan in prose (and a reasoning block holding its own braces). The greedy
+    regex spliced first-brace-to-last and reported 'no JSON object'."""
+    raw = ('<think>{"idea": "one code step"}</think>\n'
+           'Here is the plan:\n'
+           '{"steps":[{"type":"code","prompt":"fix it"}]}\n'
+           'Let me know if that works.')
+    steps = parse_plan(raw)
+    assert steps == [{"type": "code", "prompt": "fix it"}]
+
+def test_parse_plan_names_empty_output_separately():
+    """An empty message.content is an endpoint problem, not a bad plan, and
+    the failure report has no planner output to show for it."""
+    with pytest.raises(ValueError) as e:
+        parse_plan("   ")
+    assert "empty" in str(e.value)
+
 def test_validate_plan_rejects_emulator_test_without_build():
     """The exact broken plan a weak planner produced against a web project: a
     lone emulator test, no build. It can only fail with 'no apk artifact to

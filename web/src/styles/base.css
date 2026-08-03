@@ -57,6 +57,15 @@ button, input, select, textarea {
   border: none;
 }
 
+/* The dropdown list is painted by the browser on its own surface — white on
+   Windows — not on the dark control. Options inherited the near-white --text
+   from the select and came out white-on-white, i.e. invisible. Both colours
+   are stated so the list does not depend on the platform's default surface. */
+select option {
+  background-color: #fff;
+  color: #000;
+}
+
 button {
   cursor: pointer;
 }

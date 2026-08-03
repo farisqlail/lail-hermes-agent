@@ -1,18 +1,47 @@
 from __future__ import annotations
-import json, re, uuid
+import json, uuid
 from pathlib import Path
 from .config import Settings
 from .session_store import Store
 
+def _json_objects(raw: str):
+    """Every parseable JSON object in the text, in order.
+
+    Deliberately not the greedy `re.search(r"\\{.*\\}", ...)` this used to be:
+    that pattern splices from the first brace to the last, so a planner that
+    wraps its answer in prose, a ```json fence, a `<think>` block, or emits a
+    second object alongside the plan yields a string that parses as neither —
+    reported as "no JSON object in planner output" against output that plainly
+    contains one. Scanning brace by brace takes each object on its own.
+    """
+    dec = json.JSONDecoder()
+    i = raw.find("{")
+    while i != -1:
+        try:
+            obj, end = dec.raw_decode(raw, i)
+        except ValueError:
+            i = raw.find("{", i + 1)
+            continue
+        if isinstance(obj, dict):
+            yield obj
+        i = raw.find("{", end)
+
+
 def parse_plan(raw: str) -> list[dict]:
-    m = re.search(r"\{.*\}", raw, re.DOTALL)
-    if not m:
-        raise ValueError("no JSON object in planner output")
-    data = json.loads(m.group(0))
-    steps = data.get("steps")
-    if not isinstance(steps, list):
+    seen = False
+    for data in _json_objects(raw):
+        seen = True
+        steps = data.get("steps")
+        if isinstance(steps, list):
+            return steps
+    if not raw.strip():
+        # The planner returned nothing at all — an empty `message.content`,
+        # which is a model/endpoint problem, not a malformed plan. Named
+        # separately because the failure report has no output to show.
+        raise ValueError("planner returned empty output")
+    if seen:
         raise ValueError("plan has no steps list")
-    return steps
+    raise ValueError("no JSON object in planner output")
 
 def validate_plan(steps: list[dict], default_test_mode: str = "none") -> None:
     """Reject a structurally impossible plan before any step runs.
