@@ -123,6 +123,15 @@ flowchart TD
   the old undifferentiated retry, one burning three instant rounds against an endpoint that
   was refusing everything. Unrecognised errors keep the old behaviour, so an unfamiliar
   failure gains nothing from a guess.
+- **A failed build or test gets repaired, then run again** — until now a build failed once and
+  took the whole task with it, even though a compile error is exactly what a coding engine can
+  read and fix: the code steps had three rounds of self-correction, the steps that produce the
+  real error messages had none. The failure class decides what happens — transient waits and
+  re-runs the step (no engine session spent), semantic hands the error to a code step and then
+  re-runs, environment and structural stop. The repair prompt forbids the shortcut every
+  automatic repair loop finds sooner or later: deleting the failing test, loosening the
+  assertion, excluding the file from the build. Bounded by one repair per step, the task
+  budget, and a check that the repair changed the failure at all.
 - **Guards on the loop** — a per-task spending cap (`max_task_cost_usd`, $10 by default; a
   successful round on this machine has cost $0.97-$4.58, so an unbounded repair loop is a
   money leak rather than persistence), and a no-progress detector that stops a step whose

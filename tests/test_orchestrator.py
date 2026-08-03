@@ -880,3 +880,132 @@ async def test_missing_detect_dependency_claims_no_project_type(hermes_home):
     assert store.get_task("t1")["status"] == "done"      # no crash
     assert "does NOT produce an APK" not in seen[0]
     assert "a.txt" in seen[0]                            # tree still sent
+
+
+def _build_plan():
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "build", "target": "apk"}]})
+    return planner
+
+
+async def test_a_failing_build_is_repaired_then_run_again(hermes_home):
+    """Until now a build failed once and took the whole task with it — yet a
+    compile error is exactly what a coding engine can read and fix. The code
+    steps had three rounds of self-correction; the step that produces the
+    actual error message had none."""
+    from hermes.build_runner import BuildResult
+    from hermes.engine_runner import RunResult
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude", projects_path=str(hermes_home / "proj"))
+
+    builds, repairs = [], []
+    async def fake_build(project_dir, ptype, timeout_s, run=None):
+        builds.append(1)
+        if len(builds) == 1:
+            return BuildResult(False, None, "", "MainActivity.kt:12: unresolved reference: foo")
+        return BuildResult(True, "app.apk", "", "")
+    async def fake_engine(engine, prompt, cwd, timeout_s, **kw):
+        repairs.append(prompt)
+        _worked(cwd)
+        return RunResult(True, f"fixed\n{_DONE_SENTINEL}", "", False, 0)
+
+    orch = Orchestrator(settings, store, _build_plan(),
+                        dict(run_engine=fake_engine, build_apk=fake_build,
+                             detect=lambda d: "flutter"))
+    reports = []
+    async def report(tid, msg, html=False): reports.append(msg)
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report)
+
+    assert len(builds) == 2 and len(repairs) == 1
+    assert "unresolved reference: foo" in repairs[0]     # the error is handed over
+    assert "not the symptom" in repairs[0]               # and the rule against faking it
+    assert store.get_task("t1")["status"] == "done"
+    assert any("repairing after failure" in m for m in reports)
+
+
+async def test_a_build_that_cannot_work_here_is_not_repaired(hermes_home):
+    """"unsupported project type: unknown" is structural — the plan asked for
+    an artifact this project cannot produce. An engine cannot fix that, and a
+    repair round would only spend money proving it."""
+    from hermes.build_runner import BuildResult
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude", projects_path=str(hermes_home / "proj"))
+
+    builds = []
+    async def fake_build(project_dir, ptype, timeout_s, run=None):
+        builds.append(1)
+        return BuildResult(False, None, "", "unsupported project type: unknown")
+    async def must_not_run(*a, **k):
+        raise AssertionError("a structural failure must not be repaired")
+
+    orch = Orchestrator(settings, store, _build_plan(),
+                        dict(run_engine=must_not_run, build_apk=fake_build,
+                             detect=lambda d: "unknown"))
+    reports = []
+    async def report(tid, msg, html=False): reports.append(msg)
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report)
+
+    assert len(builds) == 1
+    assert store.get_task("t1")["status"] == "failed"
+    assert any("plan needs to change" in m for m in reports)
+
+
+async def test_a_repair_that_changes_nothing_is_not_tried_twice(hermes_home):
+    """The same failure after a repair means the repair missed. Running the
+    step a third time would only prove it again, at the price of another
+    build."""
+    from hermes.build_runner import BuildResult
+    from hermes.engine_runner import RunResult
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude", projects_path=str(hermes_home / "proj"))
+
+    builds, repairs = [], []
+    async def fake_build(project_dir, ptype, timeout_s, run=None):
+        builds.append(1)
+        return BuildResult(False, None, "", "Main.kt:12: unresolved reference: foo")
+    async def fake_engine(engine, prompt, cwd, timeout_s, **kw):
+        repairs.append(1)
+        _worked(cwd)
+        return RunResult(True, f"fixed\n{_DONE_SENTINEL}", "", False, 0)
+
+    orch = Orchestrator(settings, store, _build_plan(),
+                        dict(run_engine=fake_engine, build_apk=fake_build,
+                             detect=lambda d: "flutter"))
+    reports = []
+    async def report(tid, msg, html=False): reports.append(msg)
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report)
+
+    assert len(builds) == 2 and len(repairs) == 1        # one repair, one re-run
+    assert store.get_task("t1")["status"] == "failed"
+    assert any("repair did not change the failure" in m for m in reports)
+
+
+async def test_a_transient_build_failure_is_waited_out_not_repaired(hermes_home):
+    """Nothing about the project needs to change when the network blipped, so
+    the step is simply run again — no engine session is spent."""
+    from hermes.build_runner import BuildResult
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude", projects_path=str(hermes_home / "proj"))
+
+    builds, slept = [], []
+    async def fake_build(project_dir, ptype, timeout_s, run=None):
+        builds.append(1)
+        if len(builds) == 1:
+            return BuildResult(False, None, "", "Could not resolve dependency: connection reset")
+        return BuildResult(True, "app.apk", "", "")
+    async def must_not_run(*a, **k):
+        raise AssertionError("a transient failure must not spend an engine session")
+    async def fake_sleep(s): slept.append(s)
+
+    orch = Orchestrator(settings, store, _build_plan(),
+                        dict(run_engine=must_not_run, build_apk=fake_build,
+                             detect=lambda d: "flutter", sleep=fake_sleep))
+    async def report(tid, msg, html=False): pass
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report)
+
+    assert len(builds) == 2 and slept == [5]
+    assert store.get_task("t1")["status"] == "done"

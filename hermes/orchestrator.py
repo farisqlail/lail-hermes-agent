@@ -177,6 +177,38 @@ def _resume_prompt() -> str:
             "the remaining work, run the verification for real, and fix "
             "anything broken." + _COMPLETION_CONTRACT)
 
+# How many times one step may be repaired and re-run, and how many times a
+# transient failure of the same step is waited out. One, not three: a repair
+# that did not work is usually a repair aimed at the wrong thing, and a second
+# guess costs another engine session on top of another build.
+MAX_STEP_REPAIRS = 1
+
+
+def _repair_prompt(step: dict, why: str) -> str:
+    """The instruction for the code step that fixes a failed build or test.
+
+    The last paragraph is not decoration. A loop told only "make it pass" can
+    always pass: delete the failing test, weaken the assertion, exclude the
+    module from the build. That is the failure mode of every automatic repair
+    loop, and it is invisible in a green result — so the ban is stated, and
+    the operator gets told what changed either way through the task's own diff
+    summary.
+    """
+    kind = step.get("type", "step")
+    return (f"The `{kind}` step failed. Fix the cause in the project, then stop "
+            "— the step will be run again automatically afterwards.\n\n"
+            f"# What failed\n{why[:2000]}\n\n"
+            "# Rules\n"
+            "1. Fix the underlying cause, not the symptom.\n"
+            "2. Do NOT make the failure disappear by weakening what checks it: "
+            "no deleting or skipping tests, no loosening assertions, no "
+            "excluding files from the build, no lowering a version requirement "
+            "you have not verified.\n"
+            "3. If the failure is environmental (a missing SDK, an unset "
+            "credential) rather than a defect in the code, change nothing and "
+            "say so — a wrong fix is worse than a clear report.")
+
+
 def _guidance_block(hint: str) -> str:
     """The operator's own instruction, appended to whichever continuation the
     round would have sent anyway.
@@ -362,17 +394,8 @@ class Orchestrator:
             sid = self.store.add_step(task_id, i, step.get("type", "?"), json.dumps(step))
             self.store.set_step_status(sid, "running")
             await report(task_id, f"step {i} [{step.get('type')}] started...")
-            try:
-                ok, msg = await self._exec_step(task_id, proj, step, i, text,
-                                                send_file, chat_id, budget)
-            except Exception as e:
-                # Where the missing-binary failures actually surfaced: the
-                # engine runner raises FileNotFoundError before any round runs,
-                # so the loop's classifier never sees it. Three tasks in the
-                # history reported "step crashed: 'claude' not found on PATH"
-                # and left the operator to work out the rest.
-                tip = failure.advice(str(e))
-                ok, msg = False, f"step crashed: {e}" + (f"\n{tip}" if tip else "")
+            ok, msg = await self._run_step_with_repair(
+                task_id, proj, step, i, text, send_file, chat_id, budget, report)
             self.store.set_step_status(sid, "done" if ok else "failed")
             self.store.append_log(task_id, f"step {i} [{step.get('type')}]: {msg}")
             await report(task_id, f"step {i} [{step.get('type')}]: {msg}")
@@ -463,6 +486,98 @@ class Orchestrator:
         self.store.append_log(
             task_id, f"step {idx} [{engine}]: {len(attempts)} round(s), "
                      f"${sum(costs):.4f}")
+
+    async def _attempt_step(self, task_id, proj, step, idx, text, send_file,
+                            chat_id, budget):
+        """One attempt at a step, with a crash turned into a failed result.
+
+        The missing-binary failures surfaced here: engine_runner raises
+        FileNotFoundError before any round runs, so the loop's classifier never
+        saw them. Three tasks reported "step crashed: 'claude' not found on
+        PATH" and left the operator to work out the rest.
+        """
+        try:
+            return await self._exec_step(task_id, proj, step, idx, text,
+                                         send_file, chat_id, budget)
+        except Exception as e:
+            tip = failure.advice(str(e))
+            return (False, f"step crashed: {e}" + (f"\n{tip}" if tip else ""))
+
+    async def _run_step_with_repair(self, task_id, proj, step, idx, text,
+                                    send_file, chat_id, budget, report):
+        """Run a step, and give a build or test that fails a chance to be fixed.
+
+        Until now a build or test failed once and took the whole task with it —
+        yet a compile error is precisely what a coding engine can read and fix.
+        The code steps had three rounds of self-correction; the steps that
+        produce the actual error messages had none.
+
+        What is retried, and what is not, comes from the same classifier the
+        engine loop uses:
+
+        * transient — the world was busy. Wait and run the step again; nothing
+          about the project needs to change.
+        * semantic — a real error in the code. Hand it to the engine as a
+          repair, then run the step again.
+        * environment / structural — repeating is the same failure at the same
+          price. Report and stop.
+
+        Bounded three ways: MAX_STEP_REPAIRS, the task budget, and a
+        no-progress check — a second failure with the same signature means the
+        repair did not land, and a third attempt would only prove it again.
+        """
+        repairs = 0
+        transient_waits = 0
+        last_signature = ""
+        while True:
+            ok, msg = await self._attempt_step(task_id, proj, step, idx, text,
+                                               send_file, chat_id, budget)
+            if ok:
+                return (True, msg)
+            kind = failure.classify(msg)
+            # Only build and test are retried here. A code step already spends
+            # its own rounds on a transient failure, waiting between each, so
+            # retrying it again at this level would double the rounds and the
+            # bill for a rate limit that has already been waited out.
+            step_retryable = step.get("type") in ("build", "test")
+            if (step_retryable and kind == failure.TRANSIENT
+                    and transient_waits < MAX_STEP_REPAIRS):
+                await report(task_id, f"step {idx}: {kind}, waiting before retry")
+                await self.deps.get("sleep", asyncio.sleep)(
+                    failure.delay_for(transient_waits))
+                transient_waits += 1
+                continue
+            repairable = (step.get("type") in ("build", "test")
+                          and kind == failure.SEMANTIC)
+            if not repairable:
+                return (False, msg)
+            # Checked before the repair cap, not after: with one repair
+            # allowed, the cap would always answer first and this — the case
+            # actually worth naming — could never be reported.
+            sig = failure.signature(msg)
+            if sig == last_signature:
+                return (False, f"{msg}\nThe repair did not change the failure, "
+                               "so the step was not run again.")
+            last_signature = sig
+            if repairs >= MAX_STEP_REPAIRS:
+                return (False, msg)
+            if budget.exhausted:
+                return (False, f"{msg}\n{budget.report()}")
+
+            repairs += 1
+            await report(task_id, f"step {idx}: repairing after failure "
+                                  f"(attempt {repairs} of {MAX_STEP_REPAIRS})")
+            rid = self.store.add_step(task_id, idx, "repair",
+                                      json.dumps({"of": step.get("type"), "why": msg[:400]}))
+            self.store.set_step_status(rid, "running")
+            fixed, fix_msg = await self._attempt_step(
+                task_id, proj, {"type": "code", "prompt": _repair_prompt(step, msg)},
+                idx, text, send_file, chat_id, budget)
+            self.store.set_step_status(rid, "done" if fixed else "failed")
+            self.store.append_log(task_id, f"step {idx} [repair]: {fix_msg}")
+            await report(task_id, f"step {idx} [repair]: {fix_msg}")
+            if not fixed:
+                return (False, f"{msg}\nrepair attempt failed: {fix_msg}")
 
     async def _escalate(self, task_id: str, chat_id: int, why: str) -> str:
         """Ask the operator what to try, or "" when nobody can be asked.
