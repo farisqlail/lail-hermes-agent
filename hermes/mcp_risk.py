@@ -25,6 +25,15 @@ RISKY_VERBS = frozenset({
     "mark", "label", "star", "download", "save", "clear", "empty",
 })
 
+# Exact tool base-names that only READ despite carrying a risky verb, so they run
+# straight through. `browser_navigate`/`_back` load a URL (a GET) to read a page
+# — the calendar-read flow needs this ungated to be consistent — but the verb
+# "navigate" is otherwise risky. Kept as exact names, not a verb, so this never
+# widens to a real side-effect tool (click/type/fill stay gated).
+SAFE_READ_TOOLS = frozenset({
+    "browser_navigate", "browser_navigate_back",
+})
+
 # Verbs that only observe. Present so a read tool whose name happens to contain no
 # risky verb is recognised as a read rather than falling through to the
 # gate-unknown default.
@@ -56,6 +65,8 @@ def is_risky_tool(name: str) -> bool:
     toks = _tokens(tool)
     if not toks:
         return True
+    if tool in SAFE_READ_TOOLS:
+        return False
     if any(t in RISKY_VERBS for t in toks):
         return True
     if any(t in READ_VERBS for t in toks):

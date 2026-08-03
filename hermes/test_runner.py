@@ -59,7 +59,11 @@ async def _browser_flow(url: str, out_dir: Path, capture) -> TestResult:
 async def _playwright_capture(url: str, dest: str):
     from playwright.async_api import async_playwright
     async with async_playwright() as p:
-        b = await p.chromium.launch()
+        # Headless on purpose: this is automated screenshot capture, not a
+        # browser opened for the user. It must never pop a visible Chromium
+        # window — the user's default browser is Arc, and Playwright cannot
+        # drive Arc, so the only safe behaviour is to stay invisible.
+        b = await p.chromium.launch(headless=True)
         page = await b.new_page()
         await page.goto(url)
         await page.screenshot(path=dest)

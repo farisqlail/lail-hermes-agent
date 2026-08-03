@@ -28,6 +28,15 @@ def json_objects(raw: str):
         i = raw.find("{", end)
 
 
+class PlanShapeError(ValueError):
+    """The planner returned a JSON object, but not our {"steps":[...]} schema.
+
+    Distinct from an empty reply or non-JSON prose because it is *recoverable*:
+    a task the planner clearly understood (it wrote a plan, just in its own
+    shape) can still run as a single code step, per the planner's own rule 1.
+    """
+
+
 def parse_plan(raw: str) -> list[dict]:
     seen = False
     for data in json_objects(raw):
@@ -41,8 +50,11 @@ def parse_plan(raw: str) -> list[dict]:
         # separately because the failure report has no output to show.
         raise ValueError("planner returned empty output")
     if seen:
-        raise ValueError("plan has no steps list")
+        raise PlanShapeError("plan has no steps list")
     raise ValueError("no JSON object in planner output")
+
+_KNOWN_STEP_TYPES = ("code", "build", "test")
+
 
 def validate_plan(steps: list[dict], default_test_mode: str = "none") -> None:
     """Reject a structurally impossible plan before any step runs.
@@ -62,6 +74,18 @@ def validate_plan(steps: list[dict], default_test_mode: str = "none") -> None:
     built = False
     for i, step in enumerate(steps):
         kind = step.get("type")
+        # A step with no `type`, or a type the executor cannot run, otherwise
+        # slips through here and dies mid-run at _exec_step with the opaque
+        # "step {i} [None]: unknown step type: None" — after planning has spent
+        # its tokens and, for a later step, after earlier steps already ran.
+        # Raised as PlanShapeError, not a plain ValueError: a typeless step is
+        # the same off-schema drift as a missing `steps` list (the planner wrote
+        # a plan shaped {step,name,details} instead of {type,prompt}), so the
+        # orchestrator can recover it into a single code step rather than fail.
+        if kind not in _KNOWN_STEP_TYPES:
+            raise PlanShapeError(
+                f"step {i} has an unknown type {kind!r} — the planner must emit "
+                f"one of {', '.join(_KNOWN_STEP_TYPES)}.")
         if kind == "build":
             built = True
         elif kind == "test":
@@ -373,8 +397,26 @@ class Orchestrator:
         await report(task_id, "planning...")
         try:
             raw = await self.planner(text, self._plan_context(proj, is_new))
-            steps = parse_plan(raw)
-            validate_plan(steps, self.settings.default_test_mode)
+            try:
+                steps = parse_plan(raw)
+                validate_plan(steps, self.settings.default_test_mode)
+            except PlanShapeError as e:
+                # The planner understood the task well enough to write a plan —
+                # it just used its own JSON shape instead of ours: either no
+                # `steps` list at all (keyed "implementation_plan"), or steps
+                # shaped {step,name,details} with no `type`. Some models drift
+                # off-schema on nearly every call. Rather than fail a runnable
+                # request, degrade to what rule 1 says most tasks are anyway: a
+                # single code step over the original request. Reported, not
+                # silent, so the operator sees the planner misbehaved. A plain
+                # ValueError from validate_plan (e.g. an emulator test with no
+                # build) is a real, unrecoverable plan error and still fails.
+                if not text.strip():
+                    raise
+                steps = [{"type": "code", "prompt": text}]
+                await report(task_id,
+                             f"planner replied off-schema ({e}) — running the "
+                             f"task as a single code step.")
         except Exception as e:
             self.store.set_task_status(task_id, "failed")
             raw_val = locals().get("raw", "")

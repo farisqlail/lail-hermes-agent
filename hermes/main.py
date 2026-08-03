@@ -131,7 +131,18 @@ def build_nim_planner(settings, secrets, hub):
         "same plan: an emulator test with no prior build has no APK to install "
         "and always fails.\n"
         "5. `prompt` is the instruction handed to the coding engine — write it "
-        "as a clear, self-contained task, in the language the user used.")
+        "as a clear, self-contained task, in the language the user used.\n"
+        "6. OUTPUT SHAPE IS FIXED. The top-level key MUST be exactly `steps`, a "
+        "list, and every element MUST have a `type` of `code`, `build`, or "
+        "`test`. Do NOT invent keys like `implementation_plan`, `feature`, or "
+        "steps shaped `{step,title,details}`. A whole feature is ONE code step "
+        "whose `prompt` describes it — not a step per sub-task.\n"
+        "Example for “add a status filter tab to the transaction list”:\n"
+        '{"steps":[{"type":"code","engine":"claude","prompt":"Tambahkan tab '
+        'filter status di halaman Daftar Transaksi: ambil opsi dari '
+        "{{front}}/orders/statuses, render tab dinamis + tab 'Semua', simpan "
+        "status_id aktif, dan kirim sebagai query param ke API daftar "
+        'transaksi."}]}')
     async def planner(text: str, context: str = "") -> str:
         current_secrets = config.load_secrets()
         if not current_secrets.nvidia_api_key:
@@ -248,6 +259,12 @@ def build_nim_chat(settings, secrets):
         "konfirmasi operator — hasil alat akan berkata 'needs_confirmation'. "
         "Bila itu terjadi, sampaikan ke pengguna bahwa aksi menunggu persetujuan "
         "dan JANGAN mengaku sudah melakukannya.\n\n"
+        "MEMBUKA APLIKASI / URL: untuk membuka app desktop yang dikenal (paint, "
+        "notepad, calculator, explorer, wordpad) atau sebuah URL, pakai alat "
+        "`open_app` — BUKAN shell/`start_process`. `open_app` langsung dijalankan "
+        "tanpa konfirmasi operator; bila hasilnya 'opened', katakan app/URL sudah "
+        "dibuka. Bila 'unknown_app', app itu di luar daftar aman — sampaikan belum "
+        "dibuka dan sebut app yang tersedia.\n\n"
         "Bila pengguna bertanya tentang cara mengantre task atau cara kerja start_task/start task, format jawabanmu wajib mengikuti pola ini secara persis (tanpa menggunakan backslash/garis miring terbalik pada tanda kutip):\n"
         "Tentu! Berikut cara kerja start task di Lail Hermes:\n\n"
         "## 📝 Cara mengantre task\n\n"

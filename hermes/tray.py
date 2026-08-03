@@ -16,10 +16,10 @@ import threading
 import time
 import urllib.error
 import urllib.request
-import webbrowser
 from typing import Callable, Optional
 
 from . import config
+from .browser import open_default_browser
 
 SERVER = "http://127.0.0.1:8799"
 DASHBOARD_URL = SERVER + "/"
@@ -120,7 +120,7 @@ class TrayApp:
             self._stop.wait(POLL_INTERVAL_S)
 
     def _on_wake(self) -> None:
-        handle_wake(_post_wake, lambda: webbrowser.open(DASHBOARD_URL))
+        handle_wake(_post_wake, lambda: open_default_browser(DASHBOARD_URL))
 
     def _start_listener(self) -> None:
         from . import wakeword, paths
@@ -161,7 +161,7 @@ class TrayApp:
         phrase = wakeword.expected_phrase(config.load_settings().agent_name)
         return pystray.Menu(
             pystray.MenuItem("Buka Dashboard",
-                             lambda: webbrowser.open(DASHBOARD_URL),
+                             lambda: open_default_browser(DASHBOARD_URL),
                              default=True),
             pystray.MenuItem(f"Picu ({phrase})", lambda: self._on_wake()),
             pystray.Menu.SEPARATOR,

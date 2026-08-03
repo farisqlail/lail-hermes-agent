@@ -270,6 +270,22 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     queueRef.current?.enqueue(endpoint, payload);
   }, [ttsEnabled, ttsMode, ttsVoice, agentName, ttsMaxWords, ttsPersonality]);
 
+  /** Speak one line straight through the verbatim synth endpoint, skipping the
+   *  smart summariser. The <voice> opener and the no-tag fallback are already a
+   *  single spoken sentence, so a summariser round trip would only add a whole
+   *  LLM call (and its latency) to reword something that is already final. */
+  const speakLine = useCallback((text: string) => {
+    if (!ttsEnabled) return;
+    const { endpoint, payload } = ttsRequest('verbatim', 'summary', {
+      voice: ttsVoice,
+      agentName,
+      maxWords: ttsMaxWords,
+      personality: ttsPersonality,
+      text,
+    });
+    queueRef.current?.enqueue(endpoint, payload);
+  }, [ttsEnabled, ttsVoice, agentName, ttsMaxWords, ttsPersonality]);
+
   const shutUp = useCallback(() => { queueRef.current?.stop(); }, []);
 
   useEffect(() => {
@@ -544,6 +560,12 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     const extractor = new VoiceTagExtractor();
     const streamSpeech = ttsEnabled && ttsMode === 'verbatim';
     const wantsVoiceTag = ttsEnabled && ttsMode === 'smart';
+    // Smart-mode turn state: `spokeOpener` once the <voice> line has been sent,
+    // `earlyVerbatim` once we gave up on a tag the model never opened and began
+    // streaming its prose verbatim instead. Either one means the post-stream
+    // summariser fallback must NOT also fire.
+    let spokeOpener = false;
+    let earlyVerbatim = false;
     let accumulatedUsage: { total: number } | null = null;
 
     try {
@@ -573,8 +595,11 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
         for (const ev of events) {
           if (ev.delta) {
             const { display, voice: spoken } = extractor.push(ev.delta);
-            if (spoken && wantsVoiceTag) {
-              speak('summary', { text: spoken });
+            if (spoken && wantsVoiceTag && !earlyVerbatim) {
+              // The opener is already the one sentence to speak — synth it
+              // directly, no summariser round trip.
+              speakLine(spoken);
+              spokeOpener = true;
             }
             if (display) {
               accumulatedText += display;
@@ -584,6 +609,16 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
                 const { sentences, remainder } = splitSentences(speechBuffer);
                 speechBuffer = remainder;
                 for (const s of sentences) speak('summary', { text: s });
+              } else if (wantsVoiceTag && !spokeOpener) {
+                // Visible prose arrived with no <voice> tag opened before it, so
+                // no opener is coming. Stream the reply verbatim as it lands —
+                // audio trails the text by ~1s — rather than waiting for the
+                // whole reply plus a summariser round trip.
+                earlyVerbatim = true;
+                speechBuffer += display;
+                const { sentences, remainder } = splitSentences(speechBuffer);
+                speechBuffer = remainder;
+                for (const s of sentences) speakLine(s);
               }
             }
           }
@@ -617,7 +652,14 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
           for (const s of sentences) speak('summary', { text: s });
         }
         for (const s of flushSentence(speechBuffer)) speak('summary', { text: s });
-      } else if (!extractor.sawTag) {
+      } else if (earlyVerbatim) {
+        // No tag: we streamed the prose verbatim. Flush the last, unterminated
+        // sentence so nothing is left unspoken.
+        if (tail.display) speechBuffer += tail.display;
+        for (const s of flushSentence(speechBuffer)) speakLine(s);
+      } else if (!spokeOpener && !extractor.sawTag) {
+        // Reply too short to have split a sentence and carried no tag — last
+        // resort, summarise the whole thing. Rare.
         speak('summary', { text: accumulatedText });
       }
       if (onRefreshSessions) {

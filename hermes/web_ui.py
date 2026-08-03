@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import brain, cleanup, config, paths, postmortem, stt, uploads, voice, desktop_api, mcp_risk
+from . import brain, cleanup, config, paths, postmortem, stt, uploads, voice, desktop_api, mcp_risk, launcher
 from .pending_actions import PendingStore
 from .session_store import Store
 from .telegram_bridge import new_task_id
@@ -88,6 +88,17 @@ CHAT_TOOLS = [
             "description": {"type": "string",
                             "description": "instruksi task, mis. '@myprofit jalankan pengujian'"}},
             "required": ["description"]}}},
+    {"type": "function", "function": {
+        "name": "open_app",
+        "description": ("Buka aplikasi desktop yang dikenal (mis. paint, notepad, calculator, "
+                        "explorer, wordpad) ATAU sebuah URL http/https, langsung di komputer "
+                        "pengguna. Langsung DIBUKA tanpa konfirmasi operator — bukan aksi "
+                        "tertahan. Setelah status 'opened', katakan sudah dibuka. Hanya app "
+                        "dalam daftar aman yang bisa; lainnya balas 'unknown_app'."),
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string",
+                       "description": "nama app (mis. 'paint') atau URL (mis. 'https://calendar.google.com')"}},
+            "required": ["target"]}}},
 ]
 
 def _bg_crash_cb(store: Store, task_id: str):
@@ -362,6 +373,12 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                         {"task_id": new_id, "status": "awaiting_confirm",
                          "note": "Task diantre; menunggu operator menekan Run sebelum berjalan."},
                         ensure_ascii=False)
+                if name == "open_app":
+                    # Ungated on purpose: a known app / URL the user just asked
+                    # for opens straight away, no operator confirm. Safety is the
+                    # fixed allow-list in launcher.KNOWN_APPS, not this gate.
+                    return json.dumps(launcher.open_app(str(args.get("target") or "")),
+                                      ensure_ascii=False)
                 # MCP integration tools (file / browser / gmail / calendar). Reads
                 # run straight through; a write/send/delete is gated — returned to
                 # the model as "needs confirmation" and NOT executed, so the chat

@@ -371,15 +371,15 @@ export function TaskDetail() {
           flexDirection: 'column',
           gap: '16px',
           padding: '16px',
-          backgroundColor: 'var(--surface-1)',
+          backgroundColor: 'rgba(6, 10, 15, 0.4)',
           border: '1px solid var(--border)',
-          borderRadius: 'var(--r-lg)',
+          borderRadius: 'var(--r-sm)',
           minHeight: '200px',
         }}
       >
         {timeline.length === 0 ? (
-          <div style={{ color: 'var(--text-faint)', textAlign: 'center', margin: 'auto' }}>
-            Belum ada aktivitas terekam.
+          <div style={{ color: 'var(--text-faint)', textAlign: 'center', margin: 'auto', fontFamily: 'var(--font-mono)' }}>
+            NO ACTIVITY LOGS DETECTED.
           </div>
         ) : (
           timeline.map((msg, idx) => (
@@ -389,24 +389,36 @@ export function TaskDetail() {
                 alignSelf: msg.sender === 'user' ? 'flex-end' : 'flex-start',
                 maxWidth: msg.type === 'logs' ? '100%' : '80%',
                 width: msg.type === 'logs' ? '100%' : 'auto',
-                backgroundColor: msg.sender === 'user' ? 'var(--surface-2)' : 'transparent',
-                border: msg.sender === 'user' ? '1px solid var(--border-strong)' : 'none',
-                borderRadius: 'var(--r-lg)',
+                backgroundColor: msg.sender === 'user' ? 'rgba(180, 100, 50, 0.06)' : 'transparent',
+                border: msg.sender === 'user' ? '1px solid var(--accent)' : 'none',
+                borderRadius: 'var(--r-sm)',
                 padding: msg.sender === 'user' ? '12px 16px' : '0',
                 color: 'var(--text)',
+                boxShadow: msg.sender === 'user' ? '0 0 10px rgba(180, 100, 50, 0.1)' : 'none',
               }}
             >
               {msg.type === 'prompt' || msg.type === 'answer' ? (
-                <div style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--accent)', letterSpacing: '0.08em', marginBottom: '4px', opacity: 0.8 }}>
+                    [OPERATOR DIRECTIVE]
+                  </div>
+                  <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)', fontSize: '13px' }}>{msg.text}</div>
+                </div>
               ) : msg.type === 'ask' ? (
-                <div style={{ backgroundColor: 'var(--surface-0)', border: '1px solid var(--border)', borderRadius: 'var(--r-lg)', padding: '16px' }}>
+                <div style={{ backgroundColor: 'rgba(6, 10, 15, 0.75)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', padding: '16px' }}>
+                  <div style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--accent)', letterSpacing: '0.1em', borderBottom: '1px dashed var(--border)', paddingBottom: '4px', marginBottom: '8px' }}>
+                    [SYSTEM QUERY]
+                  </div>
                   <Markdown content={`**Hermes asks:** "${msg.text}"`} />
                 </div>
               ) : msg.type === 'logs' ? (
                 <CollapsibleLogs logs={msg.logs || []} />
               ) : msg.type === 'artifacts' ? (
-                <div style={{ backgroundColor: 'var(--surface-0)', border: '1px solid var(--border)', borderRadius: 'var(--r-lg)', padding: '16px' }}>
-                  <p style={{ fontWeight: '600', marginBottom: '12px', fontSize: 'var(--t-sm)' }}>
+                <div style={{ backgroundColor: 'rgba(6, 10, 15, 0.75)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', padding: '16px' }}>
+                  <div style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--accent)', letterSpacing: '0.1em', borderBottom: '1px dashed var(--border)', paddingBottom: '4px', marginBottom: '12px' }}>
+                    [SYSTEM ARTIFACT GENERATION]
+                  </div>
+                  <p style={{ fontWeight: 'bold', marginBottom: '12px', fontSize: 'var(--t-sm)' }}>
                     📂 Hermes memproduksi artefak berikut:
                   </p>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -424,14 +436,14 @@ export function TaskDetail() {
                               color: 'var(--accent)',
                               fontSize: 'var(--t-sm)',
                               textDecoration: 'underline',
-                              fontWeight: '500',
+                              fontWeight: 'bold',
                             }}
                           >
                             {a.path.split(/[/\\]/).pop()}
                           </a>
                         </div>
                         {isImage(a.path) && (
-                          <div style={{ marginTop: '4px', maxWidth: '300px', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', overflow: 'hidden' }}>
+                          <div style={{ marginTop: '4px', maxWidth: '300px', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', overflow: 'hidden' }}>
                             <img
                               src={`/api/artifacts/view?path=${encodeURIComponent(a.path)}`}
                               alt={a.path}

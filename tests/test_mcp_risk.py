@@ -12,7 +12,7 @@ def test_writes_and_sends_are_risky():
               "calendar__update_event", "calendar__delete_event",
               "filesystem__write_file", "filesystem__move_file",
               "filesystem__delete_file", "playwright__browser_click",
-              "playwright__browser_type", "playwright__browser_navigate",
+              "playwright__browser_type", "playwright__browser_fill",
               "gmail__reply", "gmail__forward"):
         assert mcp_risk.is_risky_tool(n) is True, n
 
@@ -23,7 +23,9 @@ def test_reads_are_not_risky():
               "calendar__get_event", "filesystem__read_file",
               "filesystem__list_directory", "filesystem__search_files",
               "playwright__browser_snapshot",
-              "playwright__browser_take_screenshot"):
+              "playwright__browser_take_screenshot",
+              "playwright__browser_navigate",
+              "playwright__browser_navigate_back"):
         assert mcp_risk.is_risky_tool(n) is False, n
 
 

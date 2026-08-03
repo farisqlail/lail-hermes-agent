@@ -248,7 +248,11 @@ function AppContent() {
         <div className="page-container">
           {path === '/' && <Dashboard sessionId={sessionId} onRefreshSessions={fetchSessions} onSelectNode={setFocusedNode} />}
 
-          {path === '/task' && <TaskDetail />}
+          {path === '/task' && (
+            <div className="config-container">
+              <TaskDetail />
+            </div>
+          )}
 
           {isConfigRoute && (
             <div className="config-container">

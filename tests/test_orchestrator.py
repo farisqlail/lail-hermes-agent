@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from hermes.orchestrator import (
     Orchestrator, parse_plan, validate_plan, choose_engine, _project_summary,
-    _compose_engine_prompt, _DONE_SENTINEL)
+    _compose_engine_prompt, _DONE_SENTINEL, PlanShapeError)
 from hermes.config import Settings
 from hermes.session_store import Store
 import pytest
@@ -40,6 +40,22 @@ def test_parse_plan_names_empty_output_separately():
         parse_plan("   ")
     assert "empty" in str(e.value)
 
+def test_parse_plan_flags_off_schema_json_as_recoverable():
+    """A model that answered with its own plan shape (an 'implementation_plan'
+    of {step,title,details}) raises PlanShapeError, not a plain ValueError, so
+    the orchestrator can recover it into a single code step."""
+    raw = ('{"feature":"filter","implementation_plan":'
+           '[{"step":1,"title":"fetch","details":"..."}]}')
+    with pytest.raises(PlanShapeError):
+        parse_plan(raw)
+
+def test_off_schema_json_is_not_the_no_json_error():
+    """Prose with no JSON stays a plain ValueError (unrecoverable), distinct
+    from off-schema JSON which is a PlanShapeError."""
+    with pytest.raises(ValueError) as e:
+        parse_plan("Maaf, saya tidak mengerti.")
+    assert not isinstance(e.value, PlanShapeError)
+
 def test_validate_plan_rejects_emulator_test_without_build():
     """The exact broken plan a weak planner produced against a web project: a
     lone emulator test, no build. It can only fail with 'no apk artifact to
@@ -48,6 +64,30 @@ def test_validate_plan_rejects_emulator_test_without_build():
     with pytest.raises(ValueError) as e:
         validate_plan(steps)
     assert "build step" in str(e.value)
+
+def test_validate_plan_rejects_step_with_no_type():
+    """A step missing its `type` key otherwise reaches _exec_step and dies
+    mid-run as 'step 0 [None]: unknown step type: None'. It is off-schema drift
+    (steps shaped {step,name,details}), so it raises the recoverable
+    PlanShapeError, not a plain ValueError."""
+    with pytest.raises(PlanShapeError) as e:
+        validate_plan([{"step": 1, "name": "fetch", "details": ["..."]}])
+    assert "unknown type" in str(e.value)
+
+def test_validate_plan_rejects_unknown_step_type():
+    """Any type the executor cannot run is caught before the run starts, and is
+    likewise treated as recoverable off-schema drift."""
+    with pytest.raises(PlanShapeError) as e:
+        validate_plan([{"type": "deploy"}])
+    assert "deploy" in str(e.value)
+
+def test_validate_plan_emulator_error_is_not_recoverable():
+    """An emulator-test-without-build is a real, unrunnable plan — a plain
+    ValueError, NOT a PlanShapeError — so the orchestrator fails it rather than
+    silently collapsing a genuine Android plan into one code step."""
+    with pytest.raises(ValueError) as e:
+        validate_plan([{"type": "test", "mode": "emulator"}])
+    assert not isinstance(e.value, PlanShapeError)
 
 def test_validate_plan_accepts_build_then_emulator_test():
     """A real Android plan — build produces the APK, then the emulator test
@@ -143,6 +183,69 @@ async def test_invalid_plan_fails_task_before_running_any_step(hermes_home):
 
     assert store.get_task("t1")["status"] == "failed"
     assert any("planning failed" in m and "build step" in m for m in reports)
+
+async def test_off_schema_plan_recovers_as_single_code_step(hermes_home):
+    """A planner that answers with its own JSON shape must not fail a runnable
+    task. It degrades to one code step over the original request, the engine
+    runs once with that text, and the operator is told it happened."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude",
+                        projects_path=str(hermes_home / "proj"))
+
+    async def planner(text, tools):
+        return json.dumps({"feature": "filter",
+                           "implementation_plan": [
+                               {"step": 1, "title": "fetch", "details": "..."}]})
+
+    seen = {}
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
+        from hermes.engine_runner import RunResult
+        seen["prompt"] = prompt; _worked(cwd)
+        return RunResult(True, "done", "", False, 0)
+
+    deps = dict(run_engine=fake_run_engine, build_apk=None,
+                detect=lambda d: "unknown", test_emulator=None, test_browser=None)
+    orch = Orchestrator(settings, store, planner, deps)
+    reports = []
+    async def report(tid, msg, html=False): reports.append(msg)
+    store.create_task("t1", 5, "tambah tab filter status")
+    await orch.run_task("t1", 5, "tambah tab filter status", report)
+
+    assert store.get_task("t1")["status"] == "done"
+    assert "tambah tab filter status" in seen["prompt"]
+    assert any("off-schema" in m for m in reports)
+
+async def test_steps_list_without_types_recovers_as_single_code_step(hermes_home):
+    """The live failure: the planner used the right `steps` key but shaped each
+    element {step,name,details} with no `type`. parse_plan accepts the list,
+    validate_plan rejects it — and that rejection must recover to a single code
+    step, not fail the task."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(default_engine="claude",
+                        projects_path=str(hermes_home / "proj"))
+
+    async def planner(text, tools):
+        return json.dumps({"title": "rencana", "steps": [
+            {"step": 1, "name": "Integrasi API", "details": ["..."]},
+            {"step": 2, "name": "Render tab", "details": ["..."]}]})
+
+    seen = {}
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
+        from hermes.engine_runner import RunResult
+        seen["prompt"] = prompt; _worked(cwd)
+        return RunResult(True, "done", "", False, 0)
+
+    deps = dict(run_engine=fake_run_engine, build_apk=None,
+                detect=lambda d: "unknown", test_emulator=None, test_browser=None)
+    orch = Orchestrator(settings, store, planner, deps)
+    reports = []
+    async def report(tid, msg, html=False): reports.append(msg)
+    store.create_task("t1", 5, "filter transaksi per status")
+    await orch.run_task("t1", 5, "filter transaksi per status", report)
+
+    assert store.get_task("t1")["status"] == "done"
+    assert "filter transaksi per status" in seen["prompt"]
+    assert any("off-schema" in m for m in reports)
 
 async def test_task_complete_reports_change_summary_for_git_project(hermes_home):
     """When the project is a git repo, the completion message must carry a
