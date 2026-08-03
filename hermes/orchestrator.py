@@ -260,8 +260,12 @@ class Orchestrator:
             validate_plan(steps, self.settings.default_test_mode)
         except Exception as e:
             self.store.set_task_status(task_id, "failed")
-            self.store.append_log(task_id, f"planning failed: {e}")
-            await report(task_id, f"planning failed: {e}")
+            raw_val = locals().get("raw", "")
+            msg = f"planning failed: {e}"
+            if raw_val:
+                msg += f"\n\nPlanner output:\n{raw_val}"
+            self.store.append_log(task_id, msg)
+            await report(task_id, msg)
             return
 
         await report(task_id, f"plan ready: {len(steps)} step(s) — "

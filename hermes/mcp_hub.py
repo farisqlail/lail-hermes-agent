@@ -51,7 +51,13 @@ class McpHub:
         return out
 
     async def call(self, fn_name: str, arguments: dict) -> str:
-        server, _, tool = fn_name.partition("__")
+        import json
+        server, sep, tool = fn_name.partition("__")
+        if not sep or server not in self._sessions:
+            return json.dumps(
+                {"error": f"Tool '{fn_name}' is not supported or not connected on this client. "
+                          "Please output the final plan JSON or call only registered tools."},
+                ensure_ascii=False)
         sess = self._sessions[server]
         return await sess.call_tool(tool, arguments)
 
