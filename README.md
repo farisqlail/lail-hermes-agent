@@ -71,7 +71,7 @@ flowchart TD
         end
 
         UI["🖥️ web_ui · FastAPI<br/><sub>127.0.0.1:8799 · /api/voice bridge</sub>"]
-        DB[("🗄️ SQLite<br/><sub>tasks · logs · artifacts</sub>")]
+        DB[("🗄️ SQLite<br/><sub>tasks · logs · artifacts · user_facts</sub>")]
 
         BR --> OR
         OR <-.->|"tool calls"| HUB
@@ -149,8 +149,22 @@ flowchart TD
 - **MCP bridge** exposing MCP tools to both the planner and the web-chat/voice agent as OpenAI
   function calls (stdio + HTTP/SSE, lazily connected, every remote call time-bounded). Add
   file / browser / Gmail / calendar servers to control them by command — in chat, reads run
-  immediately while writes/sends are gated for confirmation (`hermes/mcp_risk.py`). See
+  immediately while writes/sends are gated for confirmation (`hermes/mcp_risk.py`). Saving the
+  server list reconnects the live hub, and `GET /api/mcp/tools` reports which servers actually
+  connected — configured is not the same as connected, and an agent that quietly lost its tools
+  answers "akses disk tidak ada di sesi ini" while the servers sit enabled in the settings. See
   [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
+- **Operator memory** — the chat agent is handed a context block on every turn: the clock, the
+  project the last task named, what is still running, and the facts it has learned about you.
+  A small extractor call after each turn stores what is durable ("aku biasanya deploy hari
+  Jumat") in a keyed `user_facts` table, so a fact learned twice updates instead of
+  contradicting itself. `GET /api/facts` lists them and `DELETE /api/facts/{key}` forgets one —
+  extraction is automatic, so a wrong fact would otherwise ride in every prompt forever.
+- **Spoken task notification and step narration** — decided on the server and pushed as `speak`
+  frames on the existing `/api/tasks/events` feed, so an announcement reaches whatever page is
+  open rather than only the dashboard. `tts_task_notify` announces the result; `tts_narrate`
+  (off by default) speaks one fixed line as each step starts — "Saya jalankan build sekarang" —
+  without paying a completion to word it.
 - **Existing projects** — register a name-to-path map in settings, then aim a task at it with
   `/task @myprofit fix login`. Without `@`, a fresh workspace is created as before.
 - **Confirmation gate** — tasks that `git push`, delete files, touch paths outside the project
@@ -158,7 +172,8 @@ flowchart TD
   git-ignored, or git unavailable) wait for an inline-keyboard ✅/❌ in Telegram before running.
 - **Risky-but-ungated disclosure** — with `confirm_risky` off, risky tasks still run, but the
   queued message says exactly what the gate saw instead of proceeding silently.
-- **SQLite session store** — tasks, steps, logs, and artifacts persist and survive restarts.
+- **SQLite session store** — tasks, steps, logs, artifacts, chat threads and operator facts
+  persist and survive restarts.
 - **Startup recovery** — on start, tasks stranded in `running`/`queued`/`awaiting_confirm` are
   retired to `interrupted` and each affected chat gets one digest telling them what died and
   what to resubmit.
@@ -329,6 +344,9 @@ test, MCP transport, and the NIM planner are all injected as fakes.
 - **End-to-end smoke run** — whether a live `claude` honours the completion contract, and
   whether `--resume` restores a session's context, are both still unproven against fakes only;
   see [`docs/SMOKE.md`](docs/SMOKE.md).
+- **Shell-wrapped reads** — asked to list a folder, the chat model sometimes reaches for the
+  terminal tool instead of `list_directory`. The gate parks it and the model then answers via
+  the read tool, so the answer is right, but a stray confirmation card is left behind.
 
 See [`docs/TODO.md`](docs/TODO.md) for the full backlog history.
 
@@ -345,3 +363,9 @@ See [`docs/TODO.md`](docs/TODO.md) for the full backlog history.
 - Secrets live in `config/.env`, are masked in the UI, and are never sent to Telegram or logs.
 - The web UI binds `127.0.0.1` only.
 - Coding engines run inside an isolated per-task project directory.
+- **MCP reads are not gated.** `hermes/mcp_risk.py` holds writes, sends and deletes for
+  confirmation, but read tools run immediately — so a connected filesystem or terminal server
+  (e.g. `@wonderwhy-er/desktop-commander`) lets the model read any file the account can, and
+  whatever it reads is sent to whichever LLM endpoint is configured. Scope it deliberately:
+  prefer `@modelcontextprotocol/server-filesystem` with an explicit folder list when the agent
+  does not need a whole-machine terminal.

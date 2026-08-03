@@ -51,6 +51,26 @@ args:    ["-y", "@modelcontextprotocol/server-filesystem", "D:\\work\\allowed"]
 
 Add more allowed roots as extra args. Writes/deletes are gated in web chat.
 
+## PC (files + terminal)
+
+Whole-machine file access plus a terminal, in one server:
+
+```
+name:    pc
+type:    stdio
+command: npx
+args:    ["-y", "@wonderwhy-er/desktop-commander"]
+```
+
+26 tools. Reads (`read_file`, `list_directory`, `get_file_info`, `start_search`) run
+immediately; `write_file`, `edit_block`, `start_process` and `kill_process` are gated.
+
+Unlike the filesystem server above it has **no folder scope** — every file the account can
+read, the model can read, and there is no confirmation on reads. Prefer the scoped filesystem
+server unless the agent genuinely needs to run programs. It is also slow to start: about 17
+seconds to its first tool list (≈7 s of that is `npx` resolving the package), which is why
+`OPEN_TIMEOUT_S` in `hermes/mcp_hub.py` is 60 s.
+
 ## Browser
 
 Drive a real browser: navigate, click, fill, screenshot. Playwright's MCP server:
@@ -76,10 +96,13 @@ name:    gmail
 type:    stdio
 command: npx
 args:    ["-y", "@gongrzhe/server-gmail-autoauth-mcp"]
-env:     { "GMAIL_CREDENTIALS_PATH": "D:\\Hermes\\config\\google_credentials.json" }
 ```
 
-(Env var names vary by server — read its README.)
+This one takes no env var: it looks for `gcp-oauth.keys.json` in the working
+directory or `%USERPROFILE%\.gmail-mcp\`, and refuses to start without it. Put
+the OAuth JSON there, then authorise once with
+`npx @gongrzhe/server-gmail-autoauth-mcp auth` before enabling the server.
+(Other Gmail servers use env vars instead — read whichever one you pick.)
 
 ## Calendar
 
@@ -94,6 +117,9 @@ command: npx
 args:    ["-y", "@cocal/google-calendar-mcp"]
 env:     { "GOOGLE_OAUTH_CREDENTIALS": "D:\\Hermes\\config\\google_credentials.json" }
 ```
+
+Authorise once before enabling it: `npx @cocal/google-calendar-mcp auth` (it reads
+the same `GOOGLE_OAUTH_CREDENTIALS` path).
 
 ---
 
@@ -110,11 +136,15 @@ Hermes cannot do this headless; it is account access you must grant.
    download the JSON. Save it where the server's env var points
    (e.g. `%HERMES_HOME%\config\google_credentials.json`) — this is a secret; keep
    it out of git.
-5. First tool call opens a browser consent once; the server caches a refresh
-   token next to the credentials. Grant only the scopes you need (read-only vs
+5. Run each server's `auth` command once (above). It opens a browser consent and
+   caches a refresh token. Grant only the scopes you need (read-only vs
    send/modify) — the server's README lists them.
 
-Restart Hermes after adding servers so discovery picks up the new tools.
+Saving the server list reconnects the live hub, so no restart is needed. To check what
+actually connected — as opposed to what is configured — call `GET /api/mcp/tools`; it
+reports the connected servers, every tool name, and which of them are gated. A server that
+failed to start is skipped silently apart from a console warning, and the agent then tells
+you it has no such access at all.
 
 ## Security
 
