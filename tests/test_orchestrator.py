@@ -527,11 +527,18 @@ async def test_failed_code_step_saves_full_engine_transcript(hermes_home):
         return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
 
     calls = []
+    # Each round fails differently on purpose. An engine that reproduces its
+    # previous error is treated as stuck and stops early (see the no-progress
+    # detector), which would leave this transcript one round short of what it
+    # is here to prove.
+    errors = ["missing semicolon", "undefined name foo", "type mismatch"]
     async def failing_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
         from hermes.engine_runner import RunResult
         calls.append(prompt)
+        err = errors[(len(calls) - 1) % len(errors)]
         return RunResult(False, f"long stdout attempt {len(calls)} " + "x" * 500,
-                         f"long stderr attempt {len(calls)} " + "y" * 500, False, 1)
+                         f"{err}: long stderr attempt {len(calls)} " + "y" * 500,
+                         False, 1)
 
     orch = Orchestrator(settings, store, planner, dict(run_engine=failing_engine))
     async def report(tid, msg, html=False): pass
@@ -545,6 +552,7 @@ async def test_failed_code_step_saves_full_engine_transcript(hermes_home):
     assert "long stdout attempt 1 " + "x" * 500 in body   # nothing truncated
     assert "long stderr attempt 1 " + "y" * 500 in body
     assert f"long stderr attempt {MAX_ENGINE_ROUNDS} " + "y" * 500 in body
+    assert "type mismatch" in body               # the last round's own cause
     assert {(a["kind"], a["path"]) for a in store.get_artifacts("t1")} == {
         ("log", str(log))}
 

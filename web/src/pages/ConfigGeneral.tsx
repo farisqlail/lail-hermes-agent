@@ -414,6 +414,21 @@ export function ConfigGeneral() {
             />
           </Field>
 
+          <Field
+            label="Batas Biaya per Task (USD)"
+            helpText="Hermes berhenti bila satu task sudah menghabiskan segini untuk sesi engine. 0 = tanpa batas."
+          >
+            <input
+              type="number"
+              step="0.5"
+              min="0"
+              className="field-input"
+              value={formState.max_task_cost_usd ?? 10}
+              onChange={(e) => handleChange('max_task_cost_usd', parseFloat(e.target.value) || 0)}
+              required
+            />
+          </Field>
+
           <Field label="Testing Timeout (detik)" helpText="Batas waktu eksekusi test runner">
             <input
               type="number"

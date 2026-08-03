@@ -57,6 +57,12 @@ class Settings(BaseModel):
     default_test_mode: Literal["browser", "emulator", "none"] = "none"
     confirm_risky: bool = True  # gate risky tasks (git push / delete / outside paths) behind Telegram confirmation
     timeout_code_s: int = 900
+    # What one task may spend on engine sessions before Hermes stops it. Real
+    # numbers from this machine's history: a successful single round has cost
+    # $0.97 to $4.58, so a three-round step is already in double digits and a
+    # repair loop on top of that has no natural ceiling. 0 disables the cap —
+    # for a run you are watching, not for one you started and walked away from.
+    max_task_cost_usd: float = 10.0
     timeout_build_s: int = 1200
     timeout_test_s: int = 600
     mcp_servers: list[McpServer] = Field(default_factory=list)

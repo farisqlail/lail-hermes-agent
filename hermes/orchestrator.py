@@ -177,6 +177,19 @@ def _resume_prompt() -> str:
             "the remaining work, run the verification for real, and fix "
             "anything broken." + _COMPLETION_CONTRACT)
 
+def _guidance_block(hint: str) -> str:
+    """The operator's own instruction, appended to whichever continuation the
+    round would have sent anyway.
+
+    Only ever built after a human answered an escalation, which is why it is
+    placed last and stated as authoritative: the engine has already proved
+    that its own reading of the error goes in circles.
+    """
+    return ("\n\n# Operator guidance\nThe same failure repeated, so the "
+            "operator was asked. Follow this over your own earlier "
+            f"approach:\n{hint}")
+
+
 def _continuation_prompt(base: str, prev) -> str:
     reason = ("ended with an error" if not prev.ok
               else "ended without confirming completion")
@@ -241,6 +254,34 @@ def _resumable_id(engine: str, res) -> str:
     if engine not in RESUMABLE or not res.outcome:
         return ""
     return res.outcome.session_id or ""
+
+class Budget:
+    """What one task has spent on engine sessions, and whether it may spend more.
+
+    Per task, created in `run_task`, so two tasks running at once cannot spend
+    each other's allowance. Only engines that report a cost move the needle; a
+    text-mode engine reports none, and inventing an estimate for it would be a
+    cap enforced against a number nobody measured.
+    """
+
+    def __init__(self, limit_usd: float):
+        self.limit = float(limit_usd or 0)
+        self.spent = 0.0
+
+    def add(self, attempts) -> None:
+        for a in attempts:
+            if a.outcome and a.outcome.cost_usd is not None:
+                self.spent += a.outcome.cost_usd
+
+    @property
+    def exhausted(self) -> bool:
+        return self.limit > 0 and self.spent >= self.limit
+
+    def report(self) -> str:
+        return (f"budget spent: ${self.spent:.2f} of ${self.limit:.2f}. "
+                "Raise `max_task_cost_usd` in settings (or set it to 0 to "
+                "disable the cap) and re-submit if this task is worth more.")
+
 
 def _why(res) -> str:
     """Why a round failed, in one string.
@@ -314,13 +355,16 @@ class Orchestrator:
 
         await report(task_id, f"plan ready: {len(steps)} step(s) — "
                               + ", ".join(s.get("type", "?") for s in steps))
+        # One allowance for the whole task, not per step: a three-step plan
+        # that spends the cap on step 0 has still spent it.
+        budget = Budget(getattr(self.settings, "max_task_cost_usd", 0))
         for i, step in enumerate(steps):
             sid = self.store.add_step(task_id, i, step.get("type", "?"), json.dumps(step))
             self.store.set_step_status(sid, "running")
             await report(task_id, f"step {i} [{step.get('type')}] started...")
             try:
                 ok, msg = await self._exec_step(task_id, proj, step, i, text,
-                                                send_file, chat_id)
+                                                send_file, chat_id, budget)
             except Exception as e:
                 # Where the missing-binary failures actually surfaced: the
                 # engine runner raises FileNotFoundError before any round runs,
@@ -334,6 +378,15 @@ class Orchestrator:
             await report(task_id, f"step {i} [{step.get('type')}]: {msg}")
             if not ok:
                 self.store.set_task_status(task_id, "failed")
+                return
+            if budget.exhausted and i + 1 < len(steps):
+                # Stop between steps too. The round-level check cannot see a
+                # plan that spends its allowance on step 0 and still has a
+                # build and a test queued behind it.
+                msg = (f"stopped before step {i + 1}: {budget.report()}")
+                self.store.set_task_status(task_id, "failed")
+                self.store.append_log(task_id, msg)
+                await report(task_id, msg)
                 return
         self.store.set_task_status(task_id, "done")
         # A change summary is a courtesy: a failure computing it must never
@@ -411,6 +464,39 @@ class Orchestrator:
             task_id, f"step {idx} [{engine}]: {len(attempts)} round(s), "
                      f"${sum(costs):.4f}")
 
+    async def _escalate(self, task_id: str, chat_id: int, why: str) -> str:
+        """Ask the operator what to try, or "" when nobody can be asked.
+
+        A stalled loop used to die quietly after burning its rounds. The
+        channel already exists — it is the one an engine uses for `ask_user` —
+        so the question goes out the same way, with the same timeout, and the
+        answer is fed into one further round. Everything that can go wrong
+        here (no registry, no Telegram/web listener, no answer before the
+        deadline) means the same thing to the caller: no guidance, stop.
+        """
+        ask = self.deps.get("ask_registry")
+        if ask is None:
+            return ""
+        from .ask import NO_ANSWER, NO_CHANNEL, BUDGET_SPENT
+        token = ask.open_run(task_id, chat_id)
+        try:
+            run = ask.run_for_token(token)
+            answer = await ask.ask(
+                run,
+                "Engine mengulang kegagalan yang sama:\n\n"
+                f"{why[:300]}\n\n"
+                "Ada petunjuk supaya percobaan berikutnya berbeda? "
+                "Balas kosong untuk menghentikan langkah ini.",
+                [])
+        except Exception as e:
+            self.store.append_log(task_id, f"could not escalate: {e}")
+            return ""
+        finally:
+            ask.close_run(token)
+        if answer in (NO_ANSWER, NO_CHANNEL, BUDGET_SPENT):
+            return ""
+        return (answer or "").strip()
+
     async def _send_artifact(self, task_id: str, send_file, kind: str,
                              path) -> None:
         """Push a produced artifact straight to the chat, if a channel exists.
@@ -429,7 +515,12 @@ class Orchestrator:
                 task_id, f"could not send {kind} to chat: {e}")
 
     async def _exec_step(self, task_id, proj: Path, step: dict, idx: int,
-                         text: str = "", send_file=None, chat_id: int = 0):
+                         text: str = "", send_file=None, chat_id: int = 0,
+                         budget: "Budget | None" = None):
+        # Default None so the many tests that call this directly keep their
+        # narrow signature; an absent budget is an uncapped one, which is what
+        # every caller got before the cap existed.
+        budget = budget if budget is not None else Budget(0)
         t = step.get("type")
         if t == "code":
             engine = choose_engine(step, self.settings)
@@ -462,6 +553,9 @@ class Orchestrator:
             # round that dies before printing anything is still resumable.
             session_id, resume_id = str(uuid.uuid4()), ""
             transient_waits = 0
+            last_signature = ""
+            stopped_early = ""
+            guidance = ""
             for round_idx in range(MAX_ENGINE_ROUNDS):
                 last_round = round_idx == MAX_ENGINE_ROUNDS - 1
                 session = _session_kwargs(engine, session_id, resume_id)
@@ -481,10 +575,14 @@ class Orchestrator:
                     if token:
                         ask.close_run(token)
                 attempts.append(res)
+                budget.add([res])
                 if res.timed_out:
                     break
                 if res.ok and _confirmed_done(res.final_text):
                     break                      # confirmed done, stop early
+                if budget.exhausted:
+                    stopped_early = budget.report()
+                    break
                 if not res.ok:
                     # Ask what KIND of failure this is before spending another
                     # round on it. Four tasks in the live history died as
@@ -506,6 +604,23 @@ class Orchestrator:
                             failure.delay_for(transient_waits))
                         transient_waits += 1
                         continue
+                    # Semantic: the engine can fix this — unless it already
+                    # tried and hit the same wall. A round that reproduces the
+                    # previous round's failure is not progress, it is the same
+                    # attempt at the same price, so stop and ask a human who
+                    # can see something the engine cannot.
+                    sig = failure.signature(why)
+                    if sig == last_signature:
+                        guidance = await self._escalate(task_id, chat_id, why)
+                        if not guidance:
+                            stopped_early = (
+                                "the same failure twice in a row — the engine "
+                                "is not making progress, so the remaining "
+                                "round(s) were not spent.")
+                            break
+                        last_signature = ""     # a human changed the input
+                    else:
+                        last_signature = sig
                 # error OR unconfirmed completion: let the engine fix/finish
                 # its own work. Reopening the session keeps its context for
                 # free; without one, the previous output has to be re-sent.
@@ -515,6 +630,11 @@ class Orchestrator:
                 else:
                     session_id = str(uuid.uuid4())
                     prompt = _continuation_prompt(base, res)
+                if guidance:
+                    # Appended rather than replacing the continuation, so a
+                    # resumed session still gets the short form it expects.
+                    prompt += _guidance_block(guidance)
+                    guidance = ""
             self._save_engine_transcript(task_id, idx, engine, attempts)
             self._log_engine_cost(task_id, idx, engine, attempts)
             rounds = len(attempts)
@@ -522,9 +642,14 @@ class Orchestrator:
                 return (False, f"engine timed out (round {rounds})")
             if not res.ok:
                 why = _why(res)
-                tip = failure.advice(why)
+                tip = failure.advice(why) or stopped_early
                 return (False, f"engine failed after {rounds} round(s): {why}"
                                + ("\n" + tip if tip else ""))
+            if stopped_early:
+                # The last round did not error, but the loop stopped before
+                # spending its budget or its rounds. Say why, or the step reads
+                # as a clean finish that simply chose to stop early.
+                return (False, f"stopped after {rounds} round(s): {stopped_early}")
             # A code step that leaves the project directory empty did no
             # usable work, whatever it printed and whatever it exited with.
             # Two ways to get here, both worth failing on:

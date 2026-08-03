@@ -26,6 +26,7 @@ behaviour, so an unfamiliar error keeps working exactly as it does today rather
 than gaining a new failure mode from a guess.
 """
 from __future__ import annotations
+import re
 
 TRANSIENT = "transient"
 ENVIRONMENT = "environment"
@@ -135,6 +136,24 @@ def should_retry(text: str) -> bool:
 #: `_PLANNER_RETRY_DELAYS_S` — a rate limit needs a pause, not a re-prompt, and
 #: the four 429 failures in the history retried instantly three times over.
 RETRY_DELAYS_S = (5, 15, 30)
+
+
+def signature(text: str) -> str:
+    """A fingerprint two attempts at the same failure share.
+
+    An engine going round in circles rarely repeats an error byte for byte:
+    line numbers move, temp paths and session ids differ, timings change. The
+    parts that vary are exactly the parts that say nothing about whether
+    progress was made, so they are flattened away. What is left is enough to
+    answer one question — is this the same wall as last round?
+    """
+    low = (text or "").lower()
+    low = re.sub(r"0x[0-9a-f]+", "#", low)                    # addresses
+    low = re.sub(r"[a-z]:\\[^\s'\"]+|/[^\s'\"]{4,}", "<path>", low)
+    low = re.sub(r"\b[0-9a-f]{8,}\b", "#", low)               # ids, hashes
+    low = re.sub(r"\d+", "#", low)                            # line/col numbers
+    low = re.sub(r"\s+", " ", low).strip()
+    return low[:160]
 
 
 def delay_for(attempt: int) -> float:

@@ -446,3 +446,124 @@ async def test_a_crashing_step_says_what_to_fix(hermes_home):
     assert crashed and "PATH" in crashed[0]
     assert "Install it" in crashed[0]
     assert store.get_task("t1")["status"] == "failed"
+
+
+def _priced(text, cost, session_id="s", api_error=None):
+    return _structured(text, session_id=session_id, cost=cost, api_error=api_error)
+
+
+async def test_the_same_failure_twice_stops_instead_of_paying_for_a_third(hermes_home):
+    """A round that reproduces the previous round's failure is not progress —
+    it is the same attempt at the same price. Line numbers and ids differ
+    between two goes at one wall, so the comparison is on a signature."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    calls = []
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        calls.append(1)
+        _worked(cwd)
+        return _structured("", session_id="s",
+                           api_error=f"main.dart:{40 + len(calls)}:5: Error: Expected ';'")
+
+    reports = await _run(_orch(hermes_home, store, engine), store)
+
+    assert len(calls) == 2                       # not MAX_ENGINE_ROUNDS
+    assert any("not making progress" in m for m in reports)
+
+
+async def test_a_stalled_step_asks_the_operator_and_uses_the_answer(hermes_home):
+    """Dying quietly after burning the rounds was the old behaviour. The
+    channel already exists — it is the one an engine uses for ask_user."""
+    from hermes.ask import AskRegistry
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    reg = AskRegistry()
+    asked, prompts = [], []
+
+    async def on_ask(a):
+        asked.append(a.question)
+        reg.answer(a.ask_id, "pakai versi 2 dari paket itu")
+    reg.on_ask = on_ask
+
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        prompts.append(prompt)
+        _worked(cwd)
+        if len(prompts) < 3:
+            return _structured("", session_id="s", api_error="Expected ';' after this")
+        return _structured(f"fixed\n{_DONE_SENTINEL}", session_id="s")
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
+    settings = Settings(default_engine="antigravity",
+                        projects_path=str(hermes_home / "proj"))
+    orch = Orchestrator(settings, store, planner,
+                        dict(run_engine=engine, ask_registry=reg))
+    store.create_task("t1", 5, "x")
+    reports = []
+    async def report(tid, msg, html=False): reports.append(msg)
+    await orch.run_task("t1", 5, "x", report)
+
+    assert len(asked) == 1 and "mengulang kegagalan yang sama" in asked[0]
+    assert "pakai versi 2 dari paket itu" in prompts[2]   # the answer is used
+    assert store.get_task("t1")["status"] == "done"
+
+
+async def test_an_unanswered_escalation_just_stops(hermes_home):
+    """No registry, no listener, no answer in time — all the same to the loop:
+    no guidance, so do not spend the remaining round."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    calls = []
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        calls.append(1)
+        _worked(cwd)
+        return _structured("", session_id="s", api_error="Expected ';' after this")
+
+    reports = await _run(_orch(hermes_home, store, engine), store)
+    assert len(calls) == 2
+    assert store.get_task("t1")["status"] == "failed"
+
+
+async def test_a_task_stops_when_it_has_spent_its_budget(hermes_home):
+    """Successful rounds on this machine have cost $0.97 to $4.58, so an
+    unbounded repair loop is a money leak, not persistence."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    calls = []
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        calls.append(1)
+        _worked(cwd)
+        return _priced("not done yet", cost=4.0)     # never confirms
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
+    settings = Settings(default_engine="claude", max_task_cost_usd=6.0,
+                        projects_path=str(hermes_home / "proj"))
+    orch = Orchestrator(settings, store, planner, dict(run_engine=engine))
+    store.create_task("t1", 5, "x")
+    reports = []
+    async def report(tid, msg, html=False): reports.append(msg)
+    await orch.run_task("t1", 5, "x", report)
+
+    assert len(calls) == 2                       # $8 of a $6 cap, then stop
+    assert any("budget spent: $8.00 of $6.00" in m for m in reports)
+    assert store.get_task("t1")["status"] == "failed"
+
+
+async def test_the_cap_can_be_switched_off(hermes_home):
+    """0 means uncapped — for a run you are watching."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    calls = []
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        calls.append(1)
+        _worked(cwd)
+        if len(calls) < 2:
+            return _priced("not yet", cost=99.0)
+        return _priced(f"done\n{_DONE_SENTINEL}", cost=99.0)
+
+    async def planner(text, tools):
+        return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
+    settings = Settings(default_engine="claude", max_task_cost_usd=0,
+                        projects_path=str(hermes_home / "proj"))
+    orch = Orchestrator(settings, store, planner, dict(run_engine=engine))
+    store.create_task("t1", 5, "x")
+    async def report(tid, msg, html=False): pass
+    await orch.run_task("t1", 5, "x", report)
+
+    assert store.get_task("t1")["status"] == "done"

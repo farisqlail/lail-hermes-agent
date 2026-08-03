@@ -28,6 +28,7 @@ export interface Settings {
   default_test_mode: 'browser' | 'emulator' | 'none';
   confirm_risky: boolean;
   timeout_code_s: number;
+  max_task_cost_usd: number;
   timeout_build_s: number;
   timeout_test_s: number;
   stt_enabled: boolean;

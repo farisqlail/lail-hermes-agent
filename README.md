@@ -123,6 +123,14 @@ flowchart TD
   the old undifferentiated retry, one burning three instant rounds against an endpoint that
   was refusing everything. Unrecognised errors keep the old behaviour, so an unfamiliar
   failure gains nothing from a guess.
+- **Guards on the loop** — a per-task spending cap (`max_task_cost_usd`, $10 by default; a
+  successful round on this machine has cost $0.97-$4.58, so an unbounded repair loop is a
+  money leak rather than persistence), and a no-progress detector that stops a step whose
+  round reproduces the previous round's failure — compared on a signature, since line numbers
+  and ids move between two goes at the same wall. When a step stalls, Hermes asks the operator
+  for guidance over the same channel an engine uses for `ask_user`, and feeds the answer into
+  one further round; no channel, no listener or no answer in time all mean the same thing —
+  stop rather than spend.
 - **Engine completion contract** — every code step asks the engine to print a completion
   sentinel after verifying its own work; a session that errors or exits without it gets up to
   two fix-up sessions, and the full transcript is saved as a task artifact.

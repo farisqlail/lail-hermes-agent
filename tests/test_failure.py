@@ -72,3 +72,16 @@ def test_backoff_widens_then_holds():
     assert failure.delay_for(1) == 15
     assert failure.delay_for(2) == 30
     assert failure.delay_for(9) == 30      # bounded, never grows without limit
+
+
+def test_signature_matches_two_goes_at_the_same_wall():
+    """Line numbers, temp paths and session ids move between two attempts at
+    one failure. What varies says nothing about progress, so it is flattened."""
+    a = failure.signature(r"C:\proj\lib\main.dart:42:5: Error: Expected ';'")
+    b = failure.signature(r"C:\proj\lib\main.dart:57:9: Error: Expected ';'")
+    assert a == b
+
+
+def test_signature_separates_genuinely_different_failures():
+    assert failure.signature("Expected ';' after this") != \
+           failure.signature("Undefined name 'foo'")
