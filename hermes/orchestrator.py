@@ -1,6 +1,7 @@
 from __future__ import annotations
-import json, uuid
+import asyncio, json, uuid
 from pathlib import Path
+from . import failure
 from .config import Settings
 from .session_store import Store
 
@@ -241,6 +242,20 @@ def _resumable_id(engine: str, res) -> str:
         return ""
     return res.outcome.session_id or ""
 
+def _why(res) -> str:
+    """Why a round failed, in one string.
+
+    An error reported inside the envelope often leaves stderr empty, which used
+    to produce a failure message with no cause in it at all. One reader, because
+    both the retry decision and the reported message have to see the same text —
+    classifying one string while reporting another is how a loop ends up
+    explaining a failure it did not act on.
+    """
+    if res.outcome and res.outcome.api_error:
+        return res.outcome.api_error
+    return res.stderr[:200]
+
+
 def choose_engine(step: dict, settings: Settings) -> str:
     if step.get("engine") in ("claude", "antigravity"):
         return step["engine"]
@@ -307,7 +322,13 @@ class Orchestrator:
                 ok, msg = await self._exec_step(task_id, proj, step, i, text,
                                                 send_file, chat_id)
             except Exception as e:
-                ok, msg = False, f"step crashed: {e}"
+                # Where the missing-binary failures actually surfaced: the
+                # engine runner raises FileNotFoundError before any round runs,
+                # so the loop's classifier never sees it. Three tasks in the
+                # history reported "step crashed: 'claude' not found on PATH"
+                # and left the operator to work out the rest.
+                tip = failure.advice(str(e))
+                ok, msg = False, f"step crashed: {e}" + (f"\n{tip}" if tip else "")
             self.store.set_step_status(sid, "done" if ok else "failed")
             self.store.append_log(task_id, f"step {i} [{step.get('type')}]: {msg}")
             await report(task_id, f"step {i} [{step.get('type')}]: {msg}")
@@ -440,7 +461,9 @@ class Orchestrator:
             # Hermes names the session rather than reading one back, so a
             # round that dies before printing anything is still resumable.
             session_id, resume_id = str(uuid.uuid4()), ""
-            for _ in range(MAX_ENGINE_ROUNDS):
+            transient_waits = 0
+            for round_idx in range(MAX_ENGINE_ROUNDS):
+                last_round = round_idx == MAX_ENGINE_ROUNDS - 1
                 session = _session_kwargs(engine, session_id, resume_id)
                 ask_kw, token = {}, ""
                 if ask_here:
@@ -462,6 +485,27 @@ class Orchestrator:
                     break
                 if res.ok and _confirmed_done(res.final_text):
                     break                      # confirmed done, stop early
+                if not res.ok:
+                    # Ask what KIND of failure this is before spending another
+                    # round on it. Four tasks in the live history died as
+                    # "engine failed after 3 round(s): 429" — three instant
+                    # rounds against an endpoint that was refusing everything,
+                    # one of them $0.49 for nothing. Three more repeated a
+                    # missing binary. Neither is something a re-prompt fixes.
+                    why = _why(res)
+                    kind = failure.classify(why)
+                    if kind in (failure.ENVIRONMENT, failure.STRUCTURAL):
+                        break                  # same failure next time, same price
+                    if kind == failure.TRANSIENT:
+                        if last_round:
+                            break      # nothing left to wait for
+                        # The world was busy: wait, then repeat the request
+                        # unchanged. Re-prompting a rate limit only rewords a
+                        # message nobody read.
+                        await self.deps.get("sleep", asyncio.sleep)(
+                            failure.delay_for(transient_waits))
+                        transient_waits += 1
+                        continue
                 # error OR unconfirmed completion: let the engine fix/finish
                 # its own work. Reopening the session keeps its context for
                 # free; without one, the previous output has to be re-sent.
@@ -477,12 +521,10 @@ class Orchestrator:
             if res.timed_out:
                 return (False, f"engine timed out (round {rounds})")
             if not res.ok:
-                # An error reported inside the envelope often leaves stderr
-                # empty, which used to produce a failure message with no cause
-                # in it at all.
-                why = (res.outcome.api_error if res.outcome
-                       and res.outcome.api_error else res.stderr[:200])
-                return (False, f"engine failed after {rounds} round(s): {why}")
+                why = _why(res)
+                tip = failure.advice(why)
+                return (False, f"engine failed after {rounds} round(s): {why}"
+                               + ("\n" + tip if tip else ""))
             # A code step that leaves the project directory empty did no
             # usable work, whatever it printed and whatever it exited with.
             # Two ways to get here, both worth failing on:
@@ -509,14 +551,22 @@ class Orchestrator:
             if res.ok:
                 self.store.add_artifact(task_id, "apk", res.apk_path)
                 await self._send_artifact(task_id, send_file, "apk", res.apk_path)
-            return (res.ok, f"apk: {res.apk_path}" if res.ok else f"build failed: {res.stderr[:200]}")
+            if res.ok:
+                return (True, f"apk: {res.apk_path}")
+            # "unsupported project type: unknown" and "[WinError 2]" both ended
+            # tasks in the history with nothing an operator could act on. The
+            # class of the failure says whether to fix the machine or the plan.
+            why = res.stderr[:200]
+            tip = failure.advice(why)
+            return (False, f"build failed: {why}" + (f"\n{tip}" if tip else ""))
         if t == "test":
             mode = step.get("mode", self.settings.default_test_mode)
             out = Path(str(proj)) / "test-out"
             if mode == "emulator" and self.deps.get("test_emulator"):
                 apks = [a["path"] for a in self.store.get_artifacts(task_id) if a["kind"] == "apk"]
                 if not apks:
-                    return (False, "no apk artifact to test")
+                    return (False, "no apk artifact to test\n"
+                                   + failure.advice("no apk artifact to test"))
                 detect_app_id = self.deps.get("detect_app_id")
                 pkg = detect_app_id(proj) if detect_app_id else None
                 if not pkg:
@@ -530,5 +580,8 @@ class Orchestrator:
                 self.store.add_artifact(task_id, "screenshot", res.screenshot_path)
                 await self._send_artifact(task_id, send_file, "screenshot",
                                           res.screenshot_path)
-            return (res.ok, res.detail)
+            if res.ok:
+                return (True, res.detail)
+            tip = failure.advice(res.detail or "")
+            return (False, (res.detail or "") + (f"\n{tip}" if tip else ""))
         return (False, f"unknown step type: {t}")

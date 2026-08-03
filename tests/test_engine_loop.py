@@ -31,12 +31,22 @@ def _worked(cwd):
     (Path(cwd) / "touched.txt").write_text("engine output")
 
 
-def _orch(hermes_home, store, engine, default_engine="claude"):
+def _orch(hermes_home, store, engine, default_engine="claude", slept=None):
+    """An Orchestrator whose clock is fake.
+
+    `sleep` is injected, not patched: a transient failure now waits between
+    rounds (5s, then 15s), and a suite that really waited would spend a minute
+    proving one rate-limit path. Pass a list to record the delays instead.
+    """
     async def planner(text, tools):
         return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
+    async def fake_sleep(seconds):
+        if slept is not None:
+            slept.append(seconds)
     settings = Settings(default_engine=default_engine,
                         projects_path=str(hermes_home / "proj"))
-    return Orchestrator(settings, store, planner, dict(run_engine=engine))
+    return Orchestrator(settings, store, planner,
+                        dict(run_engine=engine, sleep=fake_sleep))
 
 
 async def _run(orch, store):
@@ -360,3 +370,79 @@ async def test_transcript_header_carries_session_and_cost(hermes_home):
         encoding="utf-8")
     assert "session: sess-6" in body
     assert "cost: $0.1250" in body
+
+
+async def test_a_rate_limit_waits_instead_of_re_prompting(hermes_home):
+    """Four tasks in the live history died as "engine failed after 3 round(s):
+    429" — three instant rounds against an endpoint refusing everything. The
+    rounds still happen, but spaced, and the prompt is not reworded: nobody
+    read it the first time."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    prompts, slept = [], []
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        prompts.append(prompt)
+        _worked(cwd)
+        return _structured("", session_id="s", api_error="429")
+
+    reports = await _run(_orch(hermes_home, store, engine, slept=slept), store)
+
+    assert len(prompts) == MAX_ENGINE_ROUNDS
+    assert slept == [5, 15]                      # between rounds, widening
+    assert prompts[0] == prompts[1] == prompts[2]  # same request, not a reword
+    assert any("429" in m for m in reports)
+
+
+async def test_a_missing_binary_is_not_retried(hermes_home):
+    """Three tasks repeated this three times each. The message now says what to
+    fix instead of how many rounds were spent failing to."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    calls, slept = [], []
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        calls.append(1)
+        _worked(cwd)
+        return _structured("", session_id="s",
+                           api_error="engine executable 'claude' not found on PATH")
+
+    reports = await _run(_orch(hermes_home, store, engine, slept=slept), store)
+
+    assert len(calls) == 1                       # once, not MAX_ENGINE_ROUNDS
+    assert slept == []                           # and no pointless waiting
+    assert any("PATH" in m for m in reports)
+
+
+async def test_a_compile_error_still_gets_its_fix_up_rounds(hermes_home):
+    """The one class of failure a re-prompt genuinely fixes must keep working
+    exactly as before — the classifier is there to spend rounds here, not to
+    take them away."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    calls = []
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        calls.append(prompt)
+        _worked(cwd)
+        if len(calls) == 1:
+            return _structured("", session_id="s", api_error="Expected ';' after this")
+        return _structured(f"fixed\n{_DONE_SENTINEL}", session_id="s")
+
+    reports = await _run(_orch(hermes_home, store, engine), store)
+
+    assert len(calls) == 2
+    assert calls[1] != calls[0]                  # the error IS fed back
+    assert store.get_task("t1")["status"] == "done"
+    assert any("confirmed done" in m for m in reports)
+
+
+async def test_a_crashing_step_says_what_to_fix(hermes_home):
+    """The real shape of the three missing-binary failures: engine_runner
+    raises before any round runs, so the loop's classifier never sees it. The
+    report used to end at "step crashed: ... not found on PATH"."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        raise FileNotFoundError(
+            "engine executable 'claude' not found on PATH - is it installed?")
+
+    reports = await _run(_orch(hermes_home, store, engine), store)
+
+    crashed = [m for m in reports if "step crashed" in m]
+    assert crashed and "PATH" in crashed[0]
+    assert "Install it" in crashed[0]
+    assert store.get_task("t1")["status"] == "failed"

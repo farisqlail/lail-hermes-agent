@@ -114,6 +114,15 @@ flowchart TD
 - **Two coding engines** driven headlessly: Claude Code (`claude -p`) and Antigravity (`agy -p`),
   auto-selected or overridden per task. Model and effort are configurable per engine from the
   web UI (`--model` for both, `--effort` for claude only — `agy` has no such flag).
+- **Failures are classified before they are retried** — a rate limit is waited out (5s, 15s,
+  30s, mirroring the planner's backoff) with the request repeated unchanged; a missing binary
+  or unreachable path stops immediately and names what to install; a step that could never
+  work here (a build for a project that produces no artifact) stops and says the plan needs to
+  change; only a compile error or failing test earns a fix-up round with the error fed back.
+  Written from the ten failures in the live task history: seven of them were made *worse* by
+  the old undifferentiated retry, one burning three instant rounds against an endpoint that
+  was refusing everything. Unrecognised errors keep the old behaviour, so an unfamiliar
+  failure gains nothing from a guess.
 - **Engine completion contract** — every code step asks the engine to print a completion
   sentinel after verifying its own work; a session that errors or exits without it gets up to
   two fix-up sessions, and the full transcript is saved as a task artifact.
