@@ -23,6 +23,9 @@ import { VoiceTagExtractor } from '../voicetag';
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  /** Object URLs for images sent with this turn. Display only, and only for
+   *  this page load: the server deletes the files once it has answered. */
+  images?: string[];
   usage?: {
     total: number;
   };
@@ -301,6 +304,11 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   // They used to be diffed here, which meant no announcement on any other page.
   
   const [inputText, setInputText] = useState('');
+  // Images staged for the next turn. Held as Files until send: uploading on
+  // pick would leave orphans on the server every time the operator changes
+  // their mind.
+  const [attached, setAttached] = useState<{ file: File; url: string }[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const holdingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -449,8 +457,56 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     scrollToBottom();
   }, [messages, streamContent, streaming, scrollToBottom]);
 
+  /** Stage image files chosen, pasted or dropped. Non-images are ignored
+   *  rather than refused loudly: a paste often carries several flavours of the
+   *  same clipboard entry, only one of which is the picture. */
+  const addFiles = (files: Iterable<File>) => {
+    const picked = Array.from(files).filter((f) => f.type.startsWith('image/'));
+    if (picked.length === 0) return;
+    setAttached((prev) => [
+      ...prev,
+      ...picked.map((file) => ({ file, url: URL.createObjectURL(file) })),
+    ]);
+  };
+
+  const removeAttached = (idx: number) => {
+    setAttached((prev) => {
+      URL.revokeObjectURL(prev[idx].url);
+      return prev.filter((_, i) => i !== idx);
+    });
+  };
+
+  /** Upload the staged files, returning the names the server gave them.
+   *  A file the server rejects is reported and skipped — the rest of the turn
+   *  still goes, rather than failing on one bad picture. */
+  const uploadAttached = async (): Promise<string[]> => {
+    const ids: string[] = [];
+    for (const a of attached) {
+      try {
+        const url = sessionId ? `/api/uploads?session_id=${sessionId}` : '/api/uploads';
+        const res = await fetch(url, { method: 'POST', body: a.file });
+        if (!res.ok) {
+          const detail = await res.json().catch(() => ({}));
+          toast(detail.detail || `Gagal mengunggah ${a.file.name}`, 'err');
+          continue;
+        }
+        ids.push((await res.json()).id);
+      } catch {
+        toast(`Gagal mengunggah ${a.file.name}`, 'err');
+      }
+    }
+    return ids;
+  };
+
   const submitText = async (text: string) => {
-    if (!text || streaming) return;
+    if ((!text && attached.length === 0) || streaming) return;
+    // An image with no caption still needs words: an empty text part is
+    // rejected by some providers, and the operator should see exactly what
+    // was asked on their behalf.
+    if (!text) text = 'Tolong analisa gambar ini.';
+    const staged = attached;
+    const imageIds = await uploadAttached();
+    setAttached([]);
 
     setInputText('');
     setStreaming(true);
@@ -462,7 +518,10 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     queueRef.current?.markTurnStart();
     if (ttsEnabled) sinkRef.current?.unlock();
 
-    const userMsg: Message = { role: 'user', content: text };
+    const userMsg: Message = {
+      role: 'user', content: text,
+      images: staged.map((a) => a.url),
+    };
     setMessages((prev) => [...prev, userMsg]);
 
     const controller = new AbortController();
@@ -479,7 +538,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, session_id: sessionId }),
+        body: JSON.stringify({ text, session_id: sessionId, images: imageIds }),
         signal: controller.signal,
       });
 
@@ -1043,6 +1102,33 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
           </div>
         )}
 
+        {/* Staged images, before they are sent */}
+        {attached.length > 0 && (
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '0 0 8px' }}>
+            {attached.map((a, idx) => (
+              <div key={a.url} style={{ position: 'relative' }}>
+                <img
+                  src={a.url}
+                  alt={a.file.name}
+                  style={{ width: '56px', height: '56px', objectFit: 'cover',
+                           borderRadius: 'var(--r-sm)', border: '1px solid var(--border)' }}
+                />
+                <button
+                  type="button"
+                  onClick={() => removeAttached(idx)}
+                  title="Buang gambar"
+                  style={{ position: 'absolute', top: '-6px', right: '-6px', width: '18px',
+                           height: '18px', borderRadius: '50%', border: '1px solid var(--border)',
+                           background: 'var(--surface-0)', color: 'var(--text)', lineHeight: 1,
+                           fontSize: '11px', cursor: 'pointer' }}
+                >
+                  x
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Bottom prompt input bar form */}
         <form onSubmit={handleSend} className="ask-prompt-form">
           <input
@@ -1051,10 +1137,33 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
             className="ask-input"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
+            onPaste={(e) => addFiles(e.clipboardData.files)}
             placeholder='Ask Hermes: "plan my day" or directive...'
             disabled={streaming}
           />
           <div className="ask-actions">
+
+            {/* Attach an image for this turn */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                if (e.target.files) addFiles(e.target.files);
+                e.target.value = '';   // same file twice in a row still fires
+              }}
+            />
+            <button
+              type="button"
+              className="ask-action-btn"
+              disabled={streaming}
+              title="Lampirkan gambar (bisa juga tempel dari clipboard)"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              📎
+            </button>
             
             {/* Audio MUTE feedback */}
             {speaking && (
@@ -1168,7 +1277,22 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
                       {m.role === 'user' ? 'OPERATOR DIRECTIVE' : `${agentName.toUpperCase()} OUTPUT`}
                     </div>
                     {m.role === 'user' ? (
-                      <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>{m.content}</div>
+                      <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
+                        {m.content}
+                        {m.images && m.images.length > 0 && (
+                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '6px' }}>
+                            {m.images.map((src) => (
+                              <img
+                                key={src}
+                                src={src}
+                                alt="lampiran"
+                                style={{ width: '72px', height: '72px', objectFit: 'cover',
+                                         borderRadius: 'var(--r-sm)', border: '1px solid var(--border)' }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <div>
                         <Markdown content={m.content} />

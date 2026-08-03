@@ -154,6 +154,13 @@ flowchart TD
   connected — configured is not the same as connected, and an agent that quietly lost its tools
   answers "akses disk tidak ada di sesi ini" while the servers sit enabled in the settings. See
   [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
+- **Images in chat** — attach a picture with the clip button, a paste, or a file pick, and the
+  agent looks at it and answers. The file rides only the turn it was sent with: it is deleted
+  as soon as the reply exists, and later turns see a `[gambar dilampirkan]` marker instead, so
+  one photo is never paid for twice. Format is decided by the leading bytes, never the
+  filename — PNG, JPEG, GIF and WebP are accepted, SVG is refused (its script would run in the
+  dashboard's own origin). Needs a vision-capable chat model; a text-only one fails the turn
+  with a note saying so.
 - **Operator memory** — the chat agent is handed a context block on every turn: the clock, the
   project the last task named, what is still running, and the facts it has learned about you.
   A small extractor call after each turn stores what is durable ("aku biasanya deploy hari

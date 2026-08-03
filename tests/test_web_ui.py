@@ -1223,3 +1223,101 @@ def test_resetting_a_chat_drops_the_files_it_was_handed(hermes_home):
     assert client.post("/api/chat/reset").status_code == 200
     assert not up.exists()
     assert store.get_messages("web") == []
+
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"pixels"
+
+
+def test_an_uploaded_image_reaches_the_model_and_is_then_deleted(hermes_home):
+    """One look, one answer, gone: the image rides the turn it was sent with,
+    and the file is removed once the reply exists — so a later turn never pays
+    for the same picture again."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    seen = []
+    async def fake_chat(history, tools=None, dispatch=None):
+        seen.append(history[-1])
+        return "Itu struk belanja."
+
+    client = TestClient(create_app(store, chat=fake_chat))
+    up = client.post("/api/uploads", content=PNG_BYTES).json()
+    stored = paths.uploads_dir() / "web" / up["id"]
+    assert stored.is_file()
+
+    client.post("/api/tasks", json={"text": "gambar apa ini?", "images": [up["id"]]})
+
+    last = seen[0]
+    assert last["role"] == "user"
+    assert last["content"][0] == {"type": "text", "text": "gambar apa ini?"}
+    assert last["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert not stored.exists()
+
+    # The thread keeps a marker, not the picture, so the next turn is cheap.
+    stored_msgs = [m["content"] for m in store.get_messages("web")]
+    assert "[gambar dilampirkan]" in stored_msgs[0]
+
+
+def test_a_turn_without_images_is_unchanged(hermes_home):
+    """The multimodal shape must not leak into ordinary turns — plenty of
+    models accept only a plain string."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    seen = []
+    async def fake_chat(history, tools=None, dispatch=None):
+        seen.append(history[-1])
+        return "oke"
+    client = TestClient(create_app(store, chat=fake_chat))
+    client.post("/api/tasks", json={"text": "halo"})
+    assert seen[0] == {"role": "user", "content": "halo"}
+
+
+def test_upload_rejects_what_is_not_a_raster_image(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+    assert client.post("/api/uploads", content=svg).status_code == 415
+    assert client.post("/api/uploads", content=b"").status_code == 400
+    big = PNG_BYTES + b"x" * (10 * 1024 * 1024)
+    assert client.post("/api/uploads", content=big).status_code == 413
+
+
+def test_an_unknown_image_name_costs_a_plain_answer_not_a_failed_turn(hermes_home):
+    """A re-sent or already-discarded name is dropped, not an error."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    seen = []
+    async def fake_chat(history, tools=None, dispatch=None):
+        seen.append(history[-1])
+        return "oke"
+    client = TestClient(create_app(store, chat=fake_chat))
+    r = client.post("/api/tasks", json={"text": "halo", "images": ["../../etc/passwd", "gone.png"]})
+    assert r.status_code == 200
+    assert seen[0] == {"role": "user", "content": "halo"}
+
+
+def test_images_ride_the_streaming_path_too(hermes_home):
+    """The chat pane streams; if only the non-streaming branch understood
+    images, the feature would work in tests and nowhere else."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    seen = []
+    async def fake_chat(history, tools=None, dispatch=None):
+        return ""
+    async def fake_stream(history, tools=None, dispatch=None):
+        seen.append(history[-1])
+        yield ("token", "Itu struk.")
+    fake_chat.stream = fake_stream
+
+    client = TestClient(create_app(store, chat=fake_chat))
+    up = client.post("/api/uploads", content=PNG_BYTES).json()
+    stored = paths.uploads_dir() / "web" / up["id"]
+
+    with client.stream("POST", "/api/chat/stream",
+                       json={"text": "ini apa?", "images": [up["id"]]}) as r:
+        body = "".join(chunk for chunk in r.iter_text())
+    assert "Itu struk." in body
+    assert seen[0]["content"][1]["image_url"]["url"].startswith("data:image/png")
+    assert not stored.exists()

@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import brain, cleanup, config, paths, stt, voice, desktop_api, mcp_risk
+from . import brain, cleanup, config, paths, stt, uploads, voice, desktop_api, mcp_risk
 from .pending_actions import PendingStore
 from .session_store import Store
 from .telegram_bridge import new_task_id
@@ -13,6 +13,10 @@ from .telegram_bridge import new_task_id
 class TaskSubmit(BaseModel):
     text: str
     session_id: str | None = None
+    # Names returned by POST /api/uploads, attached to THIS turn only. The
+    # files are deleted once the answer is produced, so they are never replayed
+    # into a later prompt — one look, one answer, gone.
+    images: list[str] = []
 
 class TaskConfirm(BaseModel):
     approved: bool
@@ -247,8 +251,32 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                                                store.list_tasks(limit=20),
                                                list(s.projects))}
 
-    def history_with_context(sid: str) -> list[dict]:
-        return [brain_context(), *store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)]
+    def history_with_context(sid: str, images: list[Path] | None = None) -> list[dict]:
+        """The turn as the model sees it, newest message last.
+
+        With images, the final user message becomes a multimodal content list.
+        Only that message: earlier turns keep the `[gambar dilampirkan]` marker
+        stored in their text, so a conversation about one photo does not pay
+        for that photo on every subsequent turn.
+        """
+        history = [brain_context(), *store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)]
+        if images and history[-1]["role"] == "user":
+            # The marker is for the turns that come after, which will see it in
+            # place of the picture. On this turn the picture is right there, so
+            # telling the model an image is attached is noise.
+            said = history[-1]["content"].replace(IMAGE_MARKER, "")
+            history[-1] = {"role": "user",
+                           "content": uploads.as_content_parts(said, images)}
+        return history
+
+    def take_images(sid: str, names: list[str]) -> list[Path]:
+        """Resolve upload names to files. Unknown names are dropped, not an
+        error: a re-sent or already-discarded image should cost the operator a
+        plain text answer, not a failed turn."""
+        found = [uploads.resolve(paths.uploads_dir(), sid, n) for n in names or []]
+        return [p for p in found if p is not None]
+
+    IMAGE_MARKER = "\n\n[gambar dilampirkan]"
 
     async def learn_from_turn(user_text: str, reply: str) -> None:
         """Store whatever durable facts this turn revealed.
@@ -601,8 +629,10 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             store.create_task(task_id, -1, text, session_id=sid)
             store.append_log(task_id, "ask: Chat Conversation")
             # Record the user's turn first, so the history handed to the model
-            # includes the message it is replying to.
-            store.add_message(sid, "user", text)
+            # includes the message it is replying to. The marker is what later
+            # turns will see in place of the picture.
+            images = take_images(sid, body.images)
+            store.add_message(sid, "user", text + (IMAGE_MARKER if images else ""))
             chat = getattr(app.state, "chat", None)
             if chat is None:
                 s = config.load_settings()
@@ -615,7 +645,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                 )
             else:
                 try:
-                    reply = await chat(history_with_context(sid),
+                    reply = await chat(history_with_context(sid, images),
                                        tools=await _chat_tools(),
                                        dispatch=make_chat_dispatch(sid))
                 except Exception as e:
@@ -630,6 +660,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             store.add_message(sid, "assistant", clean)
             store.set_task_status(task_id, "done")
             store.append_log(task_id, f"answer: {clean}")
+            uploads.discard(images)      # looked at, answered, gone
             await learn_from_turn(text, clean)
             return {"task_id": task_id, "status": "done"}
 
@@ -711,7 +742,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         # a coherent thread on the next load.
         text = body.text.strip()
         sid = body.session_id or CONV_WEB
-        store.add_message(sid, "user", text)
+        images = take_images(sid, body.images)
+        store.add_message(sid, "user", text + (IMAGE_MARKER if images else ""))
         chat = getattr(app.state, "chat", None)
 
         # Auto rename session if it was default name
@@ -737,7 +769,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             else:
                 try:
                     async for kind, payload in chat.stream(
-                            history_with_context(sid), tools=await _chat_tools(),
+                            history_with_context(sid, images),
+                            tools=await _chat_tools(),
                             dispatch=make_chat_dispatch(sid)):
                         if kind == "token":
                             acc += payload
@@ -754,6 +787,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             # lie), minus the <voice> line the client already consumed.
             clean, _ = voice.strip_voice_tag(acc)
             store.add_message(sid, "assistant", clean)
+            uploads.discard(images)      # looked at, answered, gone
             yield sse({"done": True, "usage": usage})
             # After the client has its answer: learning is a background chore,
             # and holding the stream open for a second model call would show up
@@ -763,6 +797,29 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache",
                                           "X-Accel-Buffering": "no"})
+
+    @app.post("/api/uploads")
+    async def post_upload(request: Request, session_id: str | None = None):
+        """Accept one image for a conversation.
+
+        Raw body rather than multipart, like /api/stt: it needs no
+        python-multipart dependency and the browser has the bytes anyway. The
+        response carries the stored name, which the client sends back on the
+        chat turn that should see the picture.
+        """
+        data = await request.body()
+        if not data:
+            raise HTTPException(status_code=400, detail="Body kosong")
+        try:
+            name, mime = uploads.save(paths.uploads_dir(),
+                                      session_id or CONV_WEB, data)
+        except uploads.UnsupportedImage as e:
+            raise HTTPException(status_code=415, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=413, detail=str(e))
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Gagal menyimpan: {e}")
+        return {"id": name, "mime": mime, "bytes": len(data)}
 
     @app.get("/api/facts")
     def get_facts():

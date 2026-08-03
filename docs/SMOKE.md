@@ -79,6 +79,20 @@ dashboard — that is the bug the move fixed.
 6. `GET /api/facts` then `DELETE /api/facts/<key>` for anything the extractor
    got wrong — an unremovable wrong fact rides in every prompt.
 
+## Images in chat (manual, needs a vision-capable chat model)
+
+1. Attach a photo (clip button, or paste from the clipboard) and ask what is in it. The answer
+   must describe the actual picture, not guess from the filename.
+2. While the answer is arriving, look in `%HERMES_HOME%\uploads\<session>\` — the file is
+   there. Once the reply finishes, it is gone. That is the whole lifecycle: one look, one
+   answer, deleted.
+3. Ask a follow-up about the same photo. The model no longer has the image (it sees
+   `[gambar dilampirkan]`), so it should ask for the picture again rather than invent detail.
+4. Try an `.svg` renamed to `.png`: refused with a 415 and a message, never stored. Content is
+   sniffed from the leading bytes; the name decides nothing.
+5. Switch the chat model to a text-only one and attach an image: the turn fails with a note
+   pointing at the attachment, not a bare provider error.
+
 ## Known follow-ups
 
 - **`HERMES_HOME` fallbacks disagree.** `deploy/install.ps1` and `deploy/start.bat` default to
