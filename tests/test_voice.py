@@ -70,8 +70,8 @@ def test_tts_post_defaults_voice_and_skips_empty_text(hermes_home, monkeypatch):
 
     r = client.post("/api/tts", json={"text": "hello"})
     assert r.status_code == 200
-    # an omitted voice falls back to Indonesian, not to an English voice
-    assert recorder["voice"] == "id-ID-ArdiNeural"
+    # an omitted voice falls back to the default voice (now multilingual)
+    assert recorder["voice"] == "en-US-AndrewMultilingualNeural"
 
     # text that cleans down to nothing yields No Content, not audio
     r = client.post("/api/tts", json={"text": "---\n**`  `**"})

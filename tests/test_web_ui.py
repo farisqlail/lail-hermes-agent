@@ -761,7 +761,7 @@ def test_stt_transcribes_posted_audio(hermes_home, monkeypatch):
     store = Store(paths.db_path()); store.init_schema()
     seen = {}
 
-    def fake_transcribe(audio, language="id"):
+    def fake_transcribe(audio, language="id", model_size=None):
         seen["audio"] = audio
         seen["language"] = language
         return "jalankan test project v3"
@@ -785,7 +785,7 @@ def test_stt_uses_configured_language(hermes_home, monkeypatch):
     config.save_settings(config.Settings(stt_language="en"))
     seen = {}
 
-    def fake_transcribe(audio, language="id"):
+    def fake_transcribe(audio, language="id", model_size=None):
         seen["language"] = language
         return "run the tests"
 
@@ -827,7 +827,7 @@ def test_stt_returns_413_for_oversized_audio(hermes_home, monkeypatch):
     paths.ensure_dirs()
     store = Store(paths.db_path()); store.init_schema()
 
-    def explode(audio, language="id"):
+    def explode(audio, language="id", model_size=None):
         raise AssertionError("must reject before reaching the model")
 
     monkeypatch.setattr(stt, "available", lambda: True)
@@ -843,7 +843,7 @@ def test_stt_returns_204_for_empty_transcript(hermes_home, monkeypatch):
     paths.ensure_dirs()
     store = Store(paths.db_path()); store.init_schema()
     monkeypatch.setattr(stt, "available", lambda: True)
-    monkeypatch.setattr(stt, "transcribe", lambda audio, language="id": "  ")
+    monkeypatch.setattr(stt, "transcribe", lambda audio, language="id", model_size=None: "  ")
     client = TestClient(create_app(store))
 
     # Silence transcribes to nothing. 204 lets the browser stay quiet instead
@@ -857,7 +857,7 @@ def test_stt_returns_500_when_the_model_fails(hermes_home, monkeypatch):
     paths.ensure_dirs()
     store = Store(paths.db_path()); store.init_schema()
 
-    def explode(audio, language="id"):
+    def explode(audio, language="id", model_size=None):
         raise RuntimeError("ctranslate2 blew up")
 
     monkeypatch.setattr(stt, "available", lambda: True)

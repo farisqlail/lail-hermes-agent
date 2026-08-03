@@ -28,8 +28,8 @@ class PendingAction:
         """A short human label for the card and the voice prompt. The server and
         verb are the operator's decision-relevant facts; full args show in the
         card body, not here."""
-        server, _, tool = self.tool.partition("__")
-        return f"{server}: {tool}" if server else self.tool
+        server, sep, tool = self.tool.partition("__")
+        return f"{server}: {tool}" if sep else self.tool
 
 
 class PendingStore:
