@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 from hermes.web_ui import create_app
 from hermes.session_store import Store
@@ -543,7 +545,8 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
     assert r.status_code == 200
 
     assert out["tool_names"] == ["list_projects", "recent_tasks",
-                                 "get_task_detail", "start_task"]
+                                 "get_task_detail", "failure_report",
+                                 "start_task"]
     assert out["projects"] == [{"name": "myprofit", "path": str(proj_dir), "exists": True}]
     assert any(t["task_id"] == "seed1" for t in out["recent"])
     assert out["detail"]["status"] == "done"
@@ -1321,3 +1324,49 @@ def test_images_ride_the_streaming_path_too(hermes_home):
     assert "Itu struk." in body
     assert seen[0]["content"][1]["image_url"]["url"].startswith("data:image/png")
     assert not stored.exists()
+
+
+def test_postmortem_endpoint_groups_real_failures(hermes_home):
+    """Same reading of the same data the agent's `failure_report` tool gets —
+    one implementation, so the dashboard and the chat cannot disagree about
+    what went wrong."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    for tid, line in (("t1", "step 0 [code]: engine failed after 3 round(s): 429"),
+                      ("t2", "step 0 [code]: engine failed after 3 round(s): 429"),
+                      ("t3", "step 0 [build]: step crashed: [WinError 2] not found")):
+        store.create_task(tid, 0, "kerja")
+        store.set_task_status(tid, "failed")
+        store.append_log(tid, line)
+    store.create_task("ok", 0, "kerja"); store.set_task_status("ok", "done")
+
+    body = TestClient(create_app(store)).get("/api/postmortem").json()
+
+    assert body["failed"] == 3 and body["tasks_seen"] == 4
+    assert body["by_kind"]["transient"] == 2
+    assert body["by_kind"]["environment"] == 1
+    assert body["repeats"][0]["count"] == 2
+    assert "2 dari" not in body["report"] and "3 dari 4" in body["report"]
+
+
+async def test_the_agent_can_read_its_own_failure_history(hermes_home):
+    """Asked why tasks keep failing, the agent should answer from the data
+    rather than from the conversation."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    store.create_task("t1", 0, "kerja"); store.set_task_status("t1", "failed")
+    store.append_log("t1", "step 0 [build]: step crashed: [WinError 2] not found")
+
+    seen = {}
+    async def fake_chat(history, tools=None, dispatch=None):
+        seen["tools"] = [t["function"]["name"] for t in tools]
+        seen["result"] = await dispatch("failure_report", {})
+        return "ada satu kegagalan lingkungan"
+
+    client = TestClient(create_app(store, chat=fake_chat))
+    client.post("/api/tasks", json={"text": "kenapa task sering gagal?"})
+
+    assert "failure_report" in seen["tools"]
+    payload = json.loads(seen["result"])
+    assert payload["by_kind"]["environment"] == 1
+    assert "PATH" in payload["report"]

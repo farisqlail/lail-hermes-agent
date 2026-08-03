@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import brain, cleanup, config, paths, stt, uploads, voice, desktop_api, mcp_risk
+from . import brain, cleanup, config, paths, postmortem, stt, uploads, voice, desktop_api, mcp_risk
 from .pending_actions import PendingStore
 from .session_store import Store
 from .telegram_bridge import new_task_id
@@ -72,6 +72,14 @@ CHAT_TOOLS = [
         "description": "Status dan potongan log terakhir sebuah task, berdasarkan task_id.",
         "parameters": {"type": "object", "properties": {
             "task_id": {"type": "string"}}, "required": ["task_id"]}}},
+    {"type": "function", "function": {
+        "name": "failure_report",
+        "description": ("Ringkasan kegagalan task terakhir, dikelompokkan menurut jenisnya "
+                        "(lingkungan / struktural / sesaat / kode) beserta yang berulang. "
+                        "Pakai ini bila ditanya kenapa task sering gagal atau apa yang "
+                        "perlu diperbaiki — jangan menebak dari ingatan."),
+        "parameters": {"type": "object", "properties": {
+            "limit": {"type": "integer", "description": "berapa task terakhir diperiksa, default 50"}}}}},
     {"type": "function", "function": {
         "name": "start_task",
         "description": ("Antre task orkestrasi baru. Task TIDAK berjalan sampai operator "
@@ -324,6 +332,14 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     return json.dumps(
                         {"task_id": tid, "status": t["status"], "text": t["text"],
                          "logs": store.get_logs(tid)[-8:]}, ensure_ascii=False)
+                if name == "failure_report":
+                    limit = int(args.get("limit") or 50)
+                    rows = [t for t in store.list_tasks(limit=limit)
+                            if t.get("chat_id", 0) >= 0]
+                    summary = postmortem.summarize(rows, store.get_logs)
+                    return json.dumps({**summary,
+                                       "report": postmortem.render(summary)},
+                                      ensure_ascii=False)
                 if name == "start_task":
                     bridge = getattr(app.state, "bridge", None)
                     if not bridge:
@@ -820,6 +836,18 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         except OSError as e:
             raise HTTPException(status_code=500, detail=f"Gagal menyimpan: {e}")
         return {"id": name, "mime": mime, "bytes": len(data)}
+
+    @app.get("/api/postmortem")
+    def get_postmortem(limit: int = 50):
+        """Why tasks have been failing lately, grouped by what would fix them.
+
+        The same reading of the same data the agent gets from its
+        `failure_report` tool — one implementation, so the dashboard and the
+        chat can never disagree about what went wrong.
+        """
+        rows = [t for t in store.list_tasks(limit=limit) if t.get("chat_id", 0) >= 0]
+        summary = postmortem.summarize(rows, store.get_logs)
+        return {**summary, "report": postmortem.render(summary)}
 
     @app.get("/api/facts")
     def get_facts():

@@ -123,6 +123,12 @@ flowchart TD
   the old undifferentiated retry, one burning three instant rounds against an endpoint that
   was refusing everything. Unrecognised errors keep the old behaviour, so an unfamiliar
   failure gains nothing from a guess.
+- **Hermes reads its own failure history** — `GET /api/postmortem`, and a `failure_report`
+  tool the chat agent uses when asked why tasks keep failing, group recent failures by the
+  same classes the retry loop acts on and say what would fix each. It reproduces from data
+  the grouping that was done by hand once: on this machine, "10 of 35 failed — 5 a busy
+  endpoint, 3 a missing binary, 2 an impossible plan", with the fix for each. Read-only: it
+  reports, a human decides.
 - **A failed build or test gets repaired, then run again** — until now a build failed once and
   took the whole task with it, even though a compile error is exactly what a coding engine can
   read and fix: the code steps had three rounds of self-correction, the steps that produce the
