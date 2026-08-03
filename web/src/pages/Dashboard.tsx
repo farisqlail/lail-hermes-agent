@@ -5,6 +5,7 @@ import { parseStreamBuffer, StreamEvent } from '../api/stream';
 import { errorMessage, api } from '../api/client';
 import { Markdown } from '../components/Markdown';
 import { Button } from '../components/Button';
+import { Modal } from '../components/Modal';
 import { useToast } from '../components/Toast';
 import { useTasksContext } from '../api/events';
 import {
@@ -213,6 +214,12 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   const speakingRef = useRef(false);
   // Write actions the chat agent proposed, awaiting approval (button or voice).
   const [pending, setPending] = useState<PendingAction[]>([]);
+  // Ids the operator closed without deciding. The action stays parked on the
+  // server — this only decides whether the dialog is in their way right now.
+  const [dismissedPending, setDismissedPending] = useState<string[]>([]);
+  // One decision at a time: the oldest parked action, which is also the one a
+  // voice "konfirmasi" resolves, so button and speech can never disagree.
+  const reviewPending = pending.find((p) => !dismissedPending.includes(p.id));
   const pendingRef = useRef<PendingAction[]>([]);
   pendingRef.current = pending;
   const sinkRef = useRef<HtmlAudioSink | null>(null);
@@ -394,7 +401,12 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   const fetchPending = useCallback(async () => {
     try {
       const res = await fetch('/api/chat/pending');
-      if (res.ok) setPending(await res.json());
+      if (!res.ok) return;
+      const list: PendingAction[] = await res.json();
+      setPending(list);
+      // Drop ids that no longer exist, so a future action with a recycled id
+      // cannot arrive already dismissed.
+      setDismissedPending((prev) => prev.filter((id) => list.some((p) => p.id === id)));
     } catch { /* transient; next poll retries */ }
   }, []);
 
@@ -1061,50 +1073,72 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
           </svg>
         </div>
 
-        {/* Parked write actions awaiting approval (button or voice) */}
-        {pending.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', margin: '0 0 10px' }}>
-            {pending.map((p) => (
-              <div key={p.id} style={{
-                padding: '10px 12px',
-                border: '1px solid var(--warn)',
-                borderRadius: 'var(--r-sm)',
-                background: 'rgba(240,170,40,0.06)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '6px',
+        <Modal
+          isOpen={!!reviewPending}
+          onClose={() => reviewPending && setDismissedPending((prev) => [...prev, reviewPending.id])}
+          title="⚠️ Perlu konfirmasi"
+        >
+          {reviewPending && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ fontWeight: 600 }}>{reviewPending.summary}</div>
+              <code style={{
+                fontSize: '11px', color: 'var(--text-dim)', whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word', maxHeight: '160px', overflow: 'auto',
+                padding: '8px', border: '1px solid var(--border)',
+                borderRadius: 'var(--r-sm)', background: 'var(--surface-1)',
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                  <span style={{ color: 'var(--warn)', fontWeight: 'bold', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
-                    ⚠️ PERLU KONFIRMASI
-                  </span>
-                  <span style={{ fontWeight: 600 }}>{p.summary}</span>
-                </div>
-                <code style={{
-                  fontSize: '11px', color: 'var(--text-dim)', whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word', maxHeight: '80px', overflow: 'auto',
-                }}>
-                  {JSON.stringify(p.args)}
-                </code>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <Button variant="primary" size="small" onClick={() => resolvePending(p.id, true)}>
-                    Jalankan
-                  </Button>
-                  <Button variant="danger" size="small" onClick={() => resolvePending(p.id, false)}>
-                    Batalkan
-                  </Button>
-                  <span style={{ fontSize: '10px', color: 'var(--text-faint)', alignSelf: 'center' }}>
-                    atau ucapkan "konfirmasi" / "batal"
-                  </span>
-                </div>
+                {JSON.stringify(reviewPending.args, null, 2)}
+              </code>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <Button variant="primary" onClick={() => resolvePending(reviewPending.id, true)}>
+                  Jalankan
+                </Button>
+                <Button variant="danger" onClick={() => resolvePending(reviewPending.id, false)}>
+                  Batalkan
+                </Button>
+                <span style={{ fontSize: '10px', color: 'var(--text-faint)' }}>
+                  atau ucapkan "konfirmasi" / "batal"
+                </span>
               </div>
-            ))}
+              {pending.length > 1 && (
+                <span style={{ fontSize: '10px', color: 'var(--text-faint)' }}>
+                  {pending.length - 1} aksi lain menunggu setelah ini.
+                </span>
+              )}
+            </div>
+          )}
+        </Modal>
+
+        {/* A parked action is a decision, so it interrupts rather than waiting
+            to be noticed in the column. Dismissing only hides it — the action
+            stays parked, and the chip below brings it back. */}
+        {pending.length > 0 && !reviewPending && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '8px', margin: '0 0 10px',
+            padding: '8px 10px', border: '1px solid var(--warn)',
+            borderRadius: 'var(--r-sm)', background: 'rgba(240,170,40,0.06)',
+          }}>
+            <span style={{ color: 'var(--warn)', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
+              ⚠️ {pending.length} aksi menunggu konfirmasi
+            </span>
+            <Button variant="secondary" size="small" onClick={() => setDismissedPending([])}>
+              Tinjau
+            </Button>
           </div>
         )}
 
-        {/* Staged images, before they are sent */}
+        {/* Staged images, directly above the input they will be sent with */}
         {attached.length > 0 && (
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '0 0 8px' }}>
+          <div style={{
+            display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center',
+            padding: '8px', margin: '0 0 8px',
+            border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
+            background: 'var(--surface-1)',
+          }}>
+            <span style={{ fontSize: '10px', fontFamily: 'var(--font-mono)',
+                           color: 'var(--accent)', letterSpacing: '0.08em' }}>
+              AKAN DIKIRIM
+            </span>
             {attached.map((a, idx) => (
               <div key={a.url} style={{ position: 'relative' }}>
                 <img
