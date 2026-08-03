@@ -13,7 +13,7 @@ import {
   hasGreeted, markGreeted,
   loadVoiceSettings, VoiceSettings, VOICE_SETTINGS_DEFAULT,
 } from '../tts';
-import { SpeechQueue, HtmlAudioSink, fetchSpeech } from '../audio';
+import { SpeechQueue, HtmlAudioSink, sharedAudioSink, sharedSpeechQueue } from '../audio';
 import { splitSentences, flushSentence } from '../sentences';
 import { useVoiceLoop } from '../hooks/useVoiceLoop';
 import { VoiceStateIndicator, deriveVoiceState } from '../components/VoiceStateIndicator';
@@ -201,7 +201,6 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   const [ttsMode, setTtsMode] = useState<TtsMode>('smart');
   const [ttsMaxWords, setTtsMaxWords] = useState<number>(40);
   const [ttsGreeting, setTtsGreeting] = useState<boolean>(true);
-  const [ttsTaskNotify, setTtsTaskNotify] = useState<boolean>(false);
   const [ttsPersonality, setTtsPersonality] = useState<TtsPersonality>('professional');
   const [sttEnabled, setSttEnabled] = useState<boolean>(false);
 
@@ -236,10 +235,12 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   }, [fetchSessions, sessionId]);
 
   if (queueRef.current === null && typeof window !== 'undefined') {
-    sinkRef.current = new HtmlAudioSink();
-    queueRef.current = new SpeechQueue(fetchSpeech, sinkRef.current, {
+    // Shared with the SSE feed's server-driven speech (see audio.ts): two
+    // queues would talk over each other, and barge-in would only silence one.
+    sinkRef.current = sharedAudioSink();
+    queueRef.current = sharedSpeechQueue();
+    queueRef.current.observe({
       onSpeakingChange: (v) => { speakingRef.current = v; setSpeaking(v); },
-      now: () => performance.now(),
       onFirstAudio: (ms) => {
         setFirstAudioMs(Math.round(ms));
         console.debug(`[voice] audio pertama: ${Math.round(ms)} ms`);
@@ -275,15 +276,12 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
       setTtsMode(s.tts_mode);
       setTtsMaxWords(s.tts_max_words);
       setTtsGreeting(s.tts_greeting);
-      setTtsTaskNotify(s.tts_task_notify);
       setTtsPersonality(s.tts_personality);
     }).catch(() => {});
 
     loadVoiceSettings().then(setVoice).catch(() => {});
-
-    return () => {
-      queueRef.current?.stop();
-    };
+    // No stop() on unmount: the queue outlives this page now, and a task
+    // notification arriving as the operator navigates away should still finish.
   }, []);
 
   useEffect(() => {
@@ -298,21 +296,9 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     speak('greeting');
   }, [ttsEnabled, ttsGreeting, loadingHistory, messages.length, sessionId]);
 
-  const prevTasksRef = useRef<Map<string, string>>(new Map());
-  useEffect(() => {
-    if (!ttsEnabled || !ttsTaskNotify) return;
-    const prev = prevTasksRef.current;
-    for (const t of tasks) {
-      const oldStatus = prev.get(t.task_id);
-      if (oldStatus && oldStatus !== t.status && (t.status === 'done' || t.status === 'failed')) {
-        speak('notify', { taskText: t.text, taskStatus: t.status });
-        break;
-      }
-    }
-    const next = new Map<string, string>();
-    for (const t of tasks) next.set(t.task_id, t.status);
-    prevTasksRef.current = next;
-  }, [tasks, ttsEnabled, ttsTaskNotify]);
+  // Task notifications are decided by the server and arrive as `speak` frames
+  // on the SSE feed (hermes/brain.speech_for, rendered in api/events.tsx).
+  // They used to be diffed here, which meant no announcement on any other page.
   
   const [inputText, setInputText] = useState('');
   const holdingRef = useRef(false);

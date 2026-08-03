@@ -61,6 +61,8 @@ class Store:
                 CREATE TABLE IF NOT EXISTS messages(
                   id INTEGER PRIMARY KEY AUTOINCREMENT, conv_id TEXT,
                   role TEXT, content TEXT, ts REAL);
+                CREATE TABLE IF NOT EXISTS user_facts(
+                  key TEXT PRIMARY KEY, value TEXT, ts REAL);
                 """
             )
             try:
@@ -139,9 +141,13 @@ class Store:
     def set_step_status(self, step_id, status):
         with self._conn() as c:
             c.execute("UPDATE steps SET status=? WHERE id=?", (status, step_id))
-            r = c.execute("SELECT task_id FROM steps WHERE id=?", (step_id,)).fetchone()
+            r = c.execute("SELECT task_id, kind FROM steps WHERE id=?", (step_id,)).fetchone()
             task_id = r["task_id"] if r else None
-        self.publish({"type": "step_status", "task_id": task_id, "step_id": step_id, "status": status})
+            # `kind` rides along so a subscriber can say what is starting
+            # ("build") without a second query. The step row is right here.
+            kind = r["kind"] if r else None
+        self.publish({"type": "step_status", "task_id": task_id, "step_id": step_id,
+                      "status": status, "kind": kind})
 
     def append_log(self, task_id, line):
         with self._conn() as c:
@@ -204,3 +210,26 @@ class Store:
     def clear_messages(self, conv_id):
         with self._conn() as c:
             c.execute("DELETE FROM messages WHERE conv_id=?", (conv_id,))
+
+    # --- what Hermes remembers about the operator ---
+    # Keyed, not appended: "deploy_day" learned twice is one fact with a newer
+    # value, not two contradictory lines in the prompt. The key is also the
+    # handle the operator deletes by, which an autoincrement id would not be.
+
+    def set_fact(self, key, value):
+        with self._conn() as c:
+            c.execute("INSERT INTO user_facts(key,value,ts) VALUES(?,?,?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+                      "ts=excluded.ts", (key, value, time.time()))
+
+    def list_facts(self, limit=50):
+        """Newest first, so a `limit` that bites drops the stalest facts."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT key, value, ts FROM user_facts ORDER BY ts DESC LIMIT ?",
+                (limit,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def delete_fact(self, key):
+        with self._conn() as c:
+            c.execute("DELETE FROM user_facts WHERE key=?", (key,))

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { ttsRequest, hasGreeted, markGreeted, loadTtsSettings, saveTtsSettings } from './tts';
+import { ttsRequest, speechRequestFor, hasGreeted, markGreeted, loadTtsSettings, saveTtsSettings } from './tts';
 
 const base = { voice: 'id-ID-ArdiNeural', agentName: 'Lail Agent',
                maxWords: 40, personality: 'professional' as const };
@@ -73,6 +73,7 @@ test('loadTtsSettings parses settings from server response', async () => {
     tts_max_words: 30,
     tts_greeting: false,
     tts_task_notify: true,
+    tts_narrate: false,
     tts_personality: 'friendly' as const,
   };
   globalThis.fetch = async (url: any) => {
@@ -117,4 +118,33 @@ test('saveTtsSettings loads, merges and posts settings to server', async () => {
   } finally {
     delete (globalThis as any).fetch;
   }
+});
+
+test('a server say frame speaks its own words, never the summariser', () => {
+  const req = speechRequestFor(
+    { type: 'speak', intent: 'say', text: 'Saya jalankan build sekarang.' },
+    'smart',
+    { voice: 'v', agentName: 'Ev', maxWords: 40, personality: 'professional' },
+  );
+  assert.equal(req?.endpoint, '/api/tts');
+  assert.equal(req?.payload.text, 'Saya jalankan build sekarang.');
+});
+
+test('a server notify frame carries the task as data', () => {
+  const req = speechRequestFor(
+    { type: 'speak', intent: 'notify', task_text: 'perbaiki checkout', task_status: 'failed' },
+    'smart',
+    { voice: 'v', agentName: 'Ev', maxWords: 40, personality: 'professional' },
+  );
+  assert.equal(req?.endpoint, '/api/tts/smart');
+  assert.equal(req?.payload.intent, 'notify');
+  assert.equal(req?.payload.task_status, 'failed');
+});
+
+test('an empty say frame stays silent', () => {
+  assert.equal(
+    speechRequestFor({ type: 'speak', intent: 'say', text: '' }, 'smart',
+      { voice: 'v', agentName: 'Ev', maxWords: 40, personality: 'professional' }),
+    null,
+  );
 });

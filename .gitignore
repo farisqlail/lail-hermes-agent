@@ -10,3 +10,5 @@ tests/fake_engine.py
 *.egg-info/
 /web/node_modules/
 /hermes/static/
+# Page dumps the Playwright MCP server writes into the working directory.
+/.playwright-mcp/

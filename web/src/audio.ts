@@ -83,10 +83,10 @@ export class SpeechQueue {
   private running = false;
   private _speaking = false;
   private readonly maxInFlight: number;
-  private readonly onSpeakingChange?: (speaking: boolean) => void;
+  private onSpeakingChange?: (speaking: boolean) => void;
   private turnStart: number | null = null;
   private readonly now: () => number;
-  private readonly onFirstAudio?: (ms: number) => void;
+  private onFirstAudio?: (ms: number) => void;
 
   constructor(
     private fetchAudio: SpeechFetcher,
@@ -108,6 +108,18 @@ export class SpeechQueue {
     this.onSpeakingChange = opts.onSpeakingChange;
     this.now = opts.now ?? (() => Date.now());
     this.onFirstAudio = opts.onFirstAudio;
+  }
+
+  /** Attach observers after construction. The queue is a process-wide
+   *  singleton (see `sharedSpeechQueue`) so whichever page mounts first
+   *  creates it, but only the Dashboard cares about the speaking flag and the
+   *  first-audio measurement. */
+  observe(opts: {
+    onSpeakingChange?: (speaking: boolean) => void;
+    onFirstAudio?: (ms: number) => void;
+  }): void {
+    if (opts.onSpeakingChange) this.onSpeakingChange = opts.onSpeakingChange;
+    if (opts.onFirstAudio) this.onFirstAudio = opts.onFirstAudio;
   }
 
   /** Start the clock for one conversational turn. Proactive speech (greeting,
@@ -190,4 +202,23 @@ export class SpeechQueue {
     this._speaking = next;
     this.onSpeakingChange?.(next);
   }
+}
+
+// ── the one queue everything speaks through ──
+// Server-driven speech (task notify, step narration) arrives on the SSE feed,
+// which the TasksProvider owns, while conversational speech is enqueued by the
+// Dashboard. Two SpeechQueue instances would talk over each other — and stop()
+// on one would not silence the other — so both share these.
+
+let sharedQueue: SpeechQueue | null = null;
+let sharedSink: HtmlAudioSink | null = null;
+
+export function sharedAudioSink(): HtmlAudioSink {
+  if (!sharedSink) sharedSink = new HtmlAudioSink();
+  return sharedSink;
+}
+
+export function sharedSpeechQueue(): SpeechQueue {
+  if (!sharedQueue) sharedQueue = new SpeechQueue(fetchSpeech, sharedAudioSink());
+  return sharedQueue;
 }

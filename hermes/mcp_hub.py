@@ -34,14 +34,23 @@ class McpHub:
                     "MCP server %r could not be started, skipping: %s", srv.name, e)
 
     async def list_tools(self) -> list[dict]:
-        import logging
+        """Every connected server's tools. A server that fails is skipped, not
+        fatal — one dead integration must not cost the agent the others.
+
+        Queried concurrently: each stdio server spawns its own subprocess, so
+        sequential discovery cost the sum of every server's cold start (two
+        servers were already 20+ seconds) on the first turn after a restart.
+        """
+        import asyncio, logging
+        names = list(self._sessions)
+        results = await asyncio.gather(
+            *(self._sessions[n].list_tools() for n in names),
+            return_exceptions=True)
         out = []
-        for name, sess in self._sessions.items():
-            try:
-                tools = await sess.list_tools()
-            except Exception as e:
+        for name, tools in zip(names, results):
+            if isinstance(tools, BaseException):
                 logging.getLogger("hermes.mcp_hub").warning(
-                    "MCP server %r failed to list tools, skipping: %s", name, e)
+                    "MCP server %r failed to list tools, skipping: %s", name, tools)
                 continue
             for t in tools:
                 out.append({"server": name, "name": t["name"],
@@ -68,7 +77,13 @@ class McpHub:
                 await close()
         self._sessions.clear()
 
-OPEN_TIMEOUT_S = 20    # transport + initialize handshake
+# Transport + initialize handshake. 60s, not 20: a stdio server is an `npx`
+# subprocess, and `@wonderwhy-er/desktop-commander` measured 16.8s to first
+# tools/list on a warm npx cache (~7s of that is npx resolving the package, the
+# rest its own startup). At 20s it intermittently lost the race, hub.list_tools
+# skipped it, and the chat agent then told the operator it had no disk access
+# while the server sat enabled in the settings.
+OPEN_TIMEOUT_S = 60
 LIST_TIMEOUT_S = 20    # tools/list
 CALL_TIMEOUT_S = 120   # tools/call
 

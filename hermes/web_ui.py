@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import config, paths, stt, voice, desktop_api, mcp_risk
+from . import brain, config, paths, stt, voice, desktop_api, mcp_risk
 from .pending_actions import PendingStore
 from .session_store import Store
 from .telegram_bridge import new_task_id
@@ -29,6 +29,17 @@ class TaskAnswer(BaseModel):
 # POST comes back 422.
 class SessionRename(BaseModel):
     title: str
+
+class ResolveBody(BaseModel):
+    """Approve or decline one parked write action.
+
+    Module scope is load-bearing, for the reason spelled out above: declared
+    inside create_app it was invisible to FastAPI, which silently demoted it to
+    a query parameter — so every confirm, by button or by voice, came back 422
+    and no gated MCP action could ever be approved.
+    """
+    id: str | None = None
+    approved: bool
 
 
 
@@ -188,7 +199,7 @@ def load_index_html() -> str:
         "</body></html>"
     )
 
-def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan=None, hub=None) -> FastAPI:
+def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan=None, hub=None, facts=None) -> FastAPI:
     # lifespan carries the ask MCP server's session manager when main.py mounts
     # it here: a mounted sub-app's own lifespan is ignored by Starlette, so the
     # manager has to be started by the parent or the /ask-mcp endpoint is dead.
@@ -218,6 +229,43 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     # async (history, tools=, dispatch=) -> str; None when no NIM chat is wired
     # (the conversational branch then falls back to a canned reply).
     app.state.chat = chat
+    # async (user_text, reply) -> [{"key","value"}]; None disables learning.
+    # Injected like chat so a test can wire a fake — or nothing, and the chat
+    # still works, it just stops remembering.
+    app.state.facts = facts
+
+    def brain_context() -> dict:
+        """The situational preamble as a system message.
+
+        Prepended to the history for every chat turn, which is why it is built
+        per turn rather than cached: the clock moves, tasks finish, and a stale
+        "sedang berjalan" is worse than no context at all.
+        """
+        s = config.load_settings()
+        return {"role": "system",
+                "content": brain.context_block(store.list_facts(),
+                                               store.list_tasks(limit=20),
+                                               list(s.projects))}
+
+    def history_with_context(sid: str) -> list[dict]:
+        return [brain_context(), *store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)]
+
+    async def learn_from_turn(user_text: str, reply: str) -> None:
+        """Store whatever durable facts this turn revealed.
+
+        Fire-and-forget: the operator's reply is already on screen by the time
+        this runs, and a failed extraction must not delay or break a turn that
+        otherwise succeeded.
+        """
+        extract = getattr(app.state, "facts", None)
+        if extract is None or not reply.strip():
+            return
+        try:
+            for f in await extract(user_text, reply):
+                store.set_fact(f["key"], f["value"])
+        except Exception as e:
+            safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
+            print(f"Could not learn from turn: {safe}")
 
     def make_chat_dispatch(session_id: str):
         async def chat_dispatch(name: str, args: dict) -> str:
@@ -304,18 +352,30 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
 
     async def _chat_tools():
         """CHAT_TOOLS plus whatever the MCP hub exposes, discovered once and
-        cached. On any discovery failure the chat still works on CHAT_TOOLS."""
+        cached. On any discovery failure the chat still works on CHAT_TOOLS.
+
+        Only a NON-EMPTY discovery is cached. A stdio server is a subprocess
+        that has to be spawned (`npx` fetching a package on a cold cache is
+        seconds, sometimes past the timeout), and hub.list_tools swallows the
+        per-server failure and returns []. Caching that made one slow first
+        turn disable every integration for the life of the process — the agent
+        then answers "akses disk tidak ada di sesi ini" forever, with the
+        servers sitting right there in the settings.
+        """
         base = list(CHAT_TOOLS)
         hub = getattr(app.state, "hub", None)
         if hub is None:
             return base
         cache = app.state._mcp_tools_cache
-        if cache is None:
+        if not cache:
             try:
                 cache = await hub.list_tools()
-            except Exception:
+            except Exception as e:
+                safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
+                print(f"MCP tool discovery failed, retrying next turn: {safe}")
                 cache = []
-            app.state._mcp_tools_cache = cache
+            if cache:
+                app.state._mcp_tools_cache = cache
         return base + to_openai_tools(cache)
 
     async def _resolve_pending(pa, approved: bool) -> dict:
@@ -350,12 +410,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         return [{"id": a.id, "tool": a.tool, "summary": a.summary(), "args": a.args}
                 for a in app.state.pending.list()]
 
-    class _ResolveBody(BaseModel):
-        id: str | None = None
-        approved: bool
-
     @app.post("/api/chat/pending/resolve")
-    async def resolve_chat_pending(body: _ResolveBody):
+    async def resolve_chat_pending(body: ResolveBody):
         """Approve/decline a parked action. No `id` resolves the oldest — the
         shape a voice 'konfirmasi' / 'batal' uses, since speech carries no id."""
         pending = app.state.pending
@@ -435,7 +491,17 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                         print("API: waiting for queue...")
                         event = await asyncio.wait_for(queue.get(), timeout=15.0)
                         print("API: got event from queue:", event)
-                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        yield brain.sse(event)
+                        # Speech is decided here, not in the browser: the old
+                        # notify effect lived in the Dashboard component, so a
+                        # task that finished while the operator was on any
+                        # other page was never announced. Every connected
+                        # client gets the same utterance, on every page.
+                        utterance = brain.speech_for(
+                            event, config.load_settings(),
+                            task_text=lambda tid: (store.get_task(tid) or {}).get("text", ""))
+                        if utterance:
+                            yield brain.sse(utterance)
                     except asyncio.TimeoutError:
                         print("API: timeout, yielding keep-alive")
                         yield "data: {\"type\": \"keep-alive\"}\n\n"
@@ -549,8 +615,9 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                 )
             else:
                 try:
-                    history = store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)
-                    reply = await chat(history, tools=await _chat_tools(), dispatch=make_chat_dispatch(sid))
+                    reply = await chat(history_with_context(sid),
+                                       tools=await _chat_tools(),
+                                       dispatch=make_chat_dispatch(sid))
                 except Exception as e:
                     # A NIM outage or missing key must not 500 the chat pane;
                     # surface it as the assistant's turn so the thread stays
@@ -563,6 +630,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             store.add_message(sid, "assistant", clean)
             store.set_task_status(task_id, "done")
             store.append_log(task_id, f"answer: {clean}")
+            await learn_from_turn(text, clean)
             return {"task_id": task_id, "status": "done"}
 
     @app.post("/api/tasks/{task_id}/confirm")
@@ -645,8 +713,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                 new_title = text[:30] + "..." if len(text) > 30 else text
                 store.rename_session(sid, new_title)
 
-        def sse(obj: dict) -> str:
-            return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+        sse = brain.sse
 
         async def gen():
             acc = ""
@@ -659,10 +726,10 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                        "`/help` untuk bantuan.")
                 yield sse({"delta": acc})
             else:
-                history = store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)
                 try:
                     async for kind, payload in chat.stream(
-                            history, tools=await _chat_tools(), dispatch=make_chat_dispatch(sid)):
+                            history_with_context(sid), tools=await _chat_tools(),
+                            dispatch=make_chat_dispatch(sid)):
                         if kind == "token":
                             acc += payload
                             yield sse({"delta": payload})
@@ -679,10 +746,26 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             clean, _ = voice.strip_voice_tag(acc)
             store.add_message(sid, "assistant", clean)
             yield sse({"done": True, "usage": usage})
+            # After the client has its answer: learning is a background chore,
+            # and holding the stream open for a second model call would show up
+            # as a pause with the reply already fully written.
+            await learn_from_turn(text, clean)
 
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache",
                                           "X-Accel-Buffering": "no"})
+
+    @app.get("/api/facts")
+    def get_facts():
+        """What Hermes has learned about the operator. Readable — and
+        deletable below — because these are extracted automatically: a fact the
+        model got wrong would otherwise ride in every prompt forever."""
+        return store.list_facts()
+
+    @app.delete("/api/facts/{key}")
+    def delete_fact(key: str):
+        store.delete_fact(key)
+        return {"ok": True}
 
     @app.get("/api/settings")
     def get_settings(): return config.load_settings().model_dump()
@@ -749,11 +832,46 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     def get_mcp(): return [m.model_dump() for m in config.load_settings().mcp_servers]
 
     @app.post("/api/mcp")
-    def post_mcp(body: list[config.McpServer]):
+    async def post_mcp(body: list[config.McpServer]):
         s = config.load_settings()
         s.mcp_servers = body
         config.save_settings(s)
+        # Reconnect the live hub too. The hub was built once at startup from
+        # the settings file, so saving alone left the running agent on the old
+        # server list — the settings page appeared to do nothing until Hermes
+        # was restarted. The discovery cache is dropped with it, otherwise the
+        # next chat turn would still be offered the previous set of tools.
+        hub = getattr(app.state, "hub", None)
+        if hub is not None:
+            try:
+                await hub.close()
+                hub.servers = body
+                await hub.connect()
+                app.state._mcp_tools_cache = None
+            except Exception as e:
+                # The settings are saved either way; a restart picks them up.
+                safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
+                return {"ok": True, "reconnect_error": safe}
         return {"ok": True}
+
+    @app.get("/api/mcp/tools")
+    async def mcp_tools():
+        """What the chat agent can actually call right now.
+
+        The registered-servers list says what was configured; this says what
+        connected. Without it, "the agent says it has no disk access" is
+        indistinguishable from a server that failed to start, and the only
+        way to tell was reading the console.
+        """
+        tools = await _chat_tools()
+        names = [t["function"]["name"] for t in tools]
+        mcp_names = [n for n in names if mcp_risk.is_mcp_name(n)]
+        return {
+            "builtin": [n for n in names if not mcp_risk.is_mcp_name(n)],
+            "mcp": mcp_names,
+            "gated": [n for n in mcp_names if mcp_risk.is_risky_tool(n)],
+            "servers": sorted({n.split("__", 1)[0] for n in mcp_names}),
+        }
 
     @app.post("/api/mcp/test")
     async def mcp_test(srv: config.McpServer):

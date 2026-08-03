@@ -1,5 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { Task } from './types';
+import { sharedSpeechQueue } from '../audio';
+import { loadTtsSettings, speechRequestFor, TTS_VOICE_DEFAULT } from '../tts';
+import type { SpeakEvent, TtsSettings } from '../tts';
+import { api } from './client';
 
 interface TasksContextType {
   tasks: Task[];
@@ -27,6 +31,12 @@ export function TasksProvider({ children }: { children: React.ReactNode }) {
   const [isConnected, setIsConnected] = useState(false);
   const [lastEventTimestamp, setLastEventTimestamp] = useState<number>(0);
   
+  // Voice settings for server-driven speech. Read once on mount and kept in a
+  // ref: the SSE handler is created once, so reading state there would pin the
+  // first render's values forever.
+  const ttsRef = useRef<TtsSettings | null>(null);
+  const agentRef = useRef('Lail Agent');
+
   const reconnectTimeoutRef = useRef<number | null>(null);
   const debounceTimeoutRef = useRef<number | null>(null);
   const backoffRef = useRef(1000); // starts at 1s
@@ -56,6 +66,23 @@ export function TasksProvider({ children }: { children: React.ReactNode }) {
     }, 300);
   }, [fetchTasks]);
 
+  /** Speak what the server asked for. The decision (and its settings gates)
+   *  lives in hermes/brain.speech_for — this only renders it, so a task that
+   *  finishes while the operator sits on the Configure page is still
+   *  announced. That was the whole bug: the old notify effect was inside the
+   *  Dashboard component. */
+  const handleSpeak = useCallback((ev: SpeakEvent) => {
+    const s = ttsRef.current;
+    if (!s || !s.tts_enabled) return;
+    const req = speechRequestFor(ev, s.tts_mode, {
+      voice: s.tts_voice || TTS_VOICE_DEFAULT,
+      agentName: agentRef.current,
+      maxWords: s.tts_max_words,
+      personality: s.tts_personality,
+    });
+    if (req) sharedSpeechQueue().enqueue(req.endpoint, req.payload);
+  }, []);
+
   const connectSSE = useCallback(() => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -74,6 +101,7 @@ export function TasksProvider({ children }: { children: React.ReactNode }) {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'keep-alive') return;
+        if (data.type === 'speak') { handleSpeak(data as SpeakEvent); return; }
         fetchTasksDebounced();
       } catch (e) {
         console.error('[SSE] Failed to parse event data:', e);
@@ -98,7 +126,14 @@ export function TasksProvider({ children }: { children: React.ReactNode }) {
         connectSSE();
       }, nextBackoff);
     };
-  }, [fetchTasksDebounced]);
+  }, [fetchTasksDebounced, handleSpeak]);
+
+  useEffect(() => {
+    loadTtsSettings().then((s) => { ttsRef.current = s; }).catch(() => {});
+    api.getSettings()
+      .then((s) => { if (s.agent_name) agentRef.current = s.agent_name; })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     fetchTasks();

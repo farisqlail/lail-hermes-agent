@@ -407,7 +407,9 @@ def test_chat_conversation_uses_llm_with_memory(hermes_home):
 
     seen_histories = []
     async def fake_chat(history, tools=None, dispatch=None):
-        seen_histories.append([m["content"] for m in history])
+        # The first message is the situational context block, which is not part
+        # of the conversation — the memory assertions below are about the rest.
+        seen_histories.append([m["content"] for m in history[1:]])
         return f"echo:{history[-1]['content']}"
 
     client = TestClient(create_app(store, chat=fake_chat))
@@ -932,3 +934,235 @@ def test_non_streaming_chat_persists_without_the_voice_tag(hermes_home):
     # the task log the dashboard renders must be clean too
     logs = "\n".join(store.get_logs(r.json()["task_id"]))
     assert voice.VOICE_TAG_OPEN not in logs
+
+
+def test_chat_turn_is_given_the_situational_context(hermes_home):
+    """Every chat turn opens with the context block: the clock, the project in
+    play, what is running, and the facts learned about the operator. Without it
+    the agent answers "apa yang lagi jalan?" by guessing."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    store.set_fact("hari_deploy", "biasanya deploy hari Jumat")
+    store.create_task("live-1", 0, "@myprofit jalankan pengujian")
+    store.set_task_status("live-1", "running")
+
+    seen = []
+    async def fake_chat(history, tools=None, dispatch=None):
+        seen.append(history)
+        return "oke"
+
+    client = TestClient(create_app(store, chat=fake_chat))
+    client.post("/api/tasks", json={"text": "apa yang lagi jalan?"})
+
+    head = seen[0][0]
+    assert head["role"] == "system"
+    assert "# Konteks saat ini" in head["content"]
+    assert "hari_deploy: biasanya deploy hari Jumat" in head["content"]
+    assert "live-1 [running]" in head["content"]
+    assert "@myprofit" in head["content"]
+
+
+def test_chat_turn_learns_facts_and_they_are_readable_and_deletable(hermes_home):
+    """Extraction runs on the turn's own text, and what it stores must be
+    inspectable — a wrongly learned fact would otherwise ride in every prompt
+    forever with no way to remove it."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    seen = []
+    async def fake_chat(history, tools=None, dispatch=None):
+        return "Dicatat."
+    async def fake_facts(user_text, reply):
+        seen.append((user_text, reply))
+        return [{"key": "hari_deploy", "value": "Jumat"}]
+
+    client = TestClient(create_app(store, chat=fake_chat, facts=fake_facts))
+    client.post("/api/tasks", json={"text": "aku biasanya deploy hari Jumat"})
+
+    assert seen == [("aku biasanya deploy hari Jumat", "Dicatat.")]
+    facts = client.get("/api/facts").json()
+    assert [(f["key"], f["value"]) for f in facts] == [("hari_deploy", "Jumat")]
+
+    assert client.delete("/api/facts/hari_deploy").status_code == 200
+    assert client.get("/api/facts").json() == []
+
+
+def test_a_failing_extractor_never_breaks_the_turn(hermes_home):
+    """Learning is a bonus. A dead extractor must leave the reply intact."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    async def fake_chat(history, tools=None, dispatch=None):
+        return "jawaban"
+    async def broken_facts(user_text, reply):
+        raise RuntimeError("model down")
+
+    client = TestClient(create_app(store, chat=fake_chat, facts=broken_facts))
+    r = client.post("/api/tasks", json={"text": "halo"})
+    assert r.status_code == 200 and r.json()["status"] == "done"
+    assert store.get_messages("web")[-1]["content"] == "jawaban"
+    assert store.list_facts() == []
+
+
+async def test_sse_announces_a_finished_task_without_the_browser_deciding(hermes_home):
+    """The notify decision moved server-side: the frame arrives on the same
+    feed every page listens to, so a task finishing while the operator is on
+    Configure is still announced."""
+    import json, asyncio
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    s = config.load_settings()
+    s.tts_enabled = True
+    s.tts_task_notify = True
+    config.save_settings(s)
+
+    app = create_app(store)
+    handler = next(r for r in app.routes
+                   if getattr(r, "path", None) == "/api/tasks/events").endpoint
+
+    class FakeRequest:
+        async def is_disconnected(self):
+            return False
+
+    response = await handler(FakeRequest())
+
+    async def trigger():
+        await asyncio.sleep(0.05)
+        store.create_task("spoken", 0, "perbaiki checkout")
+        store.set_task_status("spoken", "done")
+
+    bg = asyncio.create_task(trigger())
+    events = []
+    async for chunk in response.body_iterator:
+        if chunk.startswith("data: "):
+            data = json.loads(chunk[6:])
+            events.append(data)
+            if data.get("type") == "speak":
+                break
+    await bg
+
+    spoken = [e for e in events if e.get("type") == "speak"]
+    assert spoken == [{"type": "speak", "intent": "notify", "task_id": "spoken",
+                       "task_text": "perbaiki checkout", "task_status": "done"}]
+
+
+async def test_saving_mcp_servers_reconnects_the_live_hub(hermes_home):
+    """Saving used to write the file and stop there, so the running agent kept
+    the startup server list and the settings page looked broken."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    class FakeHub:
+        def __init__(self):
+            self.servers = []
+            self.connected = 0
+            self.closed = 0
+        async def connect(self): self.connected += 1
+        async def close(self): self.closed += 1
+        async def list_tools(self): return []
+
+    hub = FakeHub()
+    app = create_app(store, hub=hub)
+    app.state._mcp_tools_cache = [{"server": "old", "name": "stale_tool"}]
+    client = TestClient(app)
+
+    body = [{"name": "pc", "type": "stdio", "command": "npx",
+             "args": ["-y", "@wonderwhy-er/desktop-commander"], "enabled": True}]
+    assert client.post("/api/mcp", json=body).json() == {"ok": True}
+
+    assert [s.name for s in hub.servers] == ["pc"]
+    assert (hub.closed, hub.connected) == (1, 1)
+    assert app.state._mcp_tools_cache is None
+    assert [s["name"] for s in client.get("/api/mcp").json()] == ["pc"]
+
+
+async def test_a_hub_that_fails_to_reconnect_still_saves_the_settings(hermes_home):
+    """A dead MCP server must not cost the operator the configuration they
+    just typed — the file is the source of truth a restart reads back."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    class BrokenHub:
+        servers = []
+        async def connect(self): raise RuntimeError("npx not found")
+        async def close(self): pass
+
+    client = TestClient(create_app(store, hub=BrokenHub()))
+    body = [{"name": "pc", "type": "stdio", "command": "npx", "args": [], "enabled": True}]
+    out = client.post("/api/mcp", json=body).json()
+    assert out["ok"] is True and "npx not found" in out["reconnect_error"]
+    assert [s.name for s in config.load_settings().mcp_servers] == ["pc"]
+
+
+async def test_a_failed_discovery_is_not_cached_forever(hermes_home):
+    """One slow first turn used to disable every integration for the life of
+    the process: the empty result was cached, so the agent kept answering
+    "akses disk tidak ada" with the servers sitting in the settings."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    class FlakyHub:
+        def __init__(self): self.calls = 0
+        async def list_tools(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("npx still fetching")
+            return [{"server": "pc", "name": "read_file", "description": "",
+                     "input_schema": {"type": "object", "properties": {}}}]
+
+    hub = FlakyHub()
+    client = TestClient(create_app(store, hub=hub))
+
+    first = client.get("/api/mcp/tools").json()
+    assert first["mcp"] == []                      # discovery failed
+    second = client.get("/api/mcp/tools").json()   # next turn tries again
+    assert second["mcp"] == ["pc__read_file"]
+    assert second["servers"] == ["pc"]
+    assert second["gated"] == []                   # read_file is a read
+    client.get("/api/mcp/tools")
+    assert hub.calls == 2                          # a good result IS cached
+
+
+async def test_a_parked_action_can_actually_be_approved(hermes_home):
+    """The confirm button and the voice "konfirmasi" both POST a JSON body.
+    With the request model declared inside create_app, FastAPI demoted it to a
+    query parameter and every approval came back 422 — the gate was a dead end,
+    so no MCP write action could ever run."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    class FakeHub:
+        called = None
+        async def list_tools(self): return []
+        async def call(self, tool, args):
+            FakeHub.called = (tool, args)
+            return "done"
+
+    app = create_app(store, hub=FakeHub())
+    pa = app.state.pending.add("pc__write_file", {"path": "x.txt"}, "web")
+    client = TestClient(app)
+
+    r = client.post("/api/chat/pending/resolve", json={"id": pa.id, "approved": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["approved"] is True
+    assert FakeHub.called == ("pc__write_file", {"path": "x.txt"})
+    assert client.get("/api/chat/pending").json() == []
+
+
+async def test_a_voice_confirm_without_an_id_resolves_the_oldest(hermes_home):
+    """Speech carries no id, so the voice path posts only `approved`."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    class FakeHub:
+        async def list_tools(self): return []
+        async def call(self, tool, args): return "ok"
+
+    app = create_app(store, hub=FakeHub())
+    first = app.state.pending.add("pc__write_file", {}, "web")
+    app.state.pending.add("pc__move_file", {}, "web")
+    client = TestClient(app)
+
+    r = client.post("/api/chat/pending/resolve", json={"approved": False})
+    assert r.status_code == 200 and r.json()["id"] == first.id
+    assert [a["tool"] for a in client.get("/api/chat/pending").json()] == ["pc__move_file"]

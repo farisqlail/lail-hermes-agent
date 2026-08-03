@@ -4,7 +4,7 @@ from pathlib import Path
 from .config import Settings
 from .session_store import Store
 
-def _json_objects(raw: str):
+def json_objects(raw: str):
     """Every parseable JSON object in the text, in order.
 
     Deliberately not the greedy `re.search(r"\\{.*\\}", ...)` this used to be:
@@ -29,7 +29,7 @@ def _json_objects(raw: str):
 
 def parse_plan(raw: str) -> list[dict]:
     seen = False
-    for data in _json_objects(raw):
+    for data in json_objects(raw):
         seen = True
         steps = data.get("steps")
         if isinstance(steps, list):

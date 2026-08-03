@@ -31,6 +31,7 @@ export function ConfigVoice() {
   const [maxWords, setMaxWords] = useState<number>(40);
   const [greeting, setGreeting] = useState<boolean>(true);
   const [taskNotify, setTaskNotify] = useState<boolean>(false);
+  const [narrate, setNarrate] = useState<boolean>(false);
   const [personality, setPersonality] = useState<TtsPersonality>('professional');
 
   const [saving, setSaving] = useState(false);
@@ -61,6 +62,7 @@ export function ConfigVoice() {
       setMaxWords(s.tts_max_words);
       setGreeting(s.tts_greeting);
       setTaskNotify(s.tts_task_notify);
+      setNarrate(s.tts_narrate);
       setPersonality(s.tts_personality);
     }).catch(() => {});
 
@@ -98,6 +100,7 @@ export function ConfigVoice() {
         tts_max_words: maxWords,
         tts_greeting: greeting,
         tts_task_notify: taskNotify,
+        tts_narrate: narrate,
         tts_personality: personality,
       });
       await saveVoiceSettings(voice);
@@ -333,6 +336,25 @@ export function ConfigVoice() {
                 style={checkboxStyle}
               />
               <span>Notifikasi suara saat task selesai</span>
+            </label>
+          </div>
+        </Field>
+
+        <div style={{ height: '12px' }} />
+
+        <Field
+          label="Narasi Langkah"
+          helpText="Asisten mengucapkan setiap langkah saat dimulai — misalnya 'Saya jalankan build sekarang' — bukan hanya hasil akhirnya. Task dengan banyak langkah jadi banyak bicara."
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '8px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: 'var(--text)' }}>
+              <input
+                type="checkbox"
+                checked={narrate}
+                onChange={(e) => setNarrate(e.target.checked)}
+                style={checkboxStyle}
+              />
+              <span>Narasikan tiap langkah saat berjalan</span>
             </label>
           </div>
         </Field>

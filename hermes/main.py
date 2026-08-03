@@ -5,7 +5,7 @@ from openai import AsyncOpenAI
 import uvicorn
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, CommandHandler, filters
-from . import config, paths, voice
+from . import brain, config, paths, voice
 from .session_store import Store
 from .mcp_hub import McpHub, RealMcpSession, to_openai_tools
 from .orchestrator import Orchestrator
@@ -52,6 +52,7 @@ class Adb:
 MAX_TOOL_ROUNDS = 8  # bound NIM tool round-trips so a misbehaving model/tool can't loop forever
 PLANNER_REQUEST_TIMEOUT_S = 120   # single NIM completion call
 MCP_DISCOVERY_TIMEOUT_S = 20      # tool discovery must never stall planning
+MAX_EMPTY_PLANNER_ROUNDS = 1      # nudges spent on a provider that answered with nothing
 
 # python-telegram-bot's default HTTP timeouts (connect/read ~5s) are tight for
 # a slow or flaky uplink to api.telegram.org: a single timed-out send raised
@@ -152,6 +153,7 @@ def build_nim_planner(settings, secrets, hub):
         if context:
             msgs.append({"role": "system", "content": context})
         msgs.append({"role": "user", "content": text})
+        empty_rounds = 0
         for _ in range(MAX_TOOL_ROUNDS):
             resp = await _completion_with_retry(
                 lambda: client.chat.completions.create(
@@ -166,7 +168,19 @@ def build_nim_planner(settings, secrets, hub):
                                             json.loads(tc.function.arguments or "{}"))
                     msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
                 continue
-            return m.content or ""
+            content = m.content or ""
+            if content.strip() or empty_rounds >= MAX_EMPTY_PLANNER_ROUNDS:
+                return content
+            # An empty completion with no tool call is a provider hiccup, not a
+            # plan: the task text is still unanswered. Observed twice in one
+            # morning against a local gateway, each time failing the task with
+            # "no JSON object in planner output" and nothing to show for it.
+            # One nudge is enough to tell a hiccup from a model that will never
+            # answer; past that the caller reports the empty output honestly.
+            empty_rounds += 1
+            msgs.append({"role": "system",
+                         "content": "Balasan sebelumnya kosong. Keluarkan "
+                                    "SEKARANG objek JSON rencananya saja."})
         raise ValueError(f"planner exceeded {MAX_TOOL_ROUNDS} tool-call rounds without a final answer")
     return planner
 
@@ -215,6 +229,13 @@ def build_nim_chat(settings, secrets):
         "Lengkap'. Jangan mengarang lokasi menu lain.\n\n"
         "ALAT INTEGRASI (bila terpasang lewat MCP: file, browser, email, "
         "kalender): pakai untuk menjalankan perintah pengguna secara nyata. "
+        "Untuk melihat isi folder atau membaca berkas, pakai alat baca yang "
+        "sudah ada (`list_directory`, `read_file`, `get_file_info`, "
+        "`start_search`) — jangan membungkusnya sebagai perintah shell lewat "
+        "`start_process`: alat baca langsung jalan, sedangkan shell ditahan "
+        "untuk konfirmasi, jadi pengguna diminta menyetujui hal yang "
+        "sebenarnya cuma membaca. Shell hanya untuk yang memang butuh "
+        "menjalankan program. "
         "Alat BACA (membaca file, mencari email, melihat kalender, screenshot) "
         "langsung dijalankan. Alat TULIS/KIRIM/HAPUS (kirim email, buat/ubah "
         "event, tulis/hapus file, klik/isi form browser) DITAHAN untuk "
@@ -348,6 +369,35 @@ def build_nim_chat(settings, secrets):
 
     chat.stream = stream
     return chat
+
+def build_nim_facts(settings, secrets):
+    """The fact extractor behind the operator memory.
+
+    A separate, deliberately small call rather than a tool on the chat agent:
+    a tool the agent may call is a tool it forgets to call, and this prompt has
+    to be blunt in a way the conversational one cannot. Returns [] on any
+    failure — learning nothing from a turn is a normal outcome (most turns hold
+    no durable fact), so it must never surface as a chat error.
+    """
+    async def extract(user_text: str, reply: str) -> list[dict]:
+        current_secrets = config.load_secrets()
+        if not current_secrets.nvidia_api_key:
+            return []
+        s = config.load_settings()
+        client = AsyncOpenAI(base_url=s.nvidia_base_url,
+                             api_key=current_secrets.nvidia_api_key, timeout=20)
+        try:
+            resp = await client.chat.completions.create(
+                model=s.chat_model or s.model,
+                messages=[{"role": "system", "content": brain.FACT_SYSTEM},
+                          {"role": "user",
+                           "content": brain.conversation_snippet(user_text, reply)}],
+                temperature=0, max_tokens=300)
+        except Exception as e:
+            print(f"Fact extraction failed: {_console_safe(e)}")
+            return []
+        return brain.parse_facts(resp.choices[0].message.content or "")
+    return extract
 
 def real_mcp_session_factory(srv):
     return RealMcpSession(srv)
@@ -527,6 +577,7 @@ async def run():
     await hub.connect()
     planner = build_nim_planner(settings, secrets, hub)
     chat = build_nim_chat(settings, secrets)
+    facts = build_nim_facts(settings, secrets)
 
     # The engine's channel to the operator. Built before the bot so the
     # orchestrator can carry it into every code step; its on_ask/on_close are
@@ -764,7 +815,7 @@ async def run():
     # streamable_http_app() creates the session manager; the parent lifespan
     # runs it, because Starlette ignores a mounted sub-app's own lifespan.
     ask_asgi = ask_mcp.streamable_http_app()
-    web = create_app(store, bridge=bridge, ask_registry=ask_registry, chat=chat, hub=hub, lifespan=lambda _app: ask_mcp.session_manager.run())
+    web = create_app(store, bridge=bridge, ask_registry=ask_registry, chat=chat, hub=hub, facts=facts, lifespan=lambda _app: ask_mcp.session_manager.run())
     web.mount(ask_server.MOUNT_PREFIX, ask_asgi)
     web.state.mcp_factory = real_mcp_session_factory
     server = uvicorn.Server(uvicorn.Config(web, host="127.0.0.1", port=8799, log_level="info"))

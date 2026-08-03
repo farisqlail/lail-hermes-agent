@@ -75,6 +75,10 @@ class Settings(BaseModel):
     tts_max_words: int = 40
     tts_greeting: bool = True
     tts_task_notify: bool = False
+    # Running commentary: one spoken line as each orchestration step starts,
+    # instead of only the result at the end. Off by default — it is the
+    # chattiest thing Hermes does, and a long plan makes it talk a lot.
+    tts_narrate: bool = False
     tts_personality: Literal["professional", "friendly", "jarvis"] = "professional"
 
     # Conversation behaviour. Barge-in is free when TTS is off, so it defaults

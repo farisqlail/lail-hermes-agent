@@ -385,3 +385,60 @@ async def test_chat_stream_carries_the_same_instruction(hermes_home, monkeypatch
     async for _ in chat.stream([{"role": "user", "content": "halo"}]):
         pass
     assert voice.VOICE_TAG_OPEN in seen[-1]
+
+
+class _FakeMessage:
+    def __init__(self, content):
+        self.content = content
+        self.tool_calls = None
+
+
+class _FakeCompletions:
+    """Replays a scripted list of completion contents, recording the prompts."""
+    def __init__(self, contents, seen):
+        self._contents = list(contents)
+        self._seen = seen
+
+    async def create(self, **kwargs):
+        self._seen.append(kwargs["messages"][-1]["content"])
+        content = self._contents.pop(0)
+        return type("R", (), {"choices": [type("C", (), {"message": _FakeMessage(content)})()]})()
+
+
+class _FakeClient:
+    def __init__(self, contents, seen):
+        self.chat = type("Chat", (), {"completions": _FakeCompletions(contents, seen)})()
+
+
+class _EmptyHub:
+    async def list_tools(self):
+        return []
+
+
+async def test_planner_nudges_once_when_the_provider_answers_with_nothing(hermes_home, monkeypatch):
+    """An empty completion is a provider hiccup, not a plan. It failed two real
+    tasks with 'no JSON object in planner output' and nothing to show."""
+    from hermes import config
+    config.save_secrets(config.Secrets(nvidia_api_key="k", telegram_bot_token=""))
+    seen = []
+    plan = '{"steps":[{"type":"code","prompt":"perbaiki"}]}'
+    monkeypatch.setattr(main, "AsyncOpenAI",
+                        lambda **kw: _FakeClient(["", plan], seen))
+
+    planner = main.build_nim_planner(config.load_settings(), config.load_secrets(), _EmptyHub())
+    assert await planner("perbaiki checkout") == plan
+    assert len(seen) == 2 and "kosong" in seen[1]
+
+
+async def test_planner_stops_nudging_and_reports_the_empty_answer(hermes_home, monkeypatch):
+    """A provider that keeps answering with nothing must not spin: the caller
+    reports the empty output honestly rather than burning every round."""
+    from hermes import config
+    config.save_secrets(config.Secrets(nvidia_api_key="k", telegram_bot_token=""))
+    seen = []
+    monkeypatch.setattr(main, "AsyncOpenAI",
+                        lambda **kw: _FakeClient(["", "", ""], seen))
+
+    planner = main.build_nim_planner(config.load_settings(), config.load_secrets(), _EmptyHub())
+    assert await planner("perbaiki checkout") == ""
+    assert len(seen) == main.MAX_EMPTY_PLANNER_ROUNDS + 1

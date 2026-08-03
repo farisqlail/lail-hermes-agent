@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Response
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from . import config
+from . import brain, config
 
 # edge-tts voices offered in the UI. Multilingual first: the agent's replies mix
 # Bahasa with English technical terms ("deploy", "server"), and a single-locale
@@ -145,11 +145,9 @@ _INTENT_RULES = {
 }
 
 
-def time_of_day(now: datetime | None = None) -> str:
-    """Indonesian time-of-day bucket. Server-side on purpose: the wake-word and
-    Telegram paths that will reuse this have no browser clock to ask."""
-    h = (now or datetime.now()).hour
-    return "pagi" if h < 11 else "siang" if h < 15 else "sore" if h < 18 else "malam"
+#: Re-exported: it moved to brain.py, which has no edge_tts import, so the
+#: context block and the planner can ask the time without pulling in speech.
+time_of_day = brain.time_of_day
 
 
 def build_system_prompt(intent: str, agent: str, max_words: int,

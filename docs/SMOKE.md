@@ -58,6 +58,27 @@ yours to choose; nothing here assumes a particular drive.
    landed somewhere else, `HERMES_HOME` was not set for the process that started Hermes.
 9. Record results below.
 
+## Memory and spoken narration (manual, needs the NIM key)
+
+Everything below is server-decided, so check it from a page that is **not** the
+dashboard — that is the bug the move fixed.
+
+1. Settings -> Suara: turn on **Notifikasi Suara Task** and **Narasi Langkah**.
+2. In the chat pane, say something durable about yourself
+   ("aku biasanya deploy hari Jumat"). Reply as usual, then `GET /api/facts` —
+   the fact should be there, keyed (`hari_deploy`), not a copy of the sentence.
+   Say it again with a different day: the value changes, no second row appears.
+3. Ask "apa yang lagi jalan?" with a task running. The answer must name the real
+   task and project; if it hedges or invents one, the context block is not
+   reaching the model — check the first message of the history in a debugger.
+4. Queue a task (`/task @project ...`), press Run, then navigate to **Configure**
+   and stay there. You should hear a line as each step starts, and the result
+   announced at the end, without going back to the dashboard.
+5. Turn both toggles off and repeat step 4: silence. The gates are read
+   per event on the server, so no restart is needed.
+6. `GET /api/facts` then `DELETE /api/facts/<key>` for anything the extractor
+   got wrong — an unremovable wrong fact rides in every prompt.
+
 ## Known follow-ups
 
 - **`HERMES_HOME` fallbacks disagree.** `deploy/install.ps1` and `deploy/start.bat` default to

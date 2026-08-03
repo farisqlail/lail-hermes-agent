@@ -40,6 +40,7 @@ export interface TtsSettings {
   tts_max_words: number;
   tts_greeting: boolean;
   tts_task_notify: boolean;
+  tts_narrate: boolean;
   tts_personality: TtsPersonality;
 }
 
@@ -52,6 +53,7 @@ export async function loadTtsSettings(): Promise<TtsSettings> {
     tts_max_words: s.tts_max_words ?? 40,
     tts_greeting: s.tts_greeting !== false,
     tts_task_notify: s.tts_task_notify ?? false,
+    tts_narrate: s.tts_narrate ?? false,
     tts_personality: (s.tts_personality as TtsPersonality) ?? 'professional',
   };
 }
@@ -65,6 +67,7 @@ export async function saveTtsSettings(s: Partial<TtsSettings>): Promise<void> {
   if (s.tts_max_words !== undefined) next.tts_max_words = s.tts_max_words;
   if (s.tts_greeting !== undefined) next.tts_greeting = s.tts_greeting;
   if (s.tts_task_notify !== undefined) next.tts_task_notify = s.tts_task_notify;
+  if (s.tts_narrate !== undefined) next.tts_narrate = s.tts_narrate;
   if (s.tts_personality !== undefined) next.tts_personality = s.tts_personality;
   await api.saveSettings(next);
 }
@@ -110,6 +113,43 @@ export function ttsRequest(
     payload.task_status = opts.taskStatus ?? 'done';
   }
   return { endpoint: '/api/tts/smart', payload };
+}
+
+/** A `speak` frame off the /api/tasks/events feed. The server decides WHEN to
+ *  speak and WHAT about (see hermes/brain.speech_for); the client still owns
+ *  the voice, personality and mode, which are browser-side settings. */
+export interface SpeakEvent {
+  type: 'speak';
+  intent: 'notify' | 'say';
+  task_id?: string;
+  task_text?: string;
+  task_status?: 'done' | 'failed';
+  text?: string;
+}
+
+/** Turn one server utterance into an audio request, or null to stay silent.
+ *
+ *  `say` always takes the verbatim endpoint: its text is a fixed narration
+ *  line the server already wrote ("Saya jalankan build sekarang"), so running
+ *  it through the summariser would cost a completion to reword one sentence.
+ */
+export function speechRequestFor(
+  ev: SpeakEvent,
+  mode: TtsMode,
+  opts: Omit<TtsRequestOptions, 'text' | 'taskText' | 'taskStatus'>,
+): { endpoint: string; payload: Record<string, unknown> } | null {
+  if (ev.intent === 'say') {
+    if (!ev.text) return null;
+    return ttsRequest('verbatim', 'summary', { ...opts, text: ev.text });
+  }
+  if (ev.intent === 'notify') {
+    return ttsRequest(mode, 'notify', {
+      ...opts,
+      taskText: ev.task_text ?? '',
+      taskStatus: ev.task_status ?? 'done',
+    });
+  }
+  return null;
 }
 
 const GREETED_PREFIX = 'hermes_greeted_';

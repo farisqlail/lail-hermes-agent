@@ -39,6 +39,7 @@ export interface Settings {
   tts_max_words: number;
   tts_greeting: boolean;
   tts_task_notify: boolean;
+  tts_narrate: boolean;
   tts_personality: 'professional' | 'friendly' | 'jarvis';
   voice_barge_in: boolean;
   voice_handsfree: boolean;
