@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import brain, cleanup, config, paths, postmortem, stt, uploads, voice, desktop_api, mcp_risk, launcher
+from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_risk, launcher, mcp_integrate, mcp_oauth
 from .pending_actions import PendingStore
 from .session_store import Store
 from .telegram_bridge import new_task_id
@@ -25,6 +25,12 @@ class TaskAnswer(BaseModel):
     ask_id: str
     text: str | None = None
     options: list[int] | None = None
+
+class IntegrateBody(BaseModel):
+    link: str
+
+class SecretBody(BaseModel):
+    value: str
 
 # Request models must live at module scope: `from __future__ import annotations`
 # turns every annotation into a string, and FastAPI resolves those against the
@@ -89,6 +95,15 @@ CHAT_TOOLS = [
                             "description": "instruksi task, mis. '@myprofit jalankan pengujian'"}},
             "required": ["description"]}}},
     {"type": "function", "function": {
+        "name": "calendar_events",
+        "description": ("Acara Google Calendar yang akan datang, dibaca dari alamat "
+                        "iCal rahasia di setelan. Read-only — tidak bisa membuat, "
+                        "mengubah, atau menghapus acara. Pakai ini bila ditanya "
+                        "jadwal, rapat, atau agenda; jangan menebak dari ingatan."),
+        "parameters": {"type": "object", "properties": {
+            "days": {"type": "integer",
+                     "description": "rentang hari ke depan, default 7, maksimal 60"}}}}},
+    {"type": "function", "function": {
         "name": "open_app",
         "description": ("Buka aplikasi desktop yang dikenal (mis. paint, notepad, calculator, "
                         "explorer, wordpad) ATAU sebuah URL http/https, langsung di komputer "
@@ -99,6 +114,27 @@ CHAT_TOOLS = [
             "target": {"type": "string",
                        "description": "nama app (mis. 'paint') atau URL (mis. 'https://calendar.google.com')"}},
             "required": ["target"]}}},
+    {"type": "function", "function": {
+        "name": "integrate_mcp",
+        "description": ("Pasang server MCP baru dari satu link (URL server remote, "
+                        "link GitHub/npm, atau nama paket npm). Berjalan di latar: "
+                        "kembalikan run_id lalu pantau dengan integrate_status. "
+                        "Bila prosesnya minta kredensial, jawab dengan integrate_secret."),
+        "parameters": {"type": "object", "properties": {
+            "link": {"type": "string", "description": "link atau nama paket"}},
+            "required": ["link"]}}},
+    {"type": "function", "function": {
+        "name": "integrate_status",
+        "description": "Keadaan dan riwayat sebuah integrasi MCP yang sedang berjalan.",
+        "parameters": {"type": "object", "properties": {
+            "run_id": {"type": "string"}}, "required": ["run_id"]}}},
+    {"type": "function", "function": {
+        "name": "integrate_secret",
+        "description": ("Isi kredensial yang diminta sebuah integrasi yang sedang "
+                        "menunggu (lihat pending_secret dari integrate_status)."),
+        "parameters": {"type": "object", "properties": {
+            "run_id": {"type": "string"}, "value": {"type": "string"}},
+            "required": ["run_id", "value"]}}},
 ]
 
 def _bg_crash_cb(store: Store, task_id: str):
@@ -256,6 +292,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     # Injected like chat so a test can wire a fake — or nothing, and the chat
     # still works, it just stops remembering.
     app.state.facts = facts
+    app.state.integrate_runs = {}
+    app.state.pending_auth = mcp_oauth.PendingAuth()
 
     def brain_context() -> dict:
         """The situational preamble as a system message.
@@ -373,12 +411,54 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                         {"task_id": new_id, "status": "awaiting_confirm",
                          "note": "Task diantre; menunggu operator menekan Run sebelum berjalan."},
                         ensure_ascii=False)
+                if name == "calendar_events":
+                    url = config.load_settings().calendar_ics_url
+                    if not url:
+                        return json.dumps(
+                            {"error": ("alamat iCal kalender belum diisi — set "
+                                       "calendar_ics_url di setelan (Google Calendar "
+                                       "-> Setelan kalender -> Integrasikan kalender "
+                                       "-> Alamat rahasia dalam format iCal)")},
+                            ensure_ascii=False)
+                    # Clamped, not validated: a model that asks for a year of
+                    # events gets a month, rather than an error it must retry.
+                    days = max(1, min(60, int(args.get("days") or 7)))
+                    events = await ics.upcoming(url, days)
+                    return json.dumps({"days": days, "events": events},
+                                      ensure_ascii=False)
                 if name == "open_app":
                     # Ungated on purpose: a known app / URL the user just asked
                     # for opens straight away, no operator confirm. Safety is the
                     # fixed allow-list in launcher.KNOWN_APPS, not this gate.
                     return json.dumps(launcher.open_app(str(args.get("target") or "")),
                                       ensure_ascii=False)
+                if name == "integrate_mcp":
+                    link = str(args.get("link") or "").strip()
+                    if not link:
+                        return json.dumps({"error": "link kosong"}, ensure_ascii=False)
+                    run_id = _start_integrate(link)
+                    return json.dumps(
+                        {"run_id": run_id, "state": "running",
+                         "note": ("Integrasi berjalan di latar. Pantau dengan "
+                                  "integrate_status; jangan mengaku sudah selesai "
+                                  "sebelum state-nya 'done'.")},
+                        ensure_ascii=False)
+                if name == "integrate_status":
+                    run = app.state.integrate_runs.get(str(args.get("run_id") or ""))
+                    if run is None:
+                        return json.dumps({"error": "run tidak ditemukan"},
+                                          ensure_ascii=False)
+                    return json.dumps(
+                        {"state": run.state, "pending_secret": run.pending_secret,
+                         "login_url": run.login_url, "server": run.server,
+                         "events": run.events[-12:]}, ensure_ascii=False)
+                if name == "integrate_secret":
+                    run = app.state.integrate_runs.get(str(args.get("run_id") or ""))
+                    if run is None:
+                        return json.dumps({"error": "run tidak ditemukan"},
+                                          ensure_ascii=False)
+                    ok = run.answer_secret(str(args.get("value") or ""))
+                    return json.dumps({"ok": ok}, ensure_ascii=False)
                 # MCP integration tools (file / browser / gmail / calendar). Reads
                 # run straight through; a write/send/delete is gated — returned to
                 # the model as "needs confirmation" and NOT executed, so the chat
@@ -998,6 +1078,186 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             return {"ok": True, "tools": [t["name"] for t in tools]}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    INTEGRATE_RUN_TTL_S = 1800     # a finished run stays readable for a while
+    INTEGRATE_RUNS_MAX = 20
+
+    class IntegrateRun:
+        """One integration attempt, readable while it runs.
+
+        The ladder is a coroutine that outlives a request, so its progress has
+        to live somewhere both the SSE stream and a plain GET can read.
+        """
+
+        def __init__(self, run_id: str, link: str):
+            self.id = run_id
+            self.link = link
+            self.state = "running"       # running | done
+            self.events: list[dict] = []
+            self.queue: asyncio.Queue = asyncio.Queue()
+            self.pending_secret = ""
+            self.login_url = ""
+            self.server = None
+            self.result = None
+            self.finished_at = 0.0
+            self._secret: asyncio.Future | None = None
+
+        async def emit(self, ev: dict):
+            self.events.append(ev)
+            if ev.get("kind") == "login":
+                self.login_url = ev.get("url", "")
+            if ev.get("kind") == "done":
+                self.state = "done"
+                self.server = ev.get("server")
+                self.finished_at = time.time()
+            await self.queue.put(ev)
+
+        async def ask_secret(self, name: str, hint: str) -> str:
+            self.pending_secret = name
+            self._secret = asyncio.get_running_loop().create_future()
+            try:
+                # Bounded like the OAuth wait: an unanswered prompt must not
+                # hold a run open forever.
+                return await asyncio.wait_for(self._secret, 300.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                return ""
+            finally:
+                self.pending_secret = ""
+
+        def answer_secret(self, value: str) -> bool:
+            if self._secret is None or self._secret.done():
+                return False
+            self._secret.set_result(value)
+            return True
+
+    def _evict_old_runs():
+        runs = app.state.integrate_runs
+        cutoff = time.time() - INTEGRATE_RUN_TTL_S
+        for rid, run in list(runs.items()):
+            if run.state == "done" and run.finished_at < cutoff:
+                runs.pop(rid, None)
+        while len(runs) > INTEGRATE_RUNS_MAX:
+            runs.pop(next(iter(runs)))
+
+    async def _open_login(url: str):
+        # From the panel the front-end opens its own popup on the `login`
+        # event; opening here as well covers a run started from chat, where no
+        # panel is listening.
+        launcher.open_app(url)
+
+    def _start_integrate(link: str) -> str:
+        _evict_old_runs()
+        run_id = f"i{int(time.time() * 1000)}"
+        run = IntegrateRun(run_id, link)
+        app.state.integrate_runs[run_id] = run
+        settings = config.load_settings()
+        port = getattr(app.state, "port", 8799)
+
+        async def go():
+            try:
+                res = await mcp_integrate.integrate(
+                    link,
+                    emit=run.emit,
+                    ask_secret=run.ask_secret,
+                    open_url=_open_login,
+                    session_factory=getattr(app.state, "mcp_factory", None)
+                    or (lambda s, auth=None: None),
+                    propose_config=getattr(app.state, "propose_mcp_config", None),
+                    read_readme=getattr(app.state, "read_readme", None),
+                    pending=app.state.pending_auth,
+                    # Derived from the running port, not hardcoded: a provider
+                    # rejects a redirect_uri that does not match exactly.
+                    redirect_uri=f"http://127.0.0.1:{port}/api/mcp/oauth/callback",
+                    taken={s.name for s in settings.mcp_servers})
+                run.result = res
+                if res.ok and res.server is not None:
+                    await _save_integrated(res.server)
+            except Exception as e:
+                safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
+                await run.emit({"kind": "done", "ok": False,
+                                "reason": "error", "error": safe})
+        asyncio.create_task(go())
+        return run_id
+
+    async def _save_integrated(srv: config.McpServer):
+        """Append the server and reconnect the hub, reusing the same path the
+        MCP panel's save uses so there is only one way a server is registered."""
+        s = config.load_settings()
+        s.mcp_servers = [m for m in s.mcp_servers if m.name != srv.name] + [srv]
+        config.save_settings(s)
+        hub = getattr(app.state, "hub", None)
+        if hub is not None:
+            try:
+                await hub.close()
+                hub.servers = s.mcp_servers
+                await hub.connect()
+                app.state._mcp_tools_cache = None
+            except Exception:
+                pass
+
+    @app.post("/api/mcp/integrate")
+    async def mcp_integrate_start(body: IntegrateBody):
+        return {"run_id": _start_integrate(body.link)}
+
+    @app.get("/api/mcp/integrate/{run_id}")
+    async def mcp_integrate_state(run_id: str):
+        run = app.state.integrate_runs.get(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run tidak ditemukan")
+        return {"state": run.state, "events": run.events,
+                "pending_secret": run.pending_secret,
+                "login_url": run.login_url, "server": run.server}
+
+    @app.get("/api/mcp/integrate/{run_id}/events")
+    async def mcp_integrate_events(run_id: str, request: Request):
+        run = app.state.integrate_runs.get(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run tidak ditemukan")
+
+        async def gen():
+            for ev in list(run.events):        # whatever already happened
+                yield brain.sse(ev)
+            while run.state != "done":
+                if await request.is_disconnected():
+                    break
+                try:
+                    ev = await asyncio.wait_for(run.queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+                yield brain.sse(ev)
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.post("/api/mcp/integrate/{run_id}/secret")
+    async def mcp_integrate_secret(run_id: str, body: SecretBody):
+        run = app.state.integrate_runs.get(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run tidak ditemukan")
+        return {"ok": run.answer_secret(body.value)}
+
+    @app.post("/api/mcp/integrate/{run_id}/cancel")
+    async def mcp_integrate_cancel(run_id: str):
+        run = app.state.integrate_runs.get(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run tidak ditemukan")
+        run.answer_secret("")
+        await run.emit({"kind": "done", "ok": False, "reason": "cancelled"})
+        return {"ok": True}
+
+    @app.get("/api/mcp/oauth/callback")
+    async def mcp_oauth_callback(code: str = "", state: str = ""):
+        """Where the identity provider sends the browser back.
+
+        Only a state this process is currently waiting on is accepted; anything
+        else is refused without side effect, which is what stops another
+        program on this machine from injecting an authorization code.
+        """
+        if not app.state.pending_auth.resolve(state, code):
+            raise HTTPException(status_code=400, detail="state tidak dikenal")
+        return HTMLResponse(
+            "<!doctype html><meta charset='utf-8'>"
+            "<p>Login selesai. Jendela ini bisa ditutup.</p>"
+            "<script>window.close()</script>")
 
     @app.get("/api/stt/status")
     def get_stt_status():

@@ -1,4 +1,4 @@
-import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer } from './types';
+import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer, IntegrateRun } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -87,5 +87,20 @@ export const api = {
     request<{ ok: boolean; tools?: string[]; error?: string }>('/api/mcp/test', {
       method: 'POST',
       body: JSON.stringify(server),
+    }),
+
+  startIntegrate: (link: string) =>
+    request<{ run_id: string }>('/api/mcp/integrate', {
+      method: 'POST',
+      body: JSON.stringify({ link }),
+    }),
+
+  getIntegrate: (runId: string) =>
+    request<IntegrateRun>(`/api/mcp/integrate/${runId}`),
+
+  answerIntegrateSecret: (runId: string, value: string) =>
+    request<{ ok: boolean }>(`/api/mcp/integrate/${runId}/secret`, {
+      method: 'POST',
+      body: JSON.stringify({ value }),
     }),
 };

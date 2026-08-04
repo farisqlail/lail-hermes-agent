@@ -62,3 +62,53 @@ async def test_real_session_close_before_open_is_noop():
     sess = mcp_hub.RealMcpSession(
         McpServer(name="fs", type="stdio", command="x"))
     await sess.close()  # must not raise
+
+
+def test_transport_for_defaults_to_sse_for_legacy_configs():
+    """A config saved before the transport field existed must keep working
+    exactly as it did — legacy SSE, not a silent protocol change."""
+    srv = McpServer(name="x", type="http", url="https://x/sse")
+    assert mcp_hub.transport_for(srv) == "sse"
+
+
+def test_transport_for_honours_an_explicit_choice():
+    srv = McpServer(name="x", type="http", url="https://x/mcp",
+                    transport="streamable-http")
+    assert mcp_hub.transport_for(srv) == "streamable-http"
+
+
+def test_transport_for_stdio_is_stdio():
+    srv = McpServer(name="x", type="stdio", command="npx")
+    assert mcp_hub.transport_for(srv) == "stdio"
+
+
+async def test_real_session_passes_headers_and_auth_to_streamable_http(monkeypatch):
+    seen = {}
+
+    class FakeStream:
+        async def __aenter__(self): return ("read", "write", None)
+        async def __aexit__(self, *a): return False
+
+    def fake_streamable(url, headers=None, auth=None, **kw):
+        seen.update(url=url, headers=headers, auth=auth)
+        return FakeStream()
+
+    monkeypatch.setattr("mcp.client.streamable_http.streamablehttp_client",
+                        fake_streamable)
+
+    class FakeSession:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def initialize(self): return None
+
+    monkeypatch.setattr("mcp.ClientSession", FakeSession)
+
+    srv = McpServer(name="n", type="http", url="https://x/mcp",
+                    transport="streamable-http", headers={"X-Key": "v"})
+    sess = mcp_hub.RealMcpSession(srv, auth="AUTH-OBJ")
+    await sess._ensure()
+
+    assert seen["url"] == "https://x/mcp"
+    assert seen["headers"] == {"X-Key": "v"}
+    assert seen["auth"] == "AUTH-OBJ"

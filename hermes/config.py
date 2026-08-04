@@ -22,6 +22,17 @@ class McpServer(BaseModel):
     url: str = ""
     env: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
+    # "" means the transport has not been probed yet, which is how every
+    # config written before the one-link flow reads — those keep today's
+    # behaviour (legacy SSE) instead of silently changing protocol.
+    transport: Literal["", "streamable-http", "sse"] = ""
+    # HTTP headers for a server that wants a manual API key. Deliberately not
+    # `env`: env is a stdio process environment, a header is HTTP. Merging the
+    # two would send the key to the wrong place for half the servers.
+    headers: dict[str, str] = Field(default_factory=dict)
+    # This server's session must attach an OAuthClientProvider. The tokens
+    # themselves live outside the settings file — see hermes/mcp_oauth.py.
+    oauth: bool = False
 
 class Settings(BaseModel):
     ai_provider: Literal["nvidia", "deepseek", "custom"] = "nvidia"
@@ -66,6 +77,12 @@ class Settings(BaseModel):
     timeout_build_s: int = 1200
     timeout_test_s: int = 600
     mcp_servers: list[McpServer] = Field(default_factory=list)
+    # Google Calendar's "secret address in iCal format" (Settings -> a calendar
+    # -> Integrate calendar). Read-only by construction and needs no OAuth
+    # client, which is the whole reason it is here rather than a calendar MCP
+    # server. Treat the URL itself as the credential: anyone holding it reads
+    # the calendar.
+    calendar_ics_url: str = ""
     stt_enabled: bool = True
     stt_language: str = "id"
     # Whisper model size: the biggest lever on how long after you stop talking
@@ -192,6 +209,21 @@ class Settings(BaseModel):
         # enough that a second genuine call a couple seconds later still lands.
         if not 0 <= v <= 10000:
             raise ValueError("wake word cooldown must be between 0 and 10000 ms")
+        return v
+
+    @field_validator("calendar_ics_url")
+    @classmethod
+    def _calendar_ics_url_shape(cls, v: str) -> str:
+        # A pasted webcal:// address (what Google's "copy" button sometimes
+        # yields) is the same URL over https; httpx cannot fetch the webcal
+        # scheme, so normalise rather than reject.
+        v = v.strip()
+        if v.startswith("webcal://"):
+            v = "https://" + v[len("webcal://"):]
+        if v and not v.startswith(("http://", "https://")):
+            raise ValueError(
+                "calendar ICS url must start with https:// (the 'secret address "
+                "in iCal format' from Google Calendar settings)")
         return v
 
     @field_validator("projects")

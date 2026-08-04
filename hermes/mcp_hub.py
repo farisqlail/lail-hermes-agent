@@ -87,6 +87,19 @@ OPEN_TIMEOUT_S = 60
 LIST_TIMEOUT_S = 20    # tools/list
 CALL_TIMEOUT_S = 120   # tools/call
 
+
+def transport_for(srv: McpServer) -> str:
+    """Which client transport this server speaks.
+
+    An empty `transport` means the config predates the one-link flow, so it
+    keeps the legacy SSE behaviour it was written under. Changing that default
+    would silently re-protocol every server already in someone's settings.
+    """
+    if srv.type == "stdio":
+        return "stdio"
+    return srv.transport or "sse"
+
+
 class RealMcpSession:
     """MCP client session over stdio or HTTP/SSE.
 
@@ -96,8 +109,12 @@ class RealMcpSession:
     remote operation is bounded — a wedged server must never stall planning.
     """
 
-    def __init__(self, srv: McpServer):
+    def __init__(self, srv: McpServer, auth=None):
         self.srv = srv
+        # An httpx.Auth — in practice the SDK's OAuthClientProvider, which is
+        # one. Passed in rather than built here so this class keeps knowing
+        # nothing about token storage or browsers.
+        self.auth = auth
         self._stack = None
         self._session = None
 
@@ -115,9 +132,19 @@ class RealMcpSession:
                     command=self.srv.command, args=self.srv.args,
                     env={**os.environ, **self.srv.env})
                 read, write = await stack.enter_async_context(stdio_client(params))
+            elif transport_for(self.srv) == "streamable-http":
+                from mcp.client.streamable_http import streamablehttp_client
+                # Three values, not two: the third is a session-id getter this
+                # client does not need.
+                read, write, _ = await stack.enter_async_context(
+                    streamablehttp_client(self.srv.url,
+                                          headers=self.srv.headers or None,
+                                          auth=self.auth))
             else:
                 from mcp.client.sse import sse_client
-                read, write = await stack.enter_async_context(sse_client(self.srv.url))
+                read, write = await stack.enter_async_context(
+                    sse_client(self.srv.url, headers=self.srv.headers or None,
+                               auth=self.auth))
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
         except BaseException:

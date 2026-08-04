@@ -425,6 +425,71 @@ def build_nim_facts(settings, secrets):
 def real_mcp_session_factory(srv):
     return RealMcpSession(srv)
 
+
+def readme_url(pkg: str) -> str:
+    # The registry wants the scope separator escaped; an unescaped "@scope/name"
+    # resolves to a different path and 404s.
+    return f"https://registry.npmjs.org/{pkg.replace('/', '%2f')}"
+
+
+async def fetch_readme(pkg: str) -> str:
+    """The package's README, or "" when it cannot be had.
+
+    Never raises: a missing README means the model gets less context, not that
+    the integration fails.
+    """
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+            r = await c.get(readme_url(pkg))
+            r.raise_for_status()
+            return (r.json().get("readme") or "")[:12000]
+    except Exception:
+        return ""
+
+
+PROPOSE_SYSTEM = (
+    "You configure MCP servers. Given a package README and the errors from "
+    "previous attempts, answer ONLY with JSON: "
+    '{"command": str, "args": [str], "env": {str: str}}. '
+    "Use an empty string for an env value the README says is required but "
+    "whose value only the operator can know. No prose, no code fence."
+)
+
+
+def build_propose_mcp_config():
+    """The one LLM step in the integration ladder.
+
+    Returns None on any failure — no key, a refusal, unparseable JSON — which
+    the ladder reads as "no proposal", stopping the run cleanly instead of
+    retrying a guess it does not have.
+    """
+    async def propose(readme: str, errors: list[str]):
+        secrets = config.load_secrets()
+        if not secrets.nvidia_api_key:
+            return None
+        s = config.load_settings()
+        client = AsyncOpenAI(base_url=s.nvidia_base_url,
+                             api_key=secrets.nvidia_api_key, timeout=30)
+        try:
+            resp = await client.chat.completions.create(
+                model=s.chat_model or s.model,
+                messages=[{"role": "system", "content": PROPOSE_SYSTEM},
+                          {"role": "user",
+                           "content": f"README:\n{readme}\n\nERRORS:\n"
+                                      + "\n".join(errors[-5:])}],
+                temperature=0, max_tokens=400)
+            raw = (resp.choices[0].message.content or "").strip()
+            raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```")
+            out = json.loads(raw)
+        except Exception as e:
+            print(f"MCP config proposal failed: {_console_safe(e)}")
+            return None
+        if not isinstance(out, dict) or "command" not in out:
+            return None
+        return out
+    return propose
+
 def _build_bridge(settings, store, orchestrator, sender, ask_confirm,
                   send_file=None):
     """Construct the Bridge with its real collaborators.
@@ -867,6 +932,9 @@ async def run():
     web = create_app(store, bridge=bridge, ask_registry=ask_registry, chat=chat, hub=hub, facts=facts, lifespan=lambda _app: ask_mcp.session_manager.run())
     web.mount(ask_server.MOUNT_PREFIX, ask_asgi)
     web.state.mcp_factory = real_mcp_session_factory
+    web.state.propose_mcp_config = build_propose_mcp_config()
+    web.state.read_readme = fetch_readme
+    web.state.port = 8799
     server = uvicorn.Server(uvicorn.Config(web, host="127.0.0.1", port=8799, log_level="info"))
 
     if app:
