@@ -442,3 +442,17 @@ async def test_planner_stops_nudging_and_reports_the_empty_answer(hermes_home, m
     planner = main.build_nim_planner(config.load_settings(), config.load_secrets(), _EmptyHub())
     assert await planner("perbaiki checkout") == ""
     assert len(seen) == main.MAX_EMPTY_PLANNER_ROUNDS + 1
+
+
+async def test_propose_mcp_config_returns_none_without_a_key(hermes_home):
+    """No API key is a normal state — the package path degrades to convention
+    only, it does not raise."""
+    from hermes import main
+    propose = main.build_propose_mcp_config()
+    assert await propose("readme", ["error"]) is None
+
+
+def test_fetch_readme_url_is_the_npm_registry():
+    from hermes import main
+    assert main.readme_url("@cocal/x") == "https://registry.npmjs.org/@cocal%2fx"
+    assert main.readme_url("pkg") == "https://registry.npmjs.org/pkg"
