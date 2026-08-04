@@ -1,4 +1,5 @@
 import json
+import asyncio
 
 from fastapi.testclient import TestClient
 from hermes.web_ui import create_app
@@ -546,7 +547,7 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
 
     assert out["tool_names"] == ["list_projects", "recent_tasks",
                                  "get_task_detail", "failure_report",
-                                 "start_task", "open_app"]
+                                 "start_task", "calendar_events", "open_app"]
     assert out["projects"] == [{"name": "myprofit", "path": str(proj_dir), "exists": True}]
     assert any(t["task_id"] == "seed1" for t in out["recent"])
     assert out["detail"]["status"] == "done"
@@ -1370,3 +1371,146 @@ async def test_the_agent_can_read_its_own_failure_history(hermes_home):
     payload = json.loads(seen["result"])
     assert payload["by_kind"]["environment"] == 1
     assert "PATH" in payload["report"]
+
+
+async def test_the_agent_reads_the_calendar_from_the_ics_url(hermes_home,
+                                                             monkeypatch):
+    """Asked about the schedule, the agent gets real events — and is told to
+    set the URL when it is missing, rather than getting a bare failure."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    calls = []
+    async def fake_upcoming(url, days=7, now=None):
+        calls.append((url, days))
+        return [{"summary": "Standup", "start": "2026-08-05T10:00+07:00",
+                 "end": "2026-08-05T10:30+07:00", "all_day": False,
+                 "location": ""}]
+    monkeypatch.setattr("hermes.web_ui.ics.upcoming", fake_upcoming)
+
+    seen = {}
+    async def fake_chat(history, tools=None, dispatch=None):
+        seen["unset"] = json.loads(await dispatch("calendar_events", {}))
+        config.save_settings(config.Settings(
+            calendar_ics_url="https://calendar.google.com/ical/x/basic.ics"))
+        seen["ok"] = json.loads(await dispatch("calendar_events", {"days": 3}))
+        seen["clamped"] = json.loads(await dispatch("calendar_events", {"days": 999}))
+        return "besok ada standup"
+
+    client = TestClient(create_app(store, chat=fake_chat))
+    client.post("/api/tasks", json={"text": "jadwal besok apa?"})
+
+    # no URL configured: an explanatory error, not an exception
+    assert "error" in seen["unset"] and "iCal" in seen["unset"]["error"]
+
+    assert seen["ok"]["days"] == 3
+    assert seen["ok"]["events"][0]["summary"] == "Standup"
+    assert calls[0] == ("https://calendar.google.com/ical/x/basic.ics", 3)
+
+    # an over-wide request is clamped to the 60-day ceiling, not rejected
+    assert seen["clamped"]["days"] == 60
+
+
+def test_webcal_url_is_normalised_to_https(hermes_home):
+    """Google's copy button sometimes yields webcal://, which httpx cannot
+    fetch — it is the same address over https."""
+    s = config.Settings(calendar_ics_url="webcal://calendar.google.com/ical/x/basic.ics")
+    assert s.calendar_ics_url == "https://calendar.google.com/ical/x/basic.ics"
+
+
+def test_calendar_url_must_be_http(hermes_home):
+    import pytest
+    with pytest.raises(Exception):
+        config.Settings(calendar_ics_url="file:///C:/secrets.ics")
+
+
+async def test_integrate_endpoint_starts_a_run_and_reports_it(hermes_home, monkeypatch):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    async def fake_integrate(link, **kw):
+        await kw["emit"]({"kind": "attempt", "action": "streamable-http", "ok": True})
+        from hermes.mcp_integrate import IntegrationResult
+        from hermes.config import McpServer
+        srv = McpServer(name="notion", type="http", url=link,
+                        transport="streamable-http")
+        await kw["emit"]({"kind": "done", "ok": True, "reason": "success",
+                          "server": srv.model_dump(), "history": []})
+        return IntegrationResult(
+            ok=True, reason="success",
+            server=srv,
+            history=[])
+
+    monkeypatch.setattr("hermes.web_ui.mcp_integrate.integrate", fake_integrate)
+    
+    from httpx import AsyncClient, ASGITransport
+    app = create_app(store)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/mcp/integrate", json={"link": "https://mcp.notion.com/mcp"})
+        assert r.status_code == 200
+        run_id = r.json()["run_id"]
+
+        for _ in range(50):
+            await asyncio.sleep(0.005)
+            body = (await client.get(f"/api/mcp/integrate/{run_id}")).json()
+            if body["state"] == "done":
+                break
+        assert body["state"] == "done"
+        assert body["server"]["name"] == "notion"
+        # a successful run registers the server
+        assert [s.name for s in config.load_settings().mcp_servers] == ["notion"]
+
+
+async def test_integrate_run_can_be_answered_with_a_secret(hermes_home, monkeypatch):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    async def fake_integrate(link, **kw):
+        await kw["emit"]({"kind": "need_secret", "name": "Authorization",
+                          "hint": link})
+        value = await kw["ask_secret"]("Authorization", link)
+        from hermes.mcp_integrate import IntegrationResult
+        await kw["emit"]({"kind": "done", "ok": bool(value), "reason": "success" if value else "circles",
+                          "server": None, "history": []})
+        return IntegrationResult(ok=bool(value), server=None,
+                                 reason="success" if value else "circles",
+                                 history=[])
+
+    monkeypatch.setattr("hermes.web_ui.mcp_integrate.integrate", fake_integrate)
+    
+    from httpx import AsyncClient, ASGITransport
+    app = create_app(store)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/mcp/integrate",
+                             json={"link": "https://x.dev/mcp"})
+        run_id = r.json()["run_id"]
+
+        for _ in range(50):
+            await asyncio.sleep(0.005)
+            body = (await client.get(f"/api/mcp/integrate/{run_id}")).json()
+            if body["pending_secret"]:
+                break
+        assert body["pending_secret"] == "Authorization"
+
+        r = await client.post(f"/api/mcp/integrate/{run_id}/secret", json={"value": "Bearer K"})
+        assert r.json()["ok"] is True
+
+
+async def test_oauth_callback_rejects_an_unknown_state(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+    r = client.get("/api/mcp/oauth/callback?code=C&state=NOBODY-WAITS-FOR-THIS")
+    assert r.status_code == 400
+
+
+async def test_oauth_callback_accepts_a_waiting_state(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    app = create_app(store)
+    client = TestClient(app)
+    wait_id = app.state.pending_auth.start()
+    app.state.pending_auth.set_state(wait_id, "STATE-OK")
+    r = client.get("/api/mcp/oauth/callback?code=C&state=STATE-OK")
+    assert r.status_code == 200
+    assert "window.close" in r.text
