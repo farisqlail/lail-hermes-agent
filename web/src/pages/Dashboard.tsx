@@ -1042,6 +1042,54 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
         >
           <svg className="graph-svg" ref={svgRef}>
             <rect ref={bgRectRef} width="100%" height="100%" fill="transparent" />
+            
+            {/* Jarvis HUD Stationary Overlay */}
+            <g style={{ pointerEvents: 'none' }}>
+              {/* Radar Crosshairs */}
+              <line x1="5%" y1="50%" x2="45%" y2="50%" stroke="var(--border)" strokeWidth="0.5" strokeDasharray="3,6" opacity="0.3" />
+              <line x1="55%" y1="50%" x2="95%" y2="50%" stroke="var(--border)" strokeWidth="0.5" strokeDasharray="3,6" opacity="0.3" />
+              <line x1="50%" y1="5%" x2="50%" y2="40%" stroke="var(--border)" strokeWidth="0.5" strokeDasharray="3,6" opacity="0.3" />
+              <line x1="50%" y1="60%" x2="50%" y2="95%" stroke="var(--border)" strokeWidth="0.5" strokeDasharray="3,6" opacity="0.3" />
+
+              {/* Diagonal Crosshairs ticks */}
+              <line x1="48%" y1="48%" x2="49%" y2="49%" stroke="var(--accent)" strokeWidth="1.5" opacity="0.5" />
+              <line x1="52%" y1="48%" x2="51%" y2="49%" stroke="var(--accent)" strokeWidth="1.5" opacity="0.5" />
+              <line x1="48%" y1="52%" x2="49%" y2="51%" stroke="var(--accent)" strokeWidth="1.5" opacity="0.5" />
+              <line x1="52%" y1="52%" x2="51%" y2="51%" stroke="var(--accent)" strokeWidth="1.5" opacity="0.5" />
+
+              {/* Concentric rings centered at (50%, 50%) */}
+              <circle cx="50%" cy="50%" r="50" stroke="var(--accent)" strokeWidth="1" fill="none" opacity="0.1" />
+              <circle cx="50%" cy="50%" r="90" stroke="var(--accent)" strokeWidth="0.5" fill="none" opacity="0.15" strokeDasharray="5,10" />
+              
+              {/* Rotating outer rings */}
+              <circle cx="50%" cy="50%" r="160" stroke="var(--accent)" strokeWidth="1" fill="none" opacity="0.25" strokeDasharray="90,10,30,10" className="hud-spin-cw" />
+              <circle cx="50%" cy="50%" r="165" stroke="var(--accent)" strokeWidth="0.75" fill="none" opacity="0.15" strokeDasharray="6,12" className="hud-spin-ccw" />
+              <circle cx="50%" cy="50%" r="240" stroke="var(--accent)" strokeWidth="1.5" fill="none" opacity="0.2" strokeDasharray="180,15,40,15" className="hud-spin-ccw" />
+              
+              {/* Outer boundary bracket lines or ring */}
+              <circle cx="50%" cy="50%" r="320" stroke="var(--border)" strokeWidth="0.5" fill="none" opacity="0.15" strokeDasharray="4,8" />
+              
+              {/* Ring with tick marks (compass style) */}
+              <circle cx="50%" cy="50%" r="130" stroke="var(--accent)" strokeWidth="3" fill="none" opacity="0.12" strokeDasharray="2,8" className="hud-spin-ccw" />
+            </g>
+
+            {/* HUD Telemetry Labels */}
+            <g style={{ pointerEvents: 'none', fontFamily: 'var(--font-mono)', fontSize: '8px', fill: 'var(--text-faint)' }}>
+              {/* Center-left readout */}
+              <text x="38%" y="45%" opacity="0.45">SYS.LOC: [45.9281, -12.4092]</text>
+              <text x="38%" y="47%" opacity="0.45">ALT.REF: 1,024m</text>
+              <text x="38%" y="49%" opacity="0.45">RADAR.SYNC: 98.4%</text>
+
+              {/* Center-right readout */}
+              <text x="62%" y="45%" opacity="0.45" textAnchor="end">CORE_TEMP: 38.2°C</text>
+              <text x="62%" y="47%" opacity="0.45" textAnchor="end">GRID_STATUS: ACTIVE</text>
+              <text x="62%" y="49%" opacity="0.45" textAnchor="end">COGNITIVE_SYNC: 1.0</text>
+              
+              {/* Circular percentage widget status */}
+              <text x="44%" y="58%" opacity="0.5">N-LOCK: TRUE</text>
+              <text x="56%" y="58%" opacity="0.5" textAnchor="end">DECRYPT: 100%</text>
+            </g>
+
             <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
               
               {/* Force Link lines */}
