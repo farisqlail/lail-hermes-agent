@@ -263,6 +263,20 @@ export function ConfigGeneral() {
               onChange={(e) => handleChange('agent_name', e.target.value)}
             />
           </Field>
+
+          <Field
+            label="Calendar iCal URL"
+            helpText="Google Calendar → Setelan kalender → Integrasikan kalender → Alamat rahasia dalam format iCal. Read-only, tanpa OAuth. Rahasiakan: URL ini adalah kuncinya."
+            error={formErrors.calendar_ics_url}
+          >
+            <input
+              type="text"
+              className="field-input"
+              placeholder="https://calendar.google.com/calendar/ical/.../basic.ics"
+              value={formState.calendar_ics_url || ''}
+              onChange={(e) => handleChange('calendar_ics_url', e.target.value)}
+            />
+          </Field>
         </div>
       </section>
 

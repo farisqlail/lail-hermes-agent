@@ -6,6 +6,28 @@ export interface McpServer {
   url: string;
   env: Record<string, string>;
   enabled: boolean;
+  transport: '' | 'streamable-http' | 'sse';
+  headers: Record<string, string>;
+  oauth: boolean;
+}
+
+export interface IntegrateEvent {
+  kind: 'round' | 'attempt' | 'login' | 'need_secret' | 'done';
+  action?: string;
+  ok?: boolean;
+  error?: string;
+  url?: string;
+  name?: string;
+  hint?: string;
+  reason?: string;
+}
+
+export interface IntegrateRun {
+  state: 'running' | 'done';
+  events: IntegrateEvent[];
+  pending_secret: string;
+  login_url: string;
+  server: McpServer | null;
 }
 
 export interface Settings {
@@ -51,6 +73,7 @@ export interface Settings {
   wakeword_threshold: number;
   wakeword_cooldown_ms: number;
   mcp_servers: McpServer[];
+  calendar_ics_url: string;
 }
 
 export interface SecretsStatus {

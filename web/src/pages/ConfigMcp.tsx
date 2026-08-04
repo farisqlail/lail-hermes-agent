@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, errorMessage } from '../api/client';
-import { McpServer } from '../api/types';
+import { McpServer, IntegrateRun } from '../api/types';
 import { Field } from '../components/Field';
 import { Toggle } from '../components/Toggle';
 import { Button } from '../components/Button';
@@ -13,6 +13,42 @@ export function ConfigMcp() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Integration state
+  const [link, setLink] = useState('');
+  const [runId, setRunId] = useState<string | null>(null);
+  const [run, setRun] = useState<IntegrateRun | null>(null);
+  const [secret, setSecret] = useState('');
+
+  useEffect(() => {
+    if (!runId) return;
+    const id = setInterval(async () => {
+      try {
+        const r = await api.getIntegrate(runId);
+        setRun(r);
+        if (r.login_url) {
+          window.open(r.login_url, '_blank', 'width=520,height=640');
+        }
+        if (r.state === 'done') {
+          clearInterval(id);
+          fetchServers();
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [runId]);
+
+  const handleIntegrate = async () => {
+    try {
+      const { run_id } = await api.startIntegrate(link);
+      setRunId(run_id);
+      setRun(null);
+    } catch (err) {
+      toast(errorMessage(err, 'Gagal memulai integrasi'), 'err');
+    }
+  };
+
   // Modal / Form state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null); // null means adding
@@ -24,6 +60,9 @@ export function ConfigMcp() {
     url: '',
     env: {},
     enabled: true,
+    transport: '',
+    headers: {},
+    oauth: false,
   });
 
   const [argsText, setArgsText] = useState('');
@@ -60,6 +99,9 @@ export function ConfigMcp() {
       url: '',
       env: {},
       enabled: true,
+      transport: '',
+      headers: {},
+      oauth: false,
     });
     setArgsText('');
     setEnvText('');
@@ -178,6 +220,45 @@ export function ConfigMcp() {
 
   return (
     <div>
+      <section style={{ marginBottom: '20px', padding: '16px', backgroundColor: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 'var(--r-lg)' }}>
+        <Field label="Pasang dari link"
+               helpText="URL server MCP remote, link GitHub/npm, atau nama paket npm. Hermes yang cari transport, login, dan tools-nya.">
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <input className="field-input" value={link}
+                   onChange={(e) => setLink(e.target.value)}
+                   placeholder="https://mcp.notion.com/mcp" />
+            <Button onClick={handleIntegrate}
+                    loading={run?.state === 'running'}
+                    disabled={!link.trim()}>Integrate</Button>
+          </div>
+        </Field>
+
+        {run && (
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)',
+                        marginTop: '12px' }}>
+            {run.events.map((ev, i) => (
+              <div key={i} style={{ color: ev.ok === false ? 'var(--err)' : 'var(--fg)' }}>
+                {ev.kind === 'attempt' && `${ev.ok ? '✓' : '✗'} ${ev.action} ${ev.error || ''}`}
+                {ev.kind === 'round' && `→ ${ev.action}`}
+                {ev.kind === 'login' && 'menunggu login di jendela baru…'}
+                {ev.kind === 'done' && `selesai: ${ev.reason}`}
+              </div>
+            ))}
+            {run.pending_secret && (
+              <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                <input className="field-input" value={secret} type="password"
+                       placeholder={`isi ${run.pending_secret}`}
+                       onChange={(e) => setSecret(e.target.value)} />
+                <Button onClick={async () => {
+                  await api.answerIntegrateSecret(runId!, secret);
+                  setSecret('');
+                }}>Kirim</Button>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <h3 style={{ fontFamily: 'var(--font-title)', fontSize: 'var(--t-lg)', fontWeight: '600', color: 'var(--text)' }}>
           🔌 Registered MCP Servers
