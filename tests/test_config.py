@@ -211,3 +211,30 @@ def test_voice_sensitivity_rejects_unknown_levels(hermes_home):
     import pytest
     with pytest.raises(Exception):
         config.Settings(voice_sensitivity="paranoid")
+
+
+def test_mcp_server_defaults_keep_old_configs_parsing():
+    """Every new field is defaulted, so a config written before this change
+    still loads — there is no migration step."""
+    s = config.Settings.model_validate_json(
+        '{"mcp_servers": [{"name": "pc", "type": "stdio", "command": "npx"}]}')
+    srv = s.mcp_servers[0]
+    assert srv.transport == ""
+    assert srv.headers == {}
+    assert srv.oauth is False
+
+
+def test_mcp_server_accepts_new_fields():
+    srv = config.McpServer(name="notion", type="http",
+                           url="https://mcp.notion.com/mcp",
+                           transport="streamable-http",
+                           headers={"X-Api-Key": "k"}, oauth=True)
+    assert srv.transport == "streamable-http"
+    assert srv.headers["X-Api-Key"] == "k"
+    assert srv.oauth is True
+
+
+def test_mcp_server_rejects_unknown_transport():
+    import pytest
+    with pytest.raises(Exception):
+        config.McpServer(name="x", type="http", transport="carrier-pigeon")
