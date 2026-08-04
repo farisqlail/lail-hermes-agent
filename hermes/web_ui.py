@@ -114,6 +114,27 @@ CHAT_TOOLS = [
             "target": {"type": "string",
                        "description": "nama app (mis. 'paint') atau URL (mis. 'https://calendar.google.com')"}},
             "required": ["target"]}}},
+    {"type": "function", "function": {
+        "name": "integrate_mcp",
+        "description": ("Pasang server MCP baru dari satu link (URL server remote, "
+                        "link GitHub/npm, atau nama paket npm). Berjalan di latar: "
+                        "kembalikan run_id lalu pantau dengan integrate_status. "
+                        "Bila prosesnya minta kredensial, jawab dengan integrate_secret."),
+        "parameters": {"type": "object", "properties": {
+            "link": {"type": "string", "description": "link atau nama paket"}},
+            "required": ["link"]}}},
+    {"type": "function", "function": {
+        "name": "integrate_status",
+        "description": "Keadaan dan riwayat sebuah integrasi MCP yang sedang berjalan.",
+        "parameters": {"type": "object", "properties": {
+            "run_id": {"type": "string"}}, "required": ["run_id"]}}},
+    {"type": "function", "function": {
+        "name": "integrate_secret",
+        "description": ("Isi kredensial yang diminta sebuah integrasi yang sedang "
+                        "menunggu (lihat pending_secret dari integrate_status)."),
+        "parameters": {"type": "object", "properties": {
+            "run_id": {"type": "string"}, "value": {"type": "string"}},
+            "required": ["run_id", "value"]}}},
 ]
 
 def _bg_crash_cb(store: Store, task_id: str):
@@ -411,6 +432,33 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     # fixed allow-list in launcher.KNOWN_APPS, not this gate.
                     return json.dumps(launcher.open_app(str(args.get("target") or "")),
                                       ensure_ascii=False)
+                if name == "integrate_mcp":
+                    link = str(args.get("link") or "").strip()
+                    if not link:
+                        return json.dumps({"error": "link kosong"}, ensure_ascii=False)
+                    run_id = _start_integrate(link)
+                    return json.dumps(
+                        {"run_id": run_id, "state": "running",
+                         "note": ("Integrasi berjalan di latar. Pantau dengan "
+                                  "integrate_status; jangan mengaku sudah selesai "
+                                  "sebelum state-nya 'done'.")},
+                        ensure_ascii=False)
+                if name == "integrate_status":
+                    run = app.state.integrate_runs.get(str(args.get("run_id") or ""))
+                    if run is None:
+                        return json.dumps({"error": "run tidak ditemukan"},
+                                          ensure_ascii=False)
+                    return json.dumps(
+                        {"state": run.state, "pending_secret": run.pending_secret,
+                         "login_url": run.login_url, "server": run.server,
+                         "events": run.events[-12:]}, ensure_ascii=False)
+                if name == "integrate_secret":
+                    run = app.state.integrate_runs.get(str(args.get("run_id") or ""))
+                    if run is None:
+                        return json.dumps({"error": "run tidak ditemukan"},
+                                          ensure_ascii=False)
+                    ok = run.answer_secret(str(args.get("value") or ""))
+                    return json.dumps({"ok": ok}, ensure_ascii=False)
                 # MCP integration tools (file / browser / gmail / calendar). Reads
                 # run straight through; a write/send/delete is gated — returned to
                 # the model as "needs confirmation" and NOT executed, so the chat

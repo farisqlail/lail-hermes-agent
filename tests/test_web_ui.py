@@ -547,7 +547,9 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
 
     assert out["tool_names"] == ["list_projects", "recent_tasks",
                                  "get_task_detail", "failure_report",
-                                 "start_task", "calendar_events", "open_app"]
+                                 "start_task", "calendar_events", "open_app",
+                                 "integrate_mcp", "integrate_status",
+                                 "integrate_secret"]
     assert out["projects"] == [{"name": "myprofit", "path": str(proj_dir), "exists": True}]
     assert any(t["task_id"] == "seed1" for t in out["recent"])
     assert out["detail"]["status"] == "done"
@@ -1514,3 +1516,49 @@ async def test_oauth_callback_accepts_a_waiting_state(hermes_home):
     r = client.get("/api/mcp/oauth/callback?code=C&state=STATE-OK")
     assert r.status_code == 200
     assert "window.close" in r.text
+
+
+async def test_chat_can_start_and_follow_an_integration(hermes_home, monkeypatch):
+    """Chat cannot hold a turn open for ten minutes, so starting a run returns
+    a run_id immediately and progress is read back with a second tool."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    async def fake_integrate(link, **kw):
+        await kw["emit"]({"kind": "attempt", "action": "npx", "ok": True})
+        from hermes.mcp_integrate import IntegrationResult
+        await kw["emit"]({"kind": "done", "ok": True, "reason": "success",
+                          "server": None, "history": []})
+        return IntegrationResult(ok=True, server=None, reason="success", history=[])
+
+    monkeypatch.setattr("hermes.web_ui.mcp_integrate.integrate", fake_integrate)
+
+    seen = {}
+    async def fake_chat(history, tools=None, dispatch=None):
+        seen["tools"] = [t["function"]["name"] for t in tools]
+        seen["start"] = json.loads(await dispatch("integrate_mcp",
+                                                  {"link": "https://x.dev/mcp"}))
+        return "sedang kupasang"
+
+    client = TestClient(create_app(store, chat=fake_chat))
+    client.post("/api/tasks", json={"text": "pasang https://x.dev/mcp"})
+
+    assert "integrate_mcp" in seen["tools"]
+    assert "integrate_status" in seen["tools"]
+    assert "integrate_secret" in seen["tools"]
+    assert seen["start"]["run_id"]
+
+
+async def test_chat_integrate_status_reports_a_missing_run(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    seen = {}
+    async def fake_chat(history, tools=None, dispatch=None):
+        seen["missing"] = json.loads(
+            await dispatch("integrate_status", {"run_id": "nope"}))
+        return "tidak ada"
+
+    client = TestClient(create_app(store, chat=fake_chat))
+    client.post("/api/tasks", json={"text": "status?"})
+    assert "error" in seen["missing"]
