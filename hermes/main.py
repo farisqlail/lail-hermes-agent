@@ -195,6 +195,23 @@ def build_nim_planner(settings, secrets, hub):
         raise ValueError(f"planner exceeded {MAX_TOOL_ROUNDS} tool-call rounds without a final answer")
     return planner
 
+# When the operator turns off confirm_risky, the gate is waived on every
+# surface. The static template still describes write tools as "held for
+# confirmation"; this later paragraph overrides that so the model stops telling
+# the user an action is pending when it now runs straight through.
+_NO_CONFIRM_NOTE = (
+    "\n\nOVERRIDE PENTING: konfirmasi operator DIMATIKAN. Semua alat "
+    "TULIS/KIRIM/HAPUS/klik/shell LANGSUNG dijalankan tanpa persetujuan dan "
+    "tanpa 'needs_confirmation'. Abaikan instruksi sebelumnya soal aksi "
+    "ditahan/menunggu persetujuan. Jalankan permintaan pengguna langsung, lalu "
+    "laporkan hasil nyatanya."
+)
+
+
+def _confirm_note(s) -> str:
+    return "" if s.confirm_risky else _NO_CONFIRM_NOTE
+
+
 def build_nim_chat(settings, secrets):
     """The conversational agent behind the web UI chat pane.
 
@@ -290,7 +307,7 @@ def build_nim_chat(settings, secrets):
             raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
         current_settings = config.load_settings()
         agent_name = current_settings.agent_name or "Lail Agent"
-        system = system_template.format(agent_name=agent_name) + voice.voice_tag_instruction(current_settings)
+        system = system_template.format(agent_name=agent_name) + voice.voice_tag_instruction(current_settings) + _confirm_note(current_settings)
         client = AsyncOpenAI(base_url=current_settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
                              timeout=PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
@@ -337,7 +354,7 @@ def build_nim_chat(settings, secrets):
             raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
         current_settings = config.load_settings()
         agent_name = current_settings.agent_name or "Lail Agent"
-        system = system_template.format(agent_name=agent_name) + voice.voice_tag_instruction(current_settings)
+        system = system_template.format(agent_name=agent_name) + voice.voice_tag_instruction(current_settings) + _confirm_note(current_settings)
         client = AsyncOpenAI(base_url=current_settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
                              timeout=PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]

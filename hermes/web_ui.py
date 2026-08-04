@@ -466,7 +466,10 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                 # action deliberately (Telegram /task, or a later confirm card).
                 hub = getattr(app.state, "hub", None)
                 if hub is not None and mcp_risk.is_mcp_name(name):
-                    if mcp_risk.is_risky_tool(name):
+                    # confirm_risky=False means the operator waived the gate for
+                    # every surface, chat included — run straight through. When
+                    # True, a write/send/delete is parked for approval.
+                    if config.load_settings().confirm_risky and mcp_risk.is_risky_tool(name):
                         # Park it for the operator to approve (button or voice),
                         # do NOT execute here. The model is told it is pending so
                         # it never claims the action was done.
@@ -1057,10 +1060,11 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         tools = await _chat_tools()
         names = [t["function"]["name"] for t in tools]
         mcp_names = [n for n in names if mcp_risk.is_mcp_name(n)]
+        gate_on = config.load_settings().confirm_risky
         return {
             "builtin": [n for n in names if not mcp_risk.is_mcp_name(n)],
             "mcp": mcp_names,
-            "gated": [n for n in mcp_names if mcp_risk.is_risky_tool(n)],
+            "gated": [n for n in mcp_names if gate_on and mcp_risk.is_risky_tool(n)],
             "servers": sorted({n.split("__", 1)[0] for n in mcp_names}),
         }
 
