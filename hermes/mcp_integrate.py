@@ -75,12 +75,66 @@ def _remote_actions(url: str) -> list[tuple[str, str]]:
     return [(t, c) for c in remote_candidates(url) for t in TRANSPORTS]
 
 
+_AUTH_MARKERS = ("401", "403", "unauthorized", "forbidden", "invalid_token")
+
+
+def is_auth_error(msg: str) -> bool:
+    low = (msg or "").lower()
+    return any(m in low for m in _AUTH_MARKERS)
+
+
+async def run_oauth(srv: McpServer, session_factory, *, emit, open_url, pending,
+                    redirect_uri: str, probe_timeout_s: float = PROBE_TIMEOUT_S,
+                    auth_timeout_s: float = 300.0):
+    """Authorise against `srv` and re-probe with the resulting credentials.
+
+    Raises OAuthRegistrationError / OAuthFlowError when the server does not
+    support OAuth at all — the caller reads that as "ask for a manual key".
+    Registration is dynamic (DCR), which is the reason this path needs no
+    developer console anywhere.
+    """
+    from mcp.client.auth import OAuthClientProvider
+    from mcp.shared.auth import OAuthClientMetadata
+    from .mcp_oauth import FileTokenStorage
+
+    wait_id = pending.start()
+
+    async def redirect_handler(auth_url: str) -> None:
+        # The state the provider put in the URL is what the callback must match.
+        from urllib.parse import parse_qs, urlparse as _u
+        state = (parse_qs(_u(auth_url).query).get("state") or [""])[0]
+        pending.set_state(wait_id, state)
+        await emit({"kind": "login", "url": auth_url})
+        await open_url(auth_url)
+
+    async def callback_handler():
+        return await pending.wait(wait_id, auth_timeout_s)
+
+    provider = OAuthClientProvider(
+        server_url=srv.url,
+        client_metadata=OAuthClientMetadata(
+            client_name="Hermes",
+            redirect_uris=[redirect_uri],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"]),
+        storage=FileTokenStorage(srv.name),
+        redirect_handler=redirect_handler,
+        callback_handler=callback_handler,
+        timeout=auth_timeout_s)
+    try:
+        return await probe(srv, session_factory, probe_timeout_s, auth=provider)
+    finally:
+        pending.cancel(wait_id)
+
+
 async def integrate(link: str, *, emit, ask_secret, open_url, session_factory,
                     propose_config=None, sleep=asyncio.sleep,
                     now=time.monotonic, taken=frozenset(),
                     max_rounds: int = MAX_ROUNDS,
                     deadline_s: float = DEADLINE_S,
-                    probe_timeout_s: float = PROBE_TIMEOUT_S) -> IntegrationResult:
+                    probe_timeout_s: float = PROBE_TIMEOUT_S,
+                    oauth_runner=None, pending=None,
+                    redirect_uri: str = "") -> IntegrationResult:
     """Work a pasted link into a connectable MCP server.
 
     A failed step feeds the next round instead of ending the run. Only five
@@ -134,6 +188,33 @@ async def integrate(link: str, *, emit, ask_secret, open_url, session_factory,
             # not spend a round — a slow network is not a wrong guess.
             await sleep(failure.delay_for(transient_retries))
             transient_retries += 1
+
+        if not ok and is_auth_error(err):
+            runner = oauth_runner or run_oauth
+            if pending is not None or oauth_runner is not None:
+                try:
+                    ok, err, tools = await runner(
+                        srv, session_factory, emit=emit, open_url=open_url,
+                        pending=pending, redirect_uri=redirect_uri,
+                        probe_timeout_s=probe_timeout_s)
+                    if ok:
+                        srv.oauth = True
+                except asyncio.TimeoutError:
+                    history.append(Attempt(action=f"{label} oauth", ok=False,
+                                           error="login tidak selesai tepat waktu"))
+                    return await finish(False, None, "auth_timeout")
+                except Exception as e:
+                    # No OAuth metadata (OAuthRegistrationError) or a refused
+                    # flow: fall through to asking for a key by hand.
+                    err = f"{type(e).__name__}: {e}"
+            if not ok:
+                await emit({"kind": "need_secret", "name": "Authorization",
+                            "hint": f"{url} menolak tanpa kredensial"})
+                value = await ask_secret("Authorization", url)
+                if value:
+                    srv.headers = {"Authorization": value}
+                    ok, err, tools = await probe(srv, session_factory,
+                                                 probe_timeout_s)
 
         history.append(Attempt(action=label, ok=ok, error=err))
         await emit({"kind": "attempt", "action": label, "ok": ok, "error": err,

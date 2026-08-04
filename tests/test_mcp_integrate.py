@@ -194,3 +194,116 @@ async def test_probe_always_closes_the_session():
                     transport="streamable-http")
     ok, err, tools = await mi.probe(srv, lambda s, auth=None: TrackedSession(s))
     assert ok is False and closed == [True]
+
+
+def test_is_auth_error_recognises_401_and_403():
+    assert mi.is_auth_error("HTTPStatusError: 401 Unauthorized") is True
+    assert mi.is_auth_error("HTTPStatusError: 403 Forbidden") is True
+    assert mi.is_auth_error("ConnectionError: 404 not found") is False
+
+
+async def test_oauth_branch_opens_a_login_and_retries_after_the_callback():
+    """The server refuses until it is authorised; the run must open a login,
+    wait for the callback, and then succeed on the retry."""
+    from hermes import mcp_oauth
+
+    state = {"authorised": False}
+
+    class AuthSession:
+        def __init__(self, srv, auth=None):
+            self.srv = srv
+            self.auth = auth
+
+        async def list_tools(self):
+            if self.auth is None and not state["authorised"]:
+                raise PermissionError("401 Unauthorized")
+            return [{"name": "search", "description": "", "input_schema": {}}]
+
+        async def close(self):
+            return None
+
+    opened = []
+
+    async def open_url(url):
+        opened.append(url)
+        # Standing in for the operator finishing the login in a browser.
+        state["authorised"] = True
+
+    async def fake_oauth(srv, session_factory, **kw):
+        await kw["emit"]({"kind": "login", "url": "https://idp/authorize"})
+        await kw["open_url"]("https://idp/authorize")
+        return await mi.probe(srv, session_factory, auth="TOKEN")
+
+    events, emit = _recorder()
+    res = await mi.integrate("https://x.dev/mcp", emit=emit,
+                             ask_secret=_never_asked, open_url=open_url,
+                             session_factory=lambda s, auth=None: AuthSession(s, auth),
+                             oauth_runner=fake_oauth,
+                             pending=mcp_oauth.PendingAuth(),
+                             redirect_uri="http://127.0.0.1:8799/api/mcp/oauth/callback")
+
+    assert res.ok is True
+    assert opened == ["https://idp/authorize"]
+    assert res.server.oauth is True
+    assert any(e["kind"] == "login" for e in events)
+
+
+async def test_secret_branch_asks_then_retries_with_the_header():
+    """No OAuth metadata, so the run must ask for a key and carry it as a
+    header on the next attempt rather than starting over."""
+    asked = []
+
+    class KeySession:
+        def __init__(self, srv, auth=None):
+            self.srv = srv
+
+        async def list_tools(self):
+            if self.srv.headers.get("Authorization") != "Bearer K":
+                raise PermissionError("401 Unauthorized")
+            return [{"name": "t", "description": "", "input_schema": {}}]
+
+        async def close(self):
+            return None
+
+    async def ask_secret(name, hint):
+        asked.append(name)
+        return "Bearer K"
+
+    async def no_oauth(srv, session_factory, **kw):
+        from mcp.client.auth import OAuthRegistrationError
+        raise OAuthRegistrationError("server has no OAuth metadata")
+
+    events, emit = _recorder()
+    res = await mi.integrate("https://x.dev/mcp", emit=emit,
+                             ask_secret=ask_secret, open_url=_never_opened,
+                             session_factory=lambda s, auth=None: KeySession(s),
+                             oauth_runner=no_oauth)
+
+    assert res.ok is True
+    assert asked == ["Authorization"]
+    assert res.server.headers["Authorization"] == "Bearer K"
+    assert any(e["kind"] == "need_secret" for e in events)
+
+
+async def test_a_declined_secret_does_not_end_the_run():
+    """Declining the key on one candidate must still let the next candidate be
+    tried — a refusal is input like any other failure."""
+    async def ask_secret(name, hint):
+        return ""
+
+    async def no_oauth(srv, session_factory, **kw):
+        from mcp.client.auth import OAuthRegistrationError
+        raise OAuthRegistrationError("no metadata")
+
+    class Locked:
+        def __init__(self, srv, auth=None): self.srv = srv
+        async def list_tools(self): raise PermissionError("401 Unauthorized")
+        async def close(self): return None
+
+    events, emit = _recorder()
+    res = await mi.integrate("https://x.dev", emit=emit, ask_secret=ask_secret,
+                             open_url=_never_opened,
+                             session_factory=lambda s, auth=None: Locked(s),
+                             oauth_runner=no_oauth)
+    assert res.ok is False
+    assert len(res.history) == 6      # every candidate still attempted
