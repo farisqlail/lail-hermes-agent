@@ -307,3 +307,131 @@ async def test_a_declined_secret_does_not_end_the_run():
                              oauth_runner=no_oauth)
     assert res.ok is False
     assert len(res.history) == 6      # every candidate still attempted
+
+
+async def test_package_link_tries_npx_by_convention_first():
+    seen = []
+
+    class PkgSession:
+        def __init__(self, srv, auth=None):
+            self.srv = srv
+            seen.append((srv.command, tuple(srv.args)))
+
+        async def list_tools(self):
+            return [{"name": "read", "description": "", "input_schema": {}}]
+
+        async def close(self): return None
+
+    events, emit = _recorder()
+    res = await mi.integrate("@cocal/google-calendar-mcp", emit=emit,
+                             ask_secret=_never_asked, open_url=_never_opened,
+                             session_factory=lambda s, auth=None: PkgSession(s))
+    assert res.ok is True
+    assert res.server.type == "stdio"
+    assert seen[0] == ("npx", ("-y", "@cocal/google-calendar-mcp"))
+
+
+async def test_package_failure_asks_the_model_and_retries():
+    """Convention fails, the model proposes args and env, and the retry works."""
+    class PkgSession:
+        def __init__(self, srv, auth=None): self.srv = srv
+
+        async def list_tools(self):
+            if self.srv.args == ["-y", "pkg", "--stdio"]:
+                return [{"name": "t", "description": "", "input_schema": {}}]
+            raise RuntimeError("missing required flag --stdio")
+
+        async def close(self): return None
+
+    async def propose(readme, errors):
+        assert "--stdio" in readme
+        return {"command": "npx", "args": ["-y", "pkg", "--stdio"], "env": {}}
+
+    async def read_readme(pkg):
+        return "run it with --stdio"
+
+    events, emit = _recorder()
+    res = await mi.integrate("pkg", emit=emit, ask_secret=_never_asked,
+                             open_url=_never_opened,
+                             session_factory=lambda s, auth=None: PkgSession(s),
+                             propose_config=propose, read_readme=read_readme)
+    assert res.ok is True
+    assert res.server.args == ["-y", "pkg", "--stdio"]
+
+
+async def test_a_proposal_naming_an_empty_env_asks_the_operator():
+    asked = []
+
+    class PkgSession:
+        def __init__(self, srv, auth=None): self.srv = srv
+
+        async def list_tools(self):
+            if self.srv.env.get("API_KEY") == "SECRET":
+                return [{"name": "t", "description": "", "input_schema": {}}]
+            raise RuntimeError("API_KEY is not set")
+
+        async def close(self): return None
+
+    async def propose(readme, errors):
+        return {"command": "npx", "args": ["-y", "pkg"], "env": {"API_KEY": ""}}
+
+    async def ask_secret(name, hint):
+        asked.append(name)
+        return "SECRET"
+
+    events, emit = _recorder()
+    res = await mi.integrate("pkg", emit=emit, ask_secret=ask_secret,
+                             open_url=_never_opened,
+                             session_factory=lambda s, auth=None: PkgSession(s),
+                             propose_config=propose,
+                             read_readme=lambda p: _async_value(""))
+    assert res.ok is True and asked == ["API_KEY"]
+
+
+async def _async_value(v):
+    return v
+
+
+async def test_a_proposal_that_repeats_the_same_failure_stops_the_run():
+    """Never stopping must not mean looping on the same wall."""
+    class PkgSession:
+        def __init__(self, srv, auth=None): self.srv = srv
+        async def list_tools(self): raise RuntimeError("missing flag --stdio")
+        async def close(self): return None
+
+    proposals = []
+
+    async def propose(readme, errors):
+        proposals.append(errors)
+        return {"command": "npx", "args": ["-y", "pkg"], "env": {}}
+
+    events, emit = _recorder()
+    res = await mi.integrate("pkg", emit=emit, ask_secret=_never_asked,
+                             open_url=_never_opened,
+                             session_factory=lambda s, auth=None: PkgSession(s),
+                             propose_config=propose,
+                             read_readme=lambda p: _async_value(""))
+    assert res.ok is False and res.reason == "circles"
+    # the model was consulted, and the accumulated errors were handed to it
+    assert proposals and len(proposals[-1]) >= 1
+
+
+async def test_the_model_never_receives_a_secret():
+    captured = {}
+
+    class PkgSession:
+        def __init__(self, srv, auth=None): self.srv = srv
+        async def list_tools(self): raise RuntimeError("bad token SECRET-VALUE")
+        async def close(self): return None
+
+    async def propose(readme, errors):
+        captured["errors"] = errors
+        return None
+
+    events, emit = _recorder()
+    await mi.integrate("pkg", emit=emit, ask_secret=_never_asked,
+                       open_url=_never_opened,
+                       session_factory=lambda s, auth=None: PkgSession(s),
+                       propose_config=propose, secrets={"SECRET-VALUE"},
+                       read_readme=lambda p: _async_value(""))
+    assert all("SECRET-VALUE" not in e for e in captured["errors"])

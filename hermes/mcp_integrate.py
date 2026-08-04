@@ -134,7 +134,9 @@ async def integrate(link: str, *, emit, ask_secret, open_url, session_factory,
                     deadline_s: float = DEADLINE_S,
                     probe_timeout_s: float = PROBE_TIMEOUT_S,
                     oauth_runner=None, pending=None,
-                    redirect_uri: str = "") -> IntegrationResult:
+                    redirect_uri: str = "",
+                    read_readme=None,
+                    secrets=frozenset()) -> IntegrationResult:
     """Work a pasted link into a connectable MCP server.
 
     A failed step feeds the next round instead of ending the run. Only five
@@ -156,15 +158,16 @@ async def integrate(link: str, *, emit, ask_secret, open_url, session_factory,
         history.append(Attempt(action="classify", ok=False, error=str(e)))
         return await finish(False, None, "rejected")
 
-    if parsed.kind != "remote":
-        # Task 7 fills this in; until then the package path reports honestly
-        # rather than pretending to have tried.
-        history.append(Attempt(action="package", ok=False,
-                               error="jalur paket belum tersedia"))
-        return await finish(False, None, "rejected")
-
     started = now()
     name = derive_name(parsed, set(taken))
+
+    if parsed.kind == "package":
+        return await _integrate_package(
+            parsed, name=name, emit=emit, ask_secret=ask_secret,
+            session_factory=session_factory, propose_config=propose_config,
+            read_readme=read_readme, secrets=secrets, history=history,
+            finish=finish, now=now, started=started, deadline_s=deadline_s,
+            max_rounds=max_rounds, probe_timeout_s=probe_timeout_s)
     signatures: set[str] = set()
     actions = _remote_actions(parsed.url)
     rounds = 0
@@ -304,3 +307,74 @@ def derive_name(link: Link, taken) -> str:
     while f"{base}-{n}" in taken:
         n += 1
     return f"{base}-{n}"
+
+
+def _scrub(text: str, secrets) -> str:
+    """Nothing the operator typed as a secret may reach the model."""
+    for s in secrets:
+        if s:
+            text = text.replace(s, "***")
+    return text
+
+
+async def _integrate_package(parsed, *, name, emit, ask_secret, session_factory,
+                             propose_config, read_readme, secrets, history,
+                             finish, now, started, deadline_s, max_rounds,
+                             probe_timeout_s):
+    pkg = parsed.package
+    if not pkg:
+        history.append(Attempt(action="resolve package", ok=False,
+                               error="nama paket tidak bisa ditentukan dari link"))
+        return await finish(False, None, "rejected")
+
+    # Convention first: almost every published MCP server runs this way, and it
+    # costs nothing to try before spending a model call.
+    srv = McpServer(name=name, type="stdio", command="npx", args=["-y", pkg])
+    errors: list[str] = []
+    signatures: set[str] = set()
+    readme = ""
+
+    for rounds in range(1, max_rounds + 1):
+        if now() - started > deadline_s:
+            return await finish(False, None, "deadline")
+        label = f"{srv.command} {' '.join(srv.args)}"
+        await emit({"kind": "round", "n": rounds, "action": label})
+        ok, err, tools = await probe(srv, session_factory, probe_timeout_s)
+        history.append(Attempt(action=label, ok=ok, error=err))
+        await emit({"kind": "attempt", "action": label, "ok": ok, "error": err,
+                    "tools": tools})
+        if ok:
+            return await finish(True, srv, "success")
+
+        sig = failure.signature(err)
+        if sig in signatures:
+            # The same wall as a previous round: another proposal would only
+            # prove it again.
+            return await finish(False, None, "circles")
+        signatures.add(sig)
+        errors.append(_scrub(err, secrets))
+
+        if propose_config is None:
+            return await finish(False, None, "circles")
+        if not readme and read_readme is not None:
+            try:
+                readme = _scrub(await read_readme(pkg), secrets)
+            except Exception:
+                readme = ""
+        proposal = await propose_config(readme, list(errors))
+        if not proposal:
+            return await finish(False, None, "circles")
+
+        srv = McpServer(name=name, type="stdio",
+                        command=proposal.get("command") or "npx",
+                        args=list(proposal.get("args") or ["-y", pkg]),
+                        env=dict(proposal.get("env") or {}))
+        # An empty value means "required, value unknown" — that is the operator's
+        # to supply, not the model's to invent.
+        for key, value in list(srv.env.items()):
+            if value == "":
+                await emit({"kind": "need_secret", "name": key,
+                            "hint": f"{pkg} membutuhkan {key}"})
+                srv.env[key] = await ask_secret(key, pkg) or ""
+
+    return await finish(False, None, "rounds")
