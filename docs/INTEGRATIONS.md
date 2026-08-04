@@ -22,7 +22,28 @@ this rule. Reads (list, search, read, screenshot) are not.
 
 ## Add a server
 
-Each server is one row in the MCP panel:
+The easiest way to add a server is using the **one-link integration** in the MCP panel or through the chat agent.
+
+Paste or type a single link/name:
+- **Remote URL**: An SSE endpoint (e.g. `http://localhost:3000/sse` or `https://x.dev/mcp`).
+- **GitHub / npm Link**: The source repository or npm page for an MCP package.
+- **Package Name**: A bare npm package name (e.g. `@modelcontextprotocol/server-filesystem`).
+
+Hermes will automatically:
+1. Probe the remote SSE endpoint or test standard local command conventions (like running `npx -y <package>`).
+2. Discover capabilities, like dynamic client registration (DCR) for OAuth where identity providers present an auth URL.
+3. Fetch the README to understand the server parameters and command config.
+4. Prompt the operator for any required credentials or API keys when needed, pausing the run.
+5. Save the configuration and connect the server.
+
+> [!IMPORTANT]
+> - **Integrate runs third-party code**: Pasting an npm package name or GitHub repository runs it locally via `npx`. Make sure you trust the package.
+> - **No developer consoles needed for OAuth**: Identity providers supporting DCR configure themselves automatically via Hermes' Dynamic Client Registration flow.
+> - **Token storage**: Active OAuth credentials and session refresh tokens are saved securely outside of settings under `%HERMES_HOME%\config\mcp_tokens\`. Never commit these files.
+
+### Manual Configuration (Fallback)
+
+If automatic integration fails or you have a custom local setup, you can still add or edit servers manually:
 
 | Field | Meaning |
 |---|---|
@@ -85,11 +106,11 @@ args:    ["-y", "@playwright/mcp@latest"]
 First run downloads a browser engine. `browser_snapshot` / screenshots are reads;
 `browser_click` / `browser_type` / `browser_navigate` are gated in web chat.
 
-## Gmail
+## Gmail (Legacy)
 
-Read, search, and (gated) send email. Community servers exist — e.g.
-`@gongrzhe/server-gmail-autoauth-mcp`; verify the latest package before trusting
-it. All require **your own Google OAuth credentials** (below).
+Read, search, and (gated) send email.
+> [!NOTE]
+> Gmail integration has been removed from this machine's default configuration in favor of the direct IMAP + SMTP route which requires no OAuth project setup. If you still wish to run a custom Gmail MCP server, community servers exist (e.g., `@gongrzhe/server-gmail-autoauth-mcp`). All require your own Google OAuth credentials (below).
 
 ```
 name:    gmail
@@ -104,11 +125,11 @@ the OAuth JSON there, then authorise once with
 `npx @gongrzhe/server-gmail-autoauth-mcp auth` before enabling the server.
 (Other Gmail servers use env vars instead — read whichever one you pick.)
 
-## Calendar
+## Calendar (Legacy)
 
-Read/create/update events (writes gated). Community servers exist — e.g.
-`@cocal/google-calendar-mcp` or `mcp-google-calendar`; again, verify the package.
-Same Google OAuth credentials as Gmail.
+Read/create/update events (writes gated).
+> [!NOTE]
+> Calendar integration has been removed from this machine's default configuration in favor of the read-only ICS route. If you still wish to run a custom Google Calendar MCP server, community servers exist (e.g., `@cocal/google-calendar-mcp` or `mcp-google-calendar`). All require your own Google OAuth credentials (below).
 
 ```
 name:    calendar
