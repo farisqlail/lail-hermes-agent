@@ -34,6 +34,49 @@ class McpServer(BaseModel):
     # themselves live outside the settings file — see hermes/mcp_oauth.py.
     oauth: bool = False
 
+def _default_mcp_servers() -> list[McpServer]:
+    """The server list a fresh install starts with.
+
+    Only reached when there is no settings file yet — an existing config.yaml
+    already carries its own `mcp_servers`, so nobody's edits are overwritten by
+    a pull. The three credential-hungry servers ship disabled with empty env
+    keys: they are templates to fill in from the MCP panel, not defaults that
+    fail on first boot. See docs/INTEGRATIONS.md for what each one needs.
+    """
+    return [
+        # Whole-machine files plus a terminal. No folder scope — see the
+        # security note in docs/INTEGRATIONS.md.
+        McpServer(name="pc", type="stdio", command="npx",
+                  args=["-y", "@wonderwhy-er/desktop-commander"]),
+        # A real browser: also how web search is done here, since no keyless
+        # search server survives an Indonesian ISP (docs/INTEGRATIONS.md).
+        McpServer(name="browser", type="stdio", command="npx",
+                  args=["-y", "@playwright/mcp@latest"]),
+        # Native Windows GUI: read the screen, click and type into apps the
+        # terminal cannot reach. Python, so it runs through `uvx` — install.ps1
+        # puts uv in the venv whose Scripts dir start.bat activates.
+        McpServer(name="win", type="stdio", command="uvx",
+                  args=["windows-mcp", "serve"]),
+        # Knowledge graph that survives a restart. The file path is explicit
+        # because the default writes inside the npx package directory, which a
+        # cache clear deletes.
+        McpServer(name="memory", type="stdio", command="npx",
+                  args=["-y", "@modelcontextprotocol/server-memory"],
+                  env={"MEMORY_FILE_PATH": str(paths.config_dir() / "memory.jsonl")}),
+        McpServer(name="mail", type="stdio", command="npx",
+                  args=["-y", "mcp-mail-server"], enabled=False,
+                  env={"IMAP_HOST": "imap.gmail.com", "IMAP_PORT": "993",
+                       "IMAP_SECURE": "true", "SMTP_HOST": "smtp.gmail.com",
+                       "SMTP_PORT": "465", "SMTP_SECURE": "true",
+                       "EMAIL_USER": "", "EMAIL_PASS": ""}),
+        McpServer(name="web", type="stdio", command="npx",
+                  args=["-y", "tavily-mcp@latest"], enabled=False,
+                  env={"TAVILY_API_KEY": ""}),
+        McpServer(name="spotify", type="stdio", command="npx",
+                  args=["-y", "spotify-mcp@latest"], enabled=False,
+                  env={"SPOTIFY_CLIENT_ID": ""}),
+    ]
+
 class Settings(BaseModel):
     ai_provider: Literal["nvidia", "deepseek", "custom"] = "nvidia"
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
@@ -76,7 +119,7 @@ class Settings(BaseModel):
     max_task_cost_usd: float = 10.0
     timeout_build_s: int = 1200
     timeout_test_s: int = 600
-    mcp_servers: list[McpServer] = Field(default_factory=list)
+    mcp_servers: list[McpServer] = Field(default_factory=_default_mcp_servers)
     # Google Calendar's "secret address in iCal format" (Settings -> a calendar
     # -> Integrate calendar). Read-only by construction and needs no OAuth
     # client, which is the whole reason it is here rather than a calendar MCP

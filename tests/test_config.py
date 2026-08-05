@@ -7,7 +7,26 @@ def test_defaults_when_missing(hermes_home):
     s = config.load_settings()
     assert s.nvidia_base_url == "https://integrate.api.nvidia.com/v1"
     assert s.default_engine == "auto"
-    assert s.mcp_servers == []
+
+def test_fresh_install_ships_the_default_mcp_servers(hermes_home):
+    paths.ensure_dirs()
+    s = config.load_settings()
+    assert [m.name for m in s.mcp_servers] == [
+        "pc", "browser", "win", "memory", "mail", "web", "spotify"]
+    # Credential-hungry servers ship off, so a first boot never fails on an
+    # empty API key; the rest work with nothing but Node (and uv for `win`).
+    assert {m.name for m in s.mcp_servers if not m.enabled} == {"mail", "web", "spotify"}
+    # The graph file belongs under this install's HERMES_HOME, not wherever npx
+    # happened to unpack the package.
+    memory = next(m for m in s.mcp_servers if m.name == "memory")
+    assert memory.env["MEMORY_FILE_PATH"] == str(paths.config_dir() / "memory.jsonl")
+
+def test_existing_config_is_not_overwritten_by_the_defaults(hermes_home):
+    """A pull must never re-add servers someone deliberately removed."""
+    paths.ensure_dirs()
+    config.save_settings(config.Settings(mcp_servers=[
+        config.McpServer(name="only-mine", type="stdio", command="npx")]))
+    assert [m.name for m in config.load_settings().mcp_servers] == ["only-mine"]
 
 def test_settings_roundtrip(hermes_home):
     paths.ensure_dirs()
@@ -19,7 +38,7 @@ def test_settings_roundtrip(hermes_home):
     s2 = config.load_settings()
     assert s2.model == "deepseek-ai/deepseek-v3"
     assert s2.allowed_user_ids == [123, 456]
-    assert s2.mcp_servers[0].name == "fs"
+    assert s2.mcp_servers[-1].name == "fs"
 
 def test_secrets_roundtrip(hermes_home):
     paths.ensure_dirs()

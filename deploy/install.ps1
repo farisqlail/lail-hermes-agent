@@ -44,6 +44,18 @@ $py = "$AppDir\.venv\Scripts\python.exe"
 Write-Host "Installing hermes (core + dev)..."
 & $py -m pip install -e ".[dev]"
 
+# uv provides `uvx`, which the default `win` MCP server (windows-mcp) is launched
+# with. It goes in the venv because start.bat activates that venv, so its Scripts
+# directory is the PATH Hermes' subprocesses inherit. Best-effort: without it the
+# hub skips `win` with a warning and every other server still works.
+Write-Host "Installing uv (uvx, for the windows-mcp server)..." -ForegroundColor Cyan
+try {
+  & $py -m pip install -U uv
+  Write-Host "  uv installed (win MCP server enabled)" -ForegroundColor Green
+} catch {
+  Write-Host "  uv install failed - the 'win' MCP server will be skipped at startup." -ForegroundColor Yellow
+}
+
 # playwright is optional; browser testing needs it but it may fail on bleeding-edge Python
 Write-Host "Installing optional browser extra (playwright)..." -ForegroundColor Cyan
 try {
