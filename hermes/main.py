@@ -70,6 +70,23 @@ _SEND_RETRY_DELAYS_S = (1, 3, 6)
 # own, spaced widely enough to.
 _PLANNER_RETRY_DELAYS_S = (5, 15, 30)
 
+# One AsyncOpenAI client per (endpoint, key, timeout) instead of a fresh one on
+# every completion. A new client each turn meant a new httpx pool and a new TLS
+# handshake to the gateway before the first token — pure latency on a path the
+# user waits on. The client is safe to reuse across concurrent requests. Keyed
+# on the live settings, so changing the endpoint/key in the panel yields a new
+# client (the old one just lingers, harmless); the timeout is part of the key
+# because call sites want different ceilings (chat 120s, fact-extract 20s).
+_CLIENT_CACHE: dict[tuple[str, str, int], AsyncOpenAI] = {}
+
+def _client(base_url: str, api_key: str, timeout: int) -> AsyncOpenAI:
+    key = (base_url or "", api_key or "", timeout)
+    c = _CLIENT_CACHE.get(key)
+    if c is None:
+        c = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+        _CLIENT_CACHE[key] = c
+    return c
+
 def _is_transient_nim_error(e: BaseException) -> bool:
     """Worth retrying: capacity/rate limits, gateway blips, connection drops.
 
@@ -148,13 +165,21 @@ def build_nim_planner(settings, secrets, hub):
         if not current_secrets.nvidia_api_key:
             raise ValueError("AI API Key is missing. Please configure it in Settings.")
         current_settings = config.load_settings()
-        client = AsyncOpenAI(base_url=current_settings.nvidia_base_url, api_key=current_secrets.nvidia_api_key,
-                             timeout=PLANNER_REQUEST_TIMEOUT_S)
+        client = _client(current_settings.nvidia_base_url, current_secrets.nvidia_api_key,
+                         PLANNER_REQUEST_TIMEOUT_S)
+        # Split the clock: discovery (MCP subprocess round-trips, cold-start
+        # heavy) vs the planning LLM rounds. Read the log to see which half of a
+        # slow plan start is the cache miss and which is the model.
+        import time
+        _t_disc = time.monotonic()
         try:
             discovered = await asyncio.wait_for(hub.list_tools(), MCP_DISCOVERY_TIMEOUT_S)
         except asyncio.TimeoutError:
             print(f"MCP tool discovery timed out after {MCP_DISCOVERY_TIMEOUT_S}s; planning without tools")
             discovered = []
+        print(f"[timing plan] discovery {time.monotonic() - _t_disc:.2f}s "
+              f"(tools={len(discovered)})")
+        _t_plan = time.monotonic()
         oa_tools = to_openai_tools(discovered)
         # Project facts ride INSIDE the rules message. They used to be a second
         # system message, which reads cleaner but broke the plan contract
@@ -185,6 +210,7 @@ def build_nim_planner(settings, secrets, hub):
                 continue
             content = m.content or ""
             if content.strip() or empty_rounds >= MAX_EMPTY_PLANNER_ROUNDS:
+                print(f"[timing plan] llm {time.monotonic() - _t_plan:.2f}s")
                 return content
             # An empty completion with no tool call is a provider hiccup, not a
             # plan: the task text is still unanswered. Observed twice in one
@@ -315,8 +341,8 @@ def build_nim_chat(settings, secrets):
         current_settings = config.load_settings()
         agent_name = current_settings.agent_name or "Lail Agent"
         system = system_template.format(agent_name=agent_name) + voice.voice_tag_instruction(current_settings) + _confirm_note(current_settings)
-        client = AsyncOpenAI(base_url=current_settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
-                             timeout=PLANNER_REQUEST_TIMEOUT_S)
+        client = _client(current_settings.nvidia_base_url, secrets.nvidia_api_key,
+                         PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
         # tools + dispatch are a curated, safe set supplied by the web layer
         # (list_projects, recent_tasks, get_task_detail, start_task) — NOT the
@@ -362,11 +388,20 @@ def build_nim_chat(settings, secrets):
         current_settings = config.load_settings()
         agent_name = current_settings.agent_name or "Lail Agent"
         system = system_template.format(agent_name=agent_name) + voice.voice_tag_instruction(current_settings) + _confirm_note(current_settings)
-        client = AsyncOpenAI(base_url=current_settings.nvidia_base_url, api_key=secrets.nvidia_api_key,
-                             timeout=PLANNER_REQUEST_TIMEOUT_S)
+        client = _client(current_settings.nvidia_base_url, secrets.nvidia_api_key,
+                         PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
         use_tools = bool(tools and dispatch)
+        # Timing on the path the operator watches fill. TTFT is measured from the
+        # first request, not per round, so a tool round-trip shows up as the gap
+        # it is; total covers every round. Read the log to know whether a slow
+        # reply is the gateway (high TTFT) or extra tool rounds (rounds > 1).
+        import time
+        t0 = time.monotonic()
+        ttft = None
+        rounds = 0
         for _ in range(MAX_TOOL_ROUNDS):
+            rounds += 1
             kwargs = dict(model=current_settings.chat_model or current_settings.model, messages=msgs,
                           temperature=current_settings.chat_temperature, stream=True,
                           stream_options={"include_usage": True})
@@ -385,6 +420,10 @@ def build_nim_chat(settings, secrets):
                     continue
                 delta = chunk.choices[0].delta
                 if delta and delta.content:
+                    if ttft is None:
+                        ttft = time.monotonic() - t0
+                        print(f"[timing chat] TTFT {ttft:.2f}s "
+                              f"(model={kwargs['model']}, rounds_before_prose={rounds})")
                     content_buf += delta.content
                     yield ("token", delta.content)
                 for tcd in (getattr(delta, "tool_calls", None) or []):
@@ -411,6 +450,8 @@ def build_nim_chat(settings, secrets):
                 continue
             if usage:
                 yield ("usage", usage)
+            print(f"[timing chat] total {time.monotonic() - t0:.2f}s "
+                  f"(rounds={rounds}, tokens={usage.get('total') if usage else '?'})")
             return
         yield ("token", "Maaf, terlalu banyak putaran alat tanpa jawaban akhir.")
 
@@ -431,8 +472,7 @@ def build_nim_facts(settings, secrets):
         if not current_secrets.nvidia_api_key:
             return []
         s = config.load_settings()
-        client = AsyncOpenAI(base_url=s.nvidia_base_url,
-                             api_key=current_secrets.nvidia_api_key, timeout=20)
+        client = _client(s.nvidia_base_url, current_secrets.nvidia_api_key, 20)
         try:
             resp = await client.chat.completions.create(
                 model=s.chat_model or s.model,
@@ -493,8 +533,7 @@ def build_propose_mcp_config():
         if not secrets.nvidia_api_key:
             return None
         s = config.load_settings()
-        client = AsyncOpenAI(base_url=s.nvidia_base_url,
-                             api_key=secrets.nvidia_api_key, timeout=30)
+        client = _client(s.nvidia_base_url, secrets.nvidia_api_key, 30)
         try:
             resp = await client.chat.completions.create(
                 model=s.chat_model or s.model,

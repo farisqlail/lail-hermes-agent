@@ -27,6 +27,11 @@ def failure_reason(result: str) -> str | None:
     return None
 
 
+# How long a discovered tool list is reused before re-querying every server.
+# Short enough that a just-added integration appears in the next plan or two;
+# long enough that a burst of tasks doesn't re-pay per-server discovery.
+TOOLS_CACHE_TTL_S = 30
+
 def to_openai_tools(discovered: list[dict]) -> list[dict]:
     tools = []
     for d in discovered:
@@ -46,9 +51,21 @@ class McpHub:
         self.servers = servers
         self.session_factory = session_factory or _default_session
         self._sessions: dict[str, object] = {}
+        # tools/list is queried on every plan. The result only changes when a
+        # server is added/removed or restarts, so re-paying discovery per task
+        # (subprocess round-trips to each server) is wasted latency on the path
+        # the operator waits on. Cache it briefly; a new integration shows up in
+        # planning within TOOLS_CACHE_TTL_S, and connect/close drop the cache so
+        # a config change is never stale.
+        self._tools_cache: list[dict] | None = None
+        self._tools_cache_at = 0.0
+
+    def _invalidate_tools_cache(self) -> None:
+        self._tools_cache = None
 
     async def connect(self) -> None:
         import logging
+        self._invalidate_tools_cache()
         for srv in self.servers:
             if not srv.enabled:
                 continue
@@ -66,7 +83,10 @@ class McpHub:
         sequential discovery cost the sum of every server's cold start (two
         servers were already 20+ seconds) on the first turn after a restart.
         """
-        import asyncio, logging
+        import asyncio, logging, time
+        if (self._tools_cache is not None
+                and time.monotonic() - self._tools_cache_at < TOOLS_CACHE_TTL_S):
+            return self._tools_cache
         names = list(self._sessions)
         results = await asyncio.gather(
             *(self._sessions[n].list_tools() for n in names),
@@ -82,6 +102,8 @@ class McpHub:
                             "description": t.get("description", ""),
                             "input_schema": t.get("input_schema",
                                                   {"type": "object", "properties": {}})})
+        self._tools_cache = out
+        self._tools_cache_at = time.monotonic()
         return out
 
     async def call(self, fn_name: str, arguments: dict) -> str:
@@ -96,6 +118,7 @@ class McpHub:
         return await sess.call_tool(tool, arguments)
 
     async def close(self):
+        self._invalidate_tools_cache()
         for sess in self._sessions.values():
             close = getattr(sess, "close", None)
             if close:

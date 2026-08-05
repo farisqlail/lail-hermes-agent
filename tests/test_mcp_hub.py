@@ -25,6 +25,43 @@ async def test_hub_discovery_and_call():
     assert "called read" in out
     await hub.close()
 
+class CountingSession(FakeSession):
+    def __init__(self):
+        self.calls = 0
+    async def list_tools(self):
+        self.calls += 1
+        return await super().list_tools()
+
+async def test_list_tools_is_cached_within_ttl(monkeypatch):
+    sess = CountingSession()
+    servers = [McpServer(name="fs", type="stdio", command="x")]
+    hub = mcp_hub.McpHub(servers, session_factory=lambda s: sess)
+    await hub.connect()
+    await hub.list_tools()
+    await hub.list_tools()
+    assert sess.calls == 1          # second read served from cache, no re-discovery
+
+async def test_list_tools_cache_expires_after_ttl(monkeypatch):
+    sess = CountingSession()
+    monkeypatch.setattr(mcp_hub, "TOOLS_CACHE_TTL_S", 0)   # every read re-discovers
+    servers = [McpServer(name="fs", type="stdio", command="x")]
+    hub = mcp_hub.McpHub(servers, session_factory=lambda s: sess)
+    await hub.connect()
+    await hub.list_tools()
+    await hub.list_tools()
+    assert sess.calls == 2
+
+async def test_reconnect_invalidates_tools_cache():
+    sess = CountingSession()
+    servers = [McpServer(name="fs", type="stdio", command="x")]
+    hub = mcp_hub.McpHub(servers, session_factory=lambda s: sess)
+    await hub.connect()
+    await hub.list_tools()
+    await hub.close()
+    await hub.connect()             # config change path drops the cache
+    await hub.list_tools()
+    assert sess.calls == 2
+
 async def test_disabled_server_skipped():
     servers = [McpServer(name="fs", type="stdio", command="x", enabled=False)]
     hub = mcp_hub.McpHub(servers, session_factory=lambda s: FakeSession())

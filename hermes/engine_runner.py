@@ -176,6 +176,8 @@ async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
         fd, mcp_config_path = tempfile.mkstemp(prefix="hermes-mcp-", suffix=".json")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(mcp_config_dict(ask_url, ask_token), f)
+    import time
+    _t0 = time.monotonic()
     try:
         argv = _resolve(_argv(engine, prompt, model, effort,
                               session_id, resume_id, timeout_s, mcp_config_path))
@@ -193,7 +195,11 @@ async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
+            print(f"[timing engine] {engine} TIMEOUT after {time.monotonic() - _t0:.1f}s "
+                  f"(limit {timeout_s}s, model={model or 'default'})")
             return RunResult(False, "", "", True, None)
+        print(f"[timing engine] {engine} {time.monotonic() - _t0:.1f}s "
+              f"(model={model or 'default'}, effort={effort or 'default'})")
         stdout = out.decode(errors="replace")
         parser = PARSERS.get(engine)
         outcome = parser(stdout) if parser else None
