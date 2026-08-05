@@ -1527,8 +1527,8 @@ async def test_integrate_endpoint_starts_a_run_and_reports_it(hermes_home, monke
                 break
         assert body["state"] == "done"
         assert body["server"]["name"] == "notion"
-        # a successful run registers the server
-        assert [s.name for s in config.load_settings().mcp_servers] == ["notion"]
+        # a successful run registers the server, alongside the shipped defaults
+        assert config.load_settings().mcp_servers[-1].name == "notion"
 
 
 async def test_integrate_run_can_be_answered_with_a_secret(hermes_home, monkeypatch):

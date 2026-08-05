@@ -20,6 +20,30 @@ the agent as function calls. Add servers in the **MCP panel** at
 Destructive-by-nature tools (send email, delete file, submit a form) are risky by
 this rule. Reads (list, search, read, screenshot) are not.
 
+## What ships by default
+
+A fresh install (no `config.yaml` yet) starts with seven servers, defined in
+`_default_mcp_servers` in `hermes/config.py`:
+
+| server | on | needs |
+|---|---|---|
+| `pc` | ✅ | Node |
+| `browser` | ✅ | Node (downloads a browser engine on first run) |
+| `win` | ✅ | `uv` — `install.ps1` puts it in the venv |
+| `memory` | ✅ | Node |
+| `mail` | ⛔ | Gmail address + app password |
+| `web` | ⛔ | Tavily API key — usually unnecessary, see [Web search](#web-search) |
+| `spotify` | ⛔ | Spotify Client ID + a one-time `auth` run |
+
+The three disabled ones are templates with empty credential slots, so a first
+boot never fails on a missing key: fill them in the MCP panel and toggle them on.
+
+**Defaults only apply to a fresh install.** `load_settings` falls back to them
+when no settings file exists; once `config.yaml` is written it is the only
+source of truth, so pulling a new version never re-adds a server you removed nor
+re-enables one you turned off. To adopt a later default set, delete the
+`mcp_servers` list from `config.yaml` (or the file, losing every other setting).
+
 ## Add a server
 
 The easiest way to add a server is using the **one-link integration** in the MCP panel or through the chat agent.
@@ -105,6 +129,108 @@ args:    ["-y", "@playwright/mcp@latest"]
 
 First run downloads a browser engine. `browser_snapshot` / screenshots are reads;
 `browser_click` / `browser_type` / `browser_navigate` are gated in web chat.
+
+## Windows desktop (GUI)
+
+Read the screen and drive native Windows apps — what the `pc` terminal cannot do:
+click a button, type into a dialog, read a window's UI tree.
+
+```
+name:    win
+type:    stdio
+command: uvx
+args:    ["windows-mcp", "serve"]
+```
+
+[CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP), 20 tools.
+It is a Python package run through `uvx`, which `install.ps1` puts in the venv
+that `start.bat` activates — so the bare command resolves. Launching Hermes some
+other way means `uvx` may not be on its PATH; give the absolute path to
+`uvx.exe` then. First run installs ~90 dependencies; warm the cache with
+`uvx windows-mcp --help` once so the 60 s `OPEN_TIMEOUT_S` is not the first thing
+it hits.
+
+Only `Snapshot` and `Screenshot` run ungated. Everything else — `Click`, `Type`,
+`PowerShell`, `Registry`, `Clipboard`, `Process` — is gated in web chat, so
+hands-free GUI automation there means approving every step. Drive long GUI
+sequences through Telegram `/task` instead.
+
+## Memory (knowledge graph)
+
+Entities, relations and observations that survive a restart:
+
+```
+name:    memory
+type:    stdio
+command: npx
+args:    ["-y", "@modelcontextprotocol/server-memory"]
+env:     { "MEMORY_FILE_PATH": "C:\\Hermes\\config\\memory.jsonl" }
+```
+
+Set `MEMORY_FILE_PATH` — the default writes `memory.jsonl` inside the npx package
+directory, which a cache clear deletes. This overlaps the built-in `user_facts`
+table; it earns its place only for relations between entities, not flat facts.
+
+`read_graph` / `search_nodes` are reads; every `create_*` / `delete_*` /
+`add_observations` is gated, which means the agent cannot record a memory on its
+own in web chat.
+
+## Web search
+
+**Use the `browser` server above.** `browser_navigate` to
+`https://www.bing.com/search?q=...` followed by `browser_snapshot` needs no key,
+no account and no extra long-running process — Playwright is spawned per call and
+exits after. Both tools are ungated, so search works in web chat without an
+approval step. It costs ~5–10 s per query against ~1 s for a search API, and the
+snapshot is written to `.playwright-mcp\page-*.yml` rather than returned inline,
+so the agent reads it back through `pc__read_file`.
+
+A dedicated `web` server is configured but left **disabled**; enable it only if
+that latency becomes the bottleneck:
+
+```
+name:    web
+type:    stdio
+command: npx
+args:    ["-y", "tavily-mcp@latest"]
+env:     { "TAVILY_API_KEY": "tvly-..." }
+```
+
+Key from [tavily.com](https://app.tavily.com) — 1000 searches/month, no credit
+card. All of its tools are reads, so they run ungated.
+
+### Why not a keyless search server
+
+Measured from an Indonesian residential connection (Telkom), 2026-08-05. Every
+free/open-source option was tried and none survived; do not re-run this search
+without new information:
+
+| Option | Result |
+|---|---|
+| Any DuckDuckGo-backed server (`duckduckgo-mcp-server`, …) | `html.duckduckgo.com` resolves to `36.86.63.185` (Telkom) and serves an expired cert — `SEC_E_CERT_EXPIRED` / `ERR_CERT_COMMON_NAME_INVALID`. ISP block, not bot detection. The package's `[browser]` TLS-impersonation extra does not help. |
+| `mcp-searxng` against public instances | 12 instances tried; none expose the JSON API `mcp-searxng` needs. Nine answered `Too Many Requests`, the rest returned HTML. `SEARXNG_HTML_FALLBACK=true` parses that HTML but returns results for some queries and nothing for others. |
+| `mcp-searxng` against a self-hosted instance | Works in principle — Google and Bing are both reachable — but needs a permanently running SearXNG container. Rejected: too much starts up alongside the agent. |
+| `open-websearch` | Ignores its `engine` argument, always queries Bing, and Bing answers `301` to this IP. `totalResults: 0` for every engine. |
+| `s.jina.ai` | `401` — needs a key. (`r.jina.ai` is keyless but only reads a URL you already have.) |
+| Brave Search API | Free tier is 2000/month but registration requires a credit card. |
+
+## Spotify
+
+Playback control and playlists:
+
+```
+name:    spotify
+type:    stdio
+command: npx
+args:    ["-y", "spotify-mcp@latest"]
+env:     { "SPOTIFY_CLIENT_ID": "..." }
+```
+
+Create an app at the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard),
+add `http://127.0.0.1:8888/callback` as a redirect URI **exactly**, then authorise
+once — `$env:SPOTIFY_CLIENT_ID="..."; npx spotify-mcp@latest auth`. Tokens cache in
+`%USERPROFILE%\.spotify-mcp\tokens.json` and refresh themselves. No client secret:
+it uses PKCE.
 
 ## Gmail (Legacy)
 
