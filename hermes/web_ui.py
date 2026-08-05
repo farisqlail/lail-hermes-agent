@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_risk, launcher, mcp_integrate, mcp_oauth
+from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth
 from .pending_actions import PendingStore
 from .session_store import Store
 from .telegram_bridge import new_task_id
@@ -17,6 +17,10 @@ class TaskSubmit(BaseModel):
     # files are deleted once the answer is produced, so they are never replayed
     # into a later prompt — one look, one answer, gone.
     images: list[str] = []
+    # Continuation turn after an approved action ran: there is no operator
+    # message behind it, so `text` is empty and nothing is written to the
+    # thread as a user turn. See RESUME_NUDGE.
+    resume: bool = False
 
 class TaskConfirm(BaseModel):
     approved: bool
@@ -524,7 +528,14 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
 
     async def _resolve_pending(pa, approved: bool) -> dict:
         """Run or drop one parked write action, and record the outcome in the
-        conversation so the thread (and the next model turn) stays truthful."""
+        conversation so the thread (and the next model turn) stays truthful.
+
+        Approving is the middle of a plan, not the end of one: the model's turn
+        ended when the action was parked, so every approved outcome — worked,
+        errored, or came back empty — carries `resume: True` and the caller
+        drives one more model turn. Without that the tool ran, its result sat in
+        the thread as dead text, and the agent simply stopped.
+        """
         app.state.pending.pop(pa.id)
         if not approved:
             store.add_message(pa.conv_id, "assistant",
@@ -534,18 +545,27 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         if hub is None:
             store.add_message(pa.conv_id, "assistant",
                               f"⚠️ Tidak bisa menjalankan {pa.summary()}: MCP tidak tersedia.")
-            return {"id": pa.id, "approved": True, "error": "hub tidak tersedia"}
+            return {"id": pa.id, "approved": True, "resume": True,
+                    "error": "hub tidak tersedia"}
         try:
             result = await hub.call(pa.tool, pa.args)
         except Exception as e:
             safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
             store.add_message(pa.conv_id, "assistant",
                               f"⚠️ Gagal menjalankan {pa.summary()}: {safe}")
-            return {"id": pa.id, "approved": True, "error": safe}
+            return {"id": pa.id, "approved": True, "resume": True, "error": safe}
         text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+        # A call that returned without raising still may not have done anything.
+        # Saying "selesai" over an error payload or an empty result is the lie
+        # that made a dead confirm look like a completed one.
+        reason = mcp_hub.failure_reason(text)
+        if reason:
+            store.add_message(pa.conv_id, "assistant",
+                              f"⚠️ {pa.summary()} tidak berhasil: {reason}")
+            return {"id": pa.id, "approved": True, "resume": True, "error": reason}
         store.add_message(pa.conv_id, "assistant",
                           f"✅ {pa.summary()} selesai.\n\n{text[:800]}")
-        return {"id": pa.id, "approved": True, "result": text}
+        return {"id": pa.id, "approved": True, "resume": True, "result": text}
 
     @app.get("/api/chat/pending")
     def get_chat_pending():
@@ -848,6 +868,21 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         cleanup.purge(paths.uploads_dir(), sid)
         return {"ok": True}
 
+    # Sent as the last user turn of a resume request, never stored. The retry
+    # policy lives here rather than in a server-side loop on purpose: re-calling
+    # a write tool blind can repeat its side effect, so the model — which can
+    # read the error and fix the arguments — decides whether a second attempt is
+    # safe, and it is told plainly that stopping quietly is not an option.
+    RESUME_NUDGE = (
+        "Aksi yang tadi tertahan sudah dieksekusi dan hasilnya ada di pesan terakhir. "
+        "Periksa hasil itu dulu: kalau berhasil, lanjutkan rencanamu ke langkah "
+        "berikutnya tanpa menunggu perintah baru. Kalau hasilnya error atau kosong, "
+        "JANGAN mengaku berhasil dan jangan berhenti — perbaiki argumennya lalu "
+        "panggil tool-nya lagi, atau tempuh cara lain untuk tujuan yang sama. "
+        "Kalau sudah dicoba ulang dan tetap gagal, sebutkan jelas apa yang gagal "
+        "dan apa yang kamu butuhkan dari operator."
+    )
+
     @app.post("/api/chat/stream")
     async def chat_stream(body: TaskSubmit):
         # Server-Sent Events: the assistant's reply streams token-by-token so the
@@ -859,11 +894,15 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         text = body.text.strip()
         sid = body.session_id or CONV_WEB
         images = take_images(sid, body.images)
-        store.add_message(sid, "user", text + (IMAGE_MARKER if images else ""))
+        # A resume turn has no operator message behind it — the trigger was the
+        # confirm button — so nothing is recorded as a user turn and the thread
+        # shows only the outcome plus the agent picking the work back up.
+        if not body.resume:
+            store.add_message(sid, "user", text + (IMAGE_MARKER if images else ""))
         chat = getattr(app.state, "chat", None)
 
         # Auto rename session if it was default name
-        if sid != CONV_WEB:
+        if sid != CONV_WEB and not body.resume:
             sessions = store.list_sessions()
             curr = next((s for s in sessions if s["session_id"] == sid), None)
             if curr and curr["title"] == "Percakapan Baru":
@@ -883,9 +922,16 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                        "`/help` untuk bantuan.")
                 yield sse({"delta": acc})
             else:
+                history = history_with_context(sid, images)
+                if body.resume:
+                    # Ephemeral, not stored: it steers this one turn and would be
+                    # noise in the thread. Also guarantees the prompt ends on a
+                    # user turn — the outcome line before it is an assistant
+                    # message, which some providers will not complete after.
+                    history = [*history, {"role": "user", "content": RESUME_NUDGE}]
                 try:
                     async for kind, payload in chat.stream(
-                            history_with_context(sid, images),
+                            history,
                             tools=await _chat_tools(),
                             dispatch=make_chat_dispatch(sid)):
                         if kind == "token":
@@ -907,8 +953,10 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             yield sse({"done": True, "usage": usage})
             # After the client has its answer: learning is a background chore,
             # and holding the stream open for a second model call would show up
-            # as a pause with the reply already fully written.
-            await learn_from_turn(text, clean)
+            # as a pause with the reply already fully written. A resume turn has
+            # no operator utterance to learn from, so it is skipped.
+            if not body.resume:
+                await learn_from_turn(text, clean)
 
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache",

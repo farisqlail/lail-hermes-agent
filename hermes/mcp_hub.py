@@ -1,6 +1,31 @@
 from __future__ import annotations
+import json
 from typing import Callable
 from .config import McpServer
+
+
+def failure_reason(result: str) -> str | None:
+    """Why a tool result should be treated as failed, or None if it looks fine.
+
+    `hub.call` always hands back text, so a caller cannot tell "done" from "did
+    nothing" by type alone. Two shapes must never be reported as success: empty
+    output, and an {"error": ...} payload (what call_tool mints from MCP's
+    isError, and what the hub itself returns for an unknown tool). Central so
+    the chat dispatch and the confirm-card resolver agree on what failed means.
+    """
+    text = (result or "").strip()
+    if not text:
+        return "tool tidak mengembalikan hasil apa pun"
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None          # ordinary prose output — nothing to object to
+    if isinstance(data, dict):
+        err = data.get("error")
+        if err:
+            return "tool melaporkan error" if err is True else str(err)
+    return None
+
 
 def to_openai_tools(discovered: list[dict]) -> list[dict]:
     tools = []
@@ -170,7 +195,15 @@ class RealMcpSession:
         for c in getattr(res, "content", None) or []:
             text = getattr(c, "text", None)
             parts.append(text if text is not None else str(c))
-        return "\n".join(parts)
+        text = "\n".join(parts)
+        # MCP signals a tool-level failure with isError on a perfectly successful
+        # call — no exception is raised. Dropping that flag made every call look
+        # like it worked, so an approved action was reported "selesai" while the
+        # tool had actually refused. Surface it in the shape failure_reason reads.
+        if getattr(res, "isError", False):
+            return json.dumps({"error": text or "tool melaporkan error tanpa pesan"},
+                              ensure_ascii=False)
+        return text
 
     async def close(self):
         if self._stack is None:

@@ -1155,6 +1155,74 @@ async def test_a_parked_action_can_actually_be_approved(hermes_home):
     assert client.get("/api/chat/pending").json() == []
 
 
+async def test_an_approved_action_asks_the_caller_to_resume_the_agent(hermes_home):
+    """Approving lands in the MIDDLE of a plan: the model's turn ended when the
+    action was parked, so running the tool alone left the result in the thread
+    as dead text and the agent looked like it had stopped. Every approved
+    outcome must carry `resume` so the client drives one more model turn."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    class FakeHub:
+        async def list_tools(self): return []
+        async def call(self, tool, args): return "isi halaman"
+
+    app = create_app(store, hub=FakeHub())
+    pa = app.state.pending.add("browser__browser_run_code_unsafe", {}, "web")
+    client = TestClient(app)
+
+    body = client.post("/api/chat/pending/resolve",
+                       json={"id": pa.id, "approved": True}).json()
+    assert body["resume"] is True
+    # Declining is the end of the road, not a continuation.
+    pb = app.state.pending.add("browser__browser_click", {}, "web")
+    declined = client.post("/api/chat/pending/resolve",
+                           json={"id": pb.id, "approved": False}).json()
+    assert "resume" not in declined
+
+
+async def test_an_empty_or_errored_result_is_not_reported_as_done(hermes_home):
+    """hub.call returns text either way, so a tool that refused or returned
+    nothing used to be written into the thread as "selesai" — the operator saw
+    a success for an action that never happened, and the model was told so too."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    class FakeHub:
+        reply = ""
+        async def list_tools(self): return []
+        async def call(self, tool, args): return FakeHub.reply
+
+    app = create_app(store, hub=FakeHub())
+    client = TestClient(app)
+
+    for reply in ("", '{"error": "target frame detached"}'):
+        FakeHub.reply = reply
+        pa = app.state.pending.add("browser__browser_run_code_unsafe", {}, "web")
+        out = client.post("/api/chat/pending/resolve",
+                          json={"id": pa.id, "approved": True}).json()
+        assert out["error"], f"{reply!r} should not count as success"
+        assert out["resume"] is True          # so the model can try again
+        last = store.get_messages("web", limit=1)[-1]["content"]
+        assert "✅" not in last and "tidak berhasil" in last
+
+
+async def test_a_resume_turn_records_no_user_message(hermes_home):
+    """The continuation is fired by the confirm button, not by the operator, so
+    it must not leave a phantom user turn in the thread."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    app = create_app(store)                     # no chat wired: canned reply
+    client = TestClient(app)
+
+    with client.stream("POST", "/api/chat/stream",
+                       json={"text": "", "session_id": "web", "resume": True}) as r:
+        assert r.status_code == 200
+        for _ in r.iter_lines():
+            pass
+    assert [m["role"] for m in store.get_messages("web", limit=10)] == ["assistant"]
+
+
 async def test_a_voice_confirm_without_an_id_resolves_the_oldest(hermes_home):
     """Speech carries no id, so the voice path posts only `approved`."""
     paths.ensure_dirs()

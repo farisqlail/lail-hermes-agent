@@ -222,6 +222,12 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   const reviewPending = pending.find((p) => !dismissedPending.includes(p.id));
   const pendingRef = useRef<PendingAction[]>([]);
   pendingRef.current = pending;
+  // resolvePending fires the continuation turn, but submitText is declared far
+  // below it and is rebuilt every render. A ref keeps the callback pointed at
+  // the current one without dragging it into the dependency list.
+  const submitTextRef = useRef<(text: string, opts?: { resume?: boolean }) => Promise<void>>(
+    async () => {},
+  );
   const sinkRef = useRef<HtmlAudioSink | null>(null);
   const queueRef = useRef<SpeechQueue | null>(null);
 
@@ -436,8 +442,15 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
 
   /** Approve or decline a parked action. `id` omitted resolves the oldest — the
    *  shape a voice command uses, since speech carries no id. The backend appends
-   *  the outcome to the thread, so refetch both. */
+   *  the outcome to the thread, so refetch both.
+   *
+   *  Approving is not the end of the turn: the agent's turn ended when the action
+   *  was parked, so a `resume` flag comes back and we drive one more model turn.
+   *  Without it the tool ran, its result sat in the thread unread, and the agent
+   *  looked like it had stopped dead. The history refetch is awaited first so the
+   *  outcome is on screen before the continuation streams under it. */
   const resolvePending = useCallback(async (id: string | undefined, approved: boolean) => {
+    let shouldResume = false;
     try {
       const res = await fetch('/api/chat/pending/resolve', {
         method: 'POST',
@@ -446,13 +459,19 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
       });
       const data = res.ok ? await res.json() : null;
       if (data?.ok === false) toast('Tidak ada aksi tertunda', 'warn');
-      else toast(approved ? 'Aksi dijalankan' : 'Aksi dibatalkan', approved ? 'ok' : 'warn');
+      else {
+        toast(approved ? 'Aksi dijalankan' : 'Aksi dibatalkan', approved ? 'ok' : 'warn');
+        shouldResume = data?.resume === true;
+      }
     } catch {
       toast('Gagal memproses aksi', 'err');
     } finally {
       void fetchPending();
-      void fetchChatHistory();
+      await fetchChatHistory();
     }
+    // Outside the try: a resume failure is the stream's own to report, and must
+    // not be swallowed as "Gagal memproses aksi".
+    if (shouldResume) await submitTextRef.current('', { resume: true });
   }, [fetchPending, fetchChatHistory, toast]);
 
   const handleConfirmTask = async (tid: string, approved: boolean) => {
@@ -526,12 +545,16 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     return ids;
   };
 
-  const submitText = async (text: string) => {
-    if ((!text && attached.length === 0) || streaming) return;
+  /** `resume` is the continuation turn fired after an approved action ran: no
+   *  operator typed it, so it carries no text and shows no user bubble — the
+   *  agent simply picks the work back up where the confirmation interrupted it. */
+  const submitText = async (text: string, opts?: { resume?: boolean }) => {
+    const resume = opts?.resume === true;
+    if ((!text && attached.length === 0 && !resume) || streaming) return;
     // An image with no caption still needs words: an empty text part is
     // rejected by some providers, and the operator should see exactly what
     // was asked on their behalf.
-    if (!text) text = 'Tolong analisa gambar ini.';
+    if (!text && !resume) text = 'Tolong analisa gambar ini.';
     const staged = attached;
     const imageIds = await uploadAttached();
     setAttached([]);
@@ -546,11 +569,13 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     queueRef.current?.markTurnStart();
     if (ttsEnabled) sinkRef.current?.unlock();
 
-    const userMsg: Message = {
-      role: 'user', content: text,
-      images: staged.map((a) => a.url),
-    };
-    setMessages((prev) => [...prev, userMsg]);
+    if (!resume) {
+      const userMsg: Message = {
+        role: 'user', content: text,
+        images: staged.map((a) => a.url),
+      };
+      setMessages((prev) => [...prev, userMsg]);
+    }
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -572,7 +597,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, session_id: sessionId, images: imageIds }),
+        body: JSON.stringify({ text, session_id: sessionId, images: imageIds, resume }),
         signal: controller.signal,
       });
 
@@ -644,6 +669,9 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
         usage: accumulatedUsage || undefined,
       };
       setMessages((prev) => [...prev, assistantMsg]);
+      // The resume turn is silent by design, so the one thing the operator gets
+      // is this: the confirmed action is done and the agent has moved on.
+      if (resume) toast('Aksi selesai, agent melanjutkan', 'ok');
       if (streamSpeech) {
         if (tail.display) {
           speechBuffer += tail.display;
@@ -691,6 +719,8 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
       abortControllerRef.current = null;
     }
   };
+
+  submitTextRef.current = submitText;
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
