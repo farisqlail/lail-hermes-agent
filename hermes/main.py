@@ -156,14 +156,18 @@ def build_nim_planner(settings, secrets, hub):
             print(f"MCP tool discovery timed out after {MCP_DISCOVERY_TIMEOUT_S}s; planning without tools")
             discovered = []
         oa_tools = to_openai_tools(discovered)
-        # Project facts ride as their own system message: the rules above are
-        # the law, this is the evidence, and the user's message stays the
-        # user's words. Rules 2-4 are unobeyable without it — nothing else
-        # tells the planner whether this project can produce an APK.
-        msgs = [{"role": "system", "content": system}]
-        if context:
-            msgs.append({"role": "system", "content": context})
-        msgs.append({"role": "user", "content": text})
+        # Project facts ride INSIDE the rules message. They used to be a second
+        # system message, which reads cleaner but broke the plan contract
+        # outright on an OpenAI-compatible gateway: measured against the
+        # configured endpoint, the same task planned 3/3 with one system
+        # message and 0/3 with two — the model answered with JavaScript for the
+        # task instead of a plan, or with zero completion tokens, which is what
+        # surfaced as "planner returned empty output". Keep this one message.
+        # Rules 2-4 are unobeyable without the facts — nothing else tells the
+        # planner whether this project can produce an APK.
+        msgs = [{"role": "system",
+                 "content": f"{system}\n\n{context}" if context else system},
+                {"role": "user", "content": text}]
         empty_rounds = 0
         for _ in range(MAX_TOOL_ROUNDS):
             resp = await _completion_with_retry(
@@ -189,7 +193,10 @@ def build_nim_planner(settings, secrets, hub):
             # One nudge is enough to tell a hiccup from a model that will never
             # answer; past that the caller reports the empty output honestly.
             empty_rounds += 1
-            msgs.append({"role": "system",
+            # A user turn, not a system one: a second system message is exactly
+            # what makes this endpoint answer with nothing, and a nudge that
+            # reproduces the fault it is recovering from is no nudge at all.
+            msgs.append({"role": "user",
                          "content": "Balasan sebelumnya kosong. Keluarkan "
                                     "SEKARANG objek JSON rencananya saja."})
         raise ValueError(f"planner exceeded {MAX_TOOL_ROUNDS} tool-call rounds without a final answer")

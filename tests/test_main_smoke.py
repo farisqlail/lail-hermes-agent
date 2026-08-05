@@ -415,6 +415,64 @@ class _EmptyHub:
         return []
 
 
+class _RecordingCompletions:
+    """Like _FakeCompletions but keeps the whole message list of every call."""
+    def __init__(self, contents, calls):
+        self._contents = list(contents)
+        self._calls = calls
+
+    async def create(self, **kwargs):
+        self._calls.append(kwargs["messages"])
+        content = self._contents.pop(0)
+        return type("R", (), {"choices": [type("C", (), {"message": _FakeMessage(content)})()]})()
+
+
+class _RecordingClient:
+    def __init__(self, contents, calls):
+        self.chat = type("Chat", (), {"completions": _RecordingCompletions(contents, calls)})()
+
+
+async def test_planner_sends_the_project_context_in_one_system_message(hermes_home, monkeypatch):
+    """Project facts ride inside the rules message, not a second system turn.
+
+    A second system message made the configured endpoint drop the plan contract
+    outright: measured against the real gateway, the same task planned 3/3 with
+    one system message and 0/3 with two — answering with JavaScript, or with
+    zero completion tokens, which surfaced as "planner returned empty output".
+    """
+    from hermes import config
+    config.save_secrets(config.Secrets(nvidia_api_key="k", telegram_bot_token=""))
+    calls = []
+    plan = '{"steps":[{"type":"code","prompt":"perbaiki"}]}'
+    monkeypatch.setattr(main, "AsyncOpenAI",
+                        lambda **kw: _RecordingClient([plan], calls))
+
+    planner = main.build_nim_planner(config.load_settings(), config.load_secrets(), _EmptyHub())
+    await planner("perbaiki checkout", "# Project context\nTarget: myprofit-v3.")
+
+    msgs = calls[0]
+    assert [m["role"] for m in msgs] == ["system", "user"]
+    assert "Target: myprofit-v3." in msgs[0]["content"]
+    assert "Lail Hermes' planner" in msgs[0]["content"]
+
+
+async def test_planner_nudge_is_not_a_second_system_message(hermes_home, monkeypatch):
+    """Same defect, retry path: the nudge exists to recover from an empty
+    answer, so it must not use the one message shape that causes them."""
+    from hermes import config
+    config.save_secrets(config.Secrets(nvidia_api_key="k", telegram_bot_token=""))
+    calls = []
+    plan = '{"steps":[{"type":"code","prompt":"perbaiki"}]}'
+    monkeypatch.setattr(main, "AsyncOpenAI",
+                        lambda **kw: _RecordingClient(["", plan], calls))
+
+    planner = main.build_nim_planner(config.load_settings(), config.load_secrets(), _EmptyHub())
+    await planner("perbaiki checkout", "# Project context\nTarget: myprofit-v3.")
+
+    assert [m["role"] for m in calls[1]].count("system") == 1
+    assert "kosong" in calls[1][-1]["content"]
+
+
 async def test_planner_nudges_once_when_the_provider_answers_with_nothing(hermes_home, monkeypatch):
     """An empty completion is a provider hiccup, not a plan. It failed two real
     tasks with 'no JSON object in planner output' and nothing to show."""
