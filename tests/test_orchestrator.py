@@ -526,7 +526,7 @@ async def test_unconfirmed_completion_gets_a_fixup_round(hermes_home):
     await orch.run_task("t1", 5, "x", report)
 
     assert len(prompts) == 2
-    assert "ended without confirming completion" in prompts[1]
+    assert "ended without printing the completion line" in prompts[1]
     assert "Waiting on npm install" in prompts[1]   # previous output fed back
     assert store.get_task("t1")["status"] == "done"
     assert any("confirmed done, 2 round(s)" in m for m in reports)
@@ -566,6 +566,22 @@ def test_confirmed_done_requires_the_sentinel_as_the_final_line():
     assert not _confirmed_done(f"I will print {_DONE_SENTINEL} once tests pass")
     assert not _confirmed_done(f"{_DONE_SENTINEL}\nactually, the tests fail")
     assert not _confirmed_done(_COMPLETION_CONTRACT)             # the contract is not a claim
+
+
+def test_confirmed_done_tolerates_markdown_decoration():
+    """Every rejected-but-finished step costs a full extra engine session
+    redoing work that was already done — the loop an operator sees as the same
+    task running over and over. Decoration around the token changes nothing
+    about the claim, so it must not cost a round."""
+    from hermes.orchestrator import _confirmed_done, _DONE_SENTINEL
+    assert _confirmed_done(f"work\n**{_DONE_SENTINEL}**")
+    assert _confirmed_done(f"work\n`{_DONE_SENTINEL}`")
+    assert _confirmed_done(f"work\n{_DONE_SENTINEL}.")
+    assert _confirmed_done(f"work\n- {_DONE_SENTINEL}")
+    assert _confirmed_done(f"work\n```\n{_DONE_SENTINEL}\n```")   # closing fence after
+    assert _confirmed_done(f"work\n{_DONE_SENTINEL}\n---")
+    # The anchor still holds: words after the sentinel retract it.
+    assert not _confirmed_done(f"**{_DONE_SENTINEL}**\nbut the build is broken")
 
 
 async def test_echoed_prompt_does_not_confirm_completion(hermes_home):

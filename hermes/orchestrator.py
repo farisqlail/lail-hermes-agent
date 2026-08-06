@@ -145,12 +145,24 @@ def _compose_engine_prompt(task_text: str, proj: Path, step_prompt: str) -> str:
     original task and a tree summary anchor it; the step stays last so it
     reads as the instruction.
     """
-    return ("# Original task (from the user)\n"
+    return ("# Original task (from the user) — AUTHORITATIVE\n"
+            "What the user actually asked for, in their own words. Where the "
+            "step below is vaguer, narrower, or names something this project "
+            "does not contain, this wins.\n\n"
             f"{task_text}\n\n"
-            "# Project structure (top two levels)\n"
+            "# Project structure (top two levels, truncated)\n"
             f"{_project_summary(proj)}\n\n"
             "# Your step (do only this)\n"
-            f"{step_prompt}")
+            f"{step_prompt}\n\n"
+            "# Before you edit\n"
+            "The step was written by a planner that never opened this "
+            "repository, so every file path, endpoint, and symbol it names is "
+            "a guess. Read the real code first: find the files the change "
+            "touches, follow the conventions already in them (and CLAUDE.md / "
+            "AGENTS.md if present), and check every caller of anything you "
+            "modify. If the step contradicts what is actually on disk, follow "
+            "the original task and report what you found. Fix the cause, not "
+            "the symptom.")
 
 # A code step gets up to this many engine sessions: the first, plus fix-up
 # rounds that feed the previous session's output back in. Bounded for the
@@ -169,11 +181,20 @@ _COMPLETION_CONTRACT = (
     "\n\n# Completion contract\n"
     f"When — and only when — this step is fully done and verified in THIS "
     f"session (code written; any build/tests you said you would run actually "
-    f"ran and passed), print {_DONE_SENTINEL} on its own line as the last "
-    "thing you output. Never print it for work you only plan, promise, or "
-    "leave waiting on a background command. If you cannot finish, instead "
-    "state precisely what remains to be done."
+    f"ran and passed), end your final message with {_DONE_SENTINEL} alone on "
+    "the last line — nothing after it, no code fence, no bold. Never print it "
+    "for work you only plan, promise, or leave waiting on a background "
+    "command. If you cannot finish, instead state precisely what remains to "
+    "be done and do not print the line at all."
 )
+
+# Markdown decoration a model wraps a bare token in — a fence, bold, a bullet,
+# a trailing full stop. None of it changes the claim the line makes, and a line
+# made of nothing else makes no claim at all.
+_SENTINEL_NOISE = "`*_~#-–—.:!, \t"
+
+def _undecorate(line: str) -> str:
+    return line.strip().strip(_SENTINEL_NOISE)
 
 def _confirmed_done(final_text: str) -> bool:
     """True only when the engine's own closing line is the sentinel.
@@ -184,8 +205,16 @@ def _confirmed_done(final_text: str) -> bool:
     message here — no tool output, no echoed prompt — which is what closes the
     spoof surface. For a text-mode engine this falls back to stdout, where
     matching the last line is the best available proxy.
+
+    Still anchored to the last meaningful line — anything the model says AFTER
+    the sentinel (`"...DONE\\nactually, the tests fail"`) retracts it. What is
+    tolerated is decoration only: `**DONE**`, `` `DONE` ``, `DONE.`, and a
+    closing fence on the line below. Requiring an undecorated exact match cost
+    a whole extra engine session every time a model reached for markdown — the
+    work was finished, the sentinel was there, and Hermes re-ran the step
+    anyway. That is the loop the operator sees as "mengulang task".
     """
-    lines = [ln.strip() for ln in final_text.splitlines() if ln.strip()]
+    lines = [u for ln in final_text.splitlines() if (u := _undecorate(ln))]
     return bool(lines) and lines[-1] == _DONE_SENTINEL
 
 def _resume_prompt() -> str:
@@ -197,9 +226,13 @@ def _resume_prompt() -> str:
     for the same context twice.
     """
     return ("# Continuation\nYour previous turn in this session ended without "
-            "confirming completion. Check what actually landed on disk, finish "
-            "the remaining work, run the verification for real, and fix "
-            "anything broken." + _COMPLETION_CONTRACT)
+            "the completion line. That may only mean the line was missing — it "
+            "does not mean the work is unfinished. First check what actually "
+            "landed on disk and re-run the verification. If the step is "
+            "already done, say so and print the completion line; do NOT redo "
+            "it, and do NOT invent extra work to justify the round. Only if "
+            "something is genuinely missing or broken, finish it and fix it."
+            + _COMPLETION_CONTRACT)
 
 # How many times one step may be repaired and re-run, and how many times a
 # transient failure of the same step is waited out. One, not three: a repair
@@ -247,13 +280,20 @@ def _guidance_block(hint: str) -> str:
 
 
 def _continuation_prompt(base: str, prev) -> str:
+    """The continuation for an engine whose session cannot be reopened.
+
+    Says the same thing as _resume_prompt — check before redoing — but has to
+    restate the task, because a fresh session remembers none of it.
+    """
     reason = ("ended with an error" if not prev.ok
-              else "ended without confirming completion")
+              else "ended without printing the completion line")
     return (base
             + f"\n\n# Continuation\nA previous session on this step {reason}. "
-            "Its final output is below. Pick up where it left off: check what "
-            "actually landed on disk, finish the remaining work, run the "
-            "verification for real, and fix anything broken.\n"
+            "Its final output is below, and its edits are already on disk. "
+            "Start by checking what actually landed and re-running the "
+            "verification: if the step is already done, say so and print the "
+            "completion line rather than redoing it. Only finish and fix what "
+            "is genuinely missing or broken.\n"
             f"--- previous stdout (tail) ---\n{prev.stdout[-800:]}\n"
             f"--- previous stderr (tail) ---\n{prev.stderr[-800:]}")
 
