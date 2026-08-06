@@ -54,6 +54,71 @@ PLANNER_REQUEST_TIMEOUT_S = 120   # single NIM completion call
 MCP_DISCOVERY_TIMEOUT_S = 20      # tool discovery must never stall planning
 MAX_EMPTY_PLANNER_ROUNDS = 1      # nudges spent on a provider that answered with nothing
 
+# Reaching MAX_TOOL_ROUNDS used to end the turn with an apology and nothing
+# else: every tool result already fetched was discarded and the user was told
+# there had been too many rounds, which is not their problem and not an answer.
+# The cap exists to stop an endless loop, not to cancel the reply. So the last
+# round runs with the tools withdrawn and this nudge appended — with nothing to
+# call, the model can only answer in prose, and it answers from the tool output
+# already in the message list. The wall becomes a deadline.
+FINAL_ROUND_NUDGE = (
+    "Batas pemanggilan alat sudah tercapai. JANGAN panggil alat lagi. "
+    "Jawab SEKARANG memakai hasil alat yang sudah kamu terima di atas. "
+    "Bila datanya belum lengkap, katakan apa yang sudah kamu ketahui, apa yang "
+    "belum, dan langkah berikutnya — jangan meminta maaf tanpa jawaban."
+)
+
+# Same defect the planner already nudges past (MAX_EMPTY_PLANNER_ROUNDS), on
+# the chat path: a round can end with no tool call and no prose. The turn then
+# reaches the operator as the web UI's "(tidak ada balasan)" placeholder and is
+# persisted as an empty assistant message. Two ways it happens, both covered by
+# one check on the visible text: the provider answers with nothing, or the model
+# emits only the <voice> opener, which is stripped before display. One retry is
+# enough to tell a hiccup from a model that will never answer.
+MAX_EMPTY_REPLY_ROUNDS = 1
+EMPTY_REPLY_NUDGE = (
+    "Balasan sebelumnya kosong — pengguna tidak melihat apa pun. Tulis SEKARANG "
+    "jawaban teks biasa untuk permintaan terakhir. Jangan hanya mengirim tag "
+    "suara, jangan memanggil alat lagi."
+)
+
+# Appended to a replayed result so the model sees why it got no fresh call.
+_REPEAT_TOOL_NOTE = ("\n\n[catatan sistem: panggilan alat ini sudah dilakukan "
+                     "persis sama pada giliran ini; ini hasil yang sama. "
+                     "Jangan ulangi — lanjutkan menjawab.]")
+
+
+def _has_visible_prose(content: str) -> bool:
+    """True when the operator would actually see something.
+
+    The <voice> opener is stripped before display, so a reply consisting only of
+    a tag renders as nothing at all — indistinguishable, to the operator, from a
+    provider that answered with an empty string. Both are "no reply".
+    """
+    display, _ = voice.strip_voice_tag(content or "")
+    return bool(display.strip())
+
+
+async def _call_tool_once(seen: dict, call, name: str, raw_args: str) -> str:
+    """Dispatch a tool call, replaying the result if this turn already made it.
+
+    A model that re-issues `list_projects` with identical arguments five times
+    is not making progress, it is stuck — and each repeat spends a round the cap
+    then blames on the user. Identical arguments cannot yield a different answer
+    within one turn, so replaying the first result costs no round-trip and
+    breaks the cycle. It also stops a repeated `start_task` from queueing the
+    same work twice.
+    """
+    key = f"{name}({raw_args or '{}'})"
+    if key in seen:
+        return seen[key] + _REPEAT_TOOL_NOTE
+    try:
+        args = json.loads(raw_args or "{}")
+    except json.JSONDecodeError:
+        args = {}
+    seen[key] = await call(name, args)
+    return seen[key]
+
 # python-telegram-bot's default HTTP timeouts (connect/read ~5s) are tight for
 # a slow or flaky uplink to api.telegram.org: a single timed-out send raised
 # telegram.error.TimedOut ("Timed out"), which — uncaught in handle_task —
@@ -194,18 +259,22 @@ def build_nim_planner(settings, secrets, hub):
                  "content": f"{system}\n\n{context}" if context else system},
                 {"role": "user", "content": text}]
         empty_rounds = 0
-        for _ in range(MAX_TOOL_ROUNDS):
+        called: dict = {}
+        for i in range(MAX_TOOL_ROUNDS):
+            if i == MAX_TOOL_ROUNDS - 1:
+                msgs.append({"role": "user", "content": FINAL_ROUND_NUDGE})
+            round_tools = None if i == MAX_TOOL_ROUNDS - 1 else (oa_tools or None)
             resp = await _completion_with_retry(
                 lambda: client.chat.completions.create(
                     model=current_settings.model, messages=msgs,
                     temperature=current_settings.planner_temperature,
-                    tools=oa_tools or None))
+                    tools=round_tools))
             m = resp.choices[0].message
             if m.tool_calls:
                 msgs.append(m.model_dump())
                 for tc in m.tool_calls:
-                    result = await hub.call(tc.function.name,
-                                            json.loads(tc.function.arguments or "{}"))
+                    result = await _call_tool_once(called, hub.call, tc.function.name,
+                                                   tc.function.arguments)
                     msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
                 continue
             content = m.content or ""
@@ -354,24 +423,37 @@ def build_nim_chat(settings, secrets):
                     model=current_settings.chat_model or current_settings.model, messages=msgs,
                     temperature=current_settings.chat_temperature))
             return resp.choices[0].message.content or ""
-        for _ in range(MAX_TOOL_ROUNDS):
+        called: dict = {}
+        empty_rounds = 0
+        # The empty-reply retries get their own rounds on top of the tool budget:
+        # spending a tool round on a provider hiccup would punish the answer for
+        # the provider's fault.
+        for i in range(MAX_TOOL_ROUNDS + MAX_EMPTY_REPLY_ROUNDS):
+            last = i >= MAX_TOOL_ROUNDS - 1
+            if i == MAX_TOOL_ROUNDS - 1:
+                msgs.append({"role": "user", "content": FINAL_ROUND_NUDGE})
+            kwargs = dict(model=current_settings.chat_model or current_settings.model,
+                          messages=msgs, temperature=current_settings.chat_temperature)
+            if not last:
+                kwargs["tools"] = tools
             resp = await _completion_with_retry(
-                lambda: client.chat.completions.create(
-                    model=current_settings.chat_model or current_settings.model, messages=msgs,
-                    temperature=current_settings.chat_temperature, tools=tools))
+                lambda: client.chat.completions.create(**kwargs))
             m = resp.choices[0].message
-            if m.tool_calls:
+            if m.tool_calls and not last:
                 msgs.append(m.model_dump())
                 for tc in m.tool_calls:
-                    try:
-                        args = json.loads(tc.function.arguments or "{}")
-                    except json.JSONDecodeError:
-                        args = {}
-                    result = await dispatch(tc.function.name, args)
+                    result = await _call_tool_once(called, dispatch, tc.function.name,
+                                                   tc.function.arguments)
                     msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
                 continue
-            return m.content or ""
-        return "Maaf, terlalu banyak putaran alat tanpa jawaban akhir."
+            content = m.content or ""
+            if _has_visible_prose(content) or empty_rounds >= MAX_EMPTY_REPLY_ROUNDS:
+                return content
+            empty_rounds += 1
+            if content:
+                msgs.append({"role": "assistant", "content": content})
+            msgs.append({"role": "user", "content": EMPTY_REPLY_NUDGE})
+        return ""
 
     async def stream(history: list[dict], tools=None, dispatch=None):
         """Token-streaming twin of chat(): yields ("token", str) as the model
@@ -400,12 +482,17 @@ def build_nim_chat(settings, secrets):
         t0 = time.monotonic()
         ttft = None
         rounds = 0
-        for _ in range(MAX_TOOL_ROUNDS):
+        called: dict = {}
+        empty_rounds = 0
+        for i in range(MAX_TOOL_ROUNDS + MAX_EMPTY_REPLY_ROUNDS):
             rounds += 1
+            last = i >= MAX_TOOL_ROUNDS - 1
+            if i == MAX_TOOL_ROUNDS - 1 and use_tools:
+                msgs.append({"role": "user", "content": FINAL_ROUND_NUDGE})
             kwargs = dict(model=current_settings.chat_model or current_settings.model, messages=msgs,
                           temperature=current_settings.chat_temperature, stream=True,
                           stream_options={"include_usage": True})
-            if use_tools:
+            if use_tools and not last:
                 kwargs["tools"] = tools
             resp = await client.chat.completions.create(**kwargs)
             content_buf = ""
@@ -434,26 +521,36 @@ def build_nim_chat(settings, secrets):
                         slot["name"] += tcd.function.name
                     if tcd.function and tcd.function.arguments:
                         slot["args"] += tcd.function.arguments
-            if tool_acc:
+            if tool_acc and not last:
                 msgs.append({"role": "assistant", "content": content_buf or None,
                              "tool_calls": [
                                  {"id": s["id"], "type": "function",
                                   "function": {"name": s["name"], "arguments": s["args"] or "{}"}}
                                  for s in tool_acc.values()]})
                 for s in tool_acc.values():
-                    try:
-                        args = json.loads(s["args"] or "{}")
-                    except json.JSONDecodeError:
-                        args = {}
-                    result = await dispatch(s["name"], args)
+                    result = await _call_tool_once(called, dispatch, s["name"], s["args"])
                     msgs.append({"role": "tool", "tool_call_id": s["id"], "content": result})
+                continue
+            # A round that streamed nothing the operator can see is the
+            # "(tidak ada balasan)" placeholder in the making. Retry once with
+            # the tools withdrawn rather than closing an empty turn. Anything
+            # already streamed stays on screen — the retry appends to it.
+            if not _has_visible_prose(content_buf) and empty_rounds < MAX_EMPTY_REPLY_ROUNDS:
+                empty_rounds += 1
+                if content_buf:
+                    msgs.append({"role": "assistant", "content": content_buf})
+                msgs.append({"role": "user", "content": EMPTY_REPLY_NUDGE})
                 continue
             if usage:
                 yield ("usage", usage)
             print(f"[timing chat] total {time.monotonic() - t0:.2f}s "
                   f"(rounds={rounds}, tokens={usage.get('total') if usage else '?'})")
             return
-        yield ("token", "Maaf, terlalu banyak putaran alat tanpa jawaban akhir.")
+        # Unreachable: the tool rounds end tool-free and the empty-reply budget is
+        # smaller than the extra rounds it was given, so the final iteration can
+        # only fall through to the return above. A guard, not an apology — an
+        # empty turn reaching the operator is a bug, not a message.
+        raise RuntimeError("chat stream exhausted its rounds without returning")
 
     chat.stream = stream
     return chat

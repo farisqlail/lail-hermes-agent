@@ -387,6 +387,268 @@ async def test_chat_stream_carries_the_same_instruction(hermes_home, monkeypatch
     assert voice.VOICE_TAG_OPEN in seen[-1]
 
 
+class _StuckToolCall:
+    """One tool call, reissued verbatim every round — the shape that used to
+    burn all eight rounds and end the turn with an apology."""
+    def __init__(self, call_id="call_1", name="recent_tasks", args="{}"):
+        self.id = call_id
+        self.type = "function"
+        self.function = type("F", (), {"name": name, "arguments": args})()
+
+
+class _StuckMessage:
+    def __init__(self, tool_calls=None, content=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+    def model_dump(self):
+        return {"role": "assistant", "content": self.content, "tool_calls": []}
+
+
+class _StuckCompletions:
+    """Calls a tool for as long as it is offered one; answers in prose the
+    moment the tools are withdrawn."""
+    def __init__(self, calls):
+        self._calls = calls
+
+    async def create(self, **kwargs):
+        self._calls.append(kwargs)
+        msg = (_StuckMessage(tool_calls=[_StuckToolCall()]) if "tools" in kwargs
+               else _StuckMessage(content="3 task terakhir berhenti di tahap build."))
+        return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+
+class _StuckStream:
+    """Streaming twin of _StuckCompletions."""
+    def __init__(self, with_tools):
+        self._with_tools = with_tools
+
+    def __aiter__(self):
+        async def gen():
+            if self._with_tools:
+                tcd = type("T", (), {
+                    "index": 0, "id": "call_1",
+                    "function": type("F", (), {"name": "recent_tasks",
+                                               "arguments": "{}"})()})()
+                delta = type("D", (), {"content": None, "tool_calls": [tcd]})()
+            else:
+                delta = type("D", (), {"content": "sudah dicek", "tool_calls": None})()
+            yield type("K", (), {"choices": [type("C", (), {"delta": delta})()],
+                                 "usage": None})()
+        return gen()
+
+
+async def test_chat_answers_on_the_last_round_instead_of_apologising(hermes_home, monkeypatch):
+    """Hitting MAX_TOOL_ROUNDS must not throw the turn away.
+
+    The cap bounds tool round-trips; it is not a reason to tell the user
+    "terlalu banyak putaran alat" and discard every result already fetched. The
+    last round runs tool-free, so the model can only answer in prose — and it
+    answers from the tool output already in the message list.
+    """
+    from hermes import config, main
+
+    calls: list[dict] = []
+    dispatched: list[str] = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": _StuckCompletions(calls)})()
+
+    async def dispatch(name, args):
+        dispatched.append(name)
+        return "[]"
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(tts_enabled=False))
+    chat = main.build_nim_chat(config.load_settings(),
+                               config.Secrets(nvidia_api_key="nvapi-test"))
+    out = await chat([{"role": "user", "content": "kenapa task gagal"}],
+                     tools=[{"type": "function",
+                             "function": {"name": "recent_tasks", "parameters": {}}}],
+                     dispatch=dispatch)
+
+    assert out == "3 task terakhir berhenti di tahap build."
+    assert "putaran alat" not in out
+    assert len(calls) == main.MAX_TOOL_ROUNDS
+    assert "tools" not in calls[-1]
+    assert main.FINAL_ROUND_NUDGE in calls[-1]["messages"][-1]["content"]
+    # Repeat guard: seven identical calls, one real dispatch.
+    assert dispatched == ["recent_tasks"]
+
+
+async def test_chat_stream_answers_on_the_last_round(hermes_home, monkeypatch):
+    """Same defect on the path the operator watches fill: the SSE turn used to
+    end by streaming the apology as if it were the answer."""
+    from hermes import config, main
+
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return _StuckStream("tools" in kwargs)
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    async def dispatch(name, args):
+        return "[]"
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(tts_enabled=False))
+    chat = main.build_nim_chat(config.load_settings(),
+                               config.Secrets(nvidia_api_key="nvapi-test"))
+    text = ""
+    async for kind, payload in chat.stream(
+            [{"role": "user", "content": "kenapa task gagal"}],
+            tools=[{"type": "function",
+                    "function": {"name": "recent_tasks", "parameters": {}}}],
+            dispatch=dispatch):
+        if kind == "token":
+            text += payload
+
+    assert text == "sudah dicek"
+    assert "putaran alat" not in text
+    assert "tools" not in calls[-1]
+
+
+async def test_chat_stream_retries_once_when_the_round_streams_nothing(hermes_home, monkeypatch):
+    """The SSE path closes the turn on whatever it streamed, so a round that
+    streamed nothing is exactly what renders as "(tidak ada balasan)"."""
+    from hermes import config, main
+
+    calls: list[dict] = []
+    chunks = [None, "akhirnya jawab"]
+
+    class OneChunkStream:
+        def __init__(self, content):
+            self._content = content
+
+        def __aiter__(self):
+            async def gen():
+                delta = type("D", (), {"content": self._content, "tool_calls": None})()
+                yield type("K", (), {"choices": [type("C", (), {"delta": delta})()],
+                                     "usage": None})()
+            return gen()
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return OneChunkStream(chunks.pop(0))
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(tts_enabled=False))
+    chat = main.build_nim_chat(config.load_settings(),
+                               config.Secrets(nvidia_api_key="nvapi-test"))
+    text = ""
+    async for kind, payload in chat.stream([{"role": "user", "content": "status"}]):
+        if kind == "token":
+            text += payload
+
+    assert text == "akhirnya jawab"
+    assert len(calls) == 2
+    assert main.EMPTY_REPLY_NUDGE in calls[1]["messages"][-1]["content"]
+
+
+async def test_chat_retries_once_when_the_reply_is_empty(hermes_home, monkeypatch):
+    """An empty completion reaches the operator as "(tidak ada balasan)" and is
+    persisted as an empty assistant turn. It is a provider hiccup, not an
+    answer — nudge once rather than closing the turn on nothing."""
+    from hermes import config, main
+
+    calls: list[dict] = []
+    replies = ["", "Task terakhir sukses."]
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return type("R", (), {"choices": [type("C", (), {
+                "message": _StuckMessage(content=replies.pop(0))})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(tts_enabled=False))
+    chat = main.build_nim_chat(config.load_settings(),
+                               config.Secrets(nvidia_api_key="nvapi-test"))
+    out = await chat([{"role": "user", "content": "status"}],
+                     tools=[{"type": "function",
+                             "function": {"name": "recent_tasks", "parameters": {}}}],
+                     dispatch=lambda *a: None)
+
+    assert out == "Task terakhir sukses."
+    assert len(calls) == 2
+    assert main.EMPTY_REPLY_NUDGE in calls[1]["messages"][-1]["content"]
+
+
+async def test_chat_treats_a_voice_tag_only_reply_as_empty(hermes_home, monkeypatch):
+    """The <voice> opener is stripped before display, so a reply that is only a
+    tag renders as nothing — same symptom as an empty completion, same fix."""
+    from hermes import config, main, voice
+
+    calls: list[dict] = []
+    tag_only = f"{voice.VOICE_TAG_OPEN}Sebentar ya{voice.VOICE_TAG_CLOSE}"
+    replies = [tag_only, "Ini jawabannya."]
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return type("R", (), {"choices": [type("C", (), {
+                "message": _StuckMessage(content=replies.pop(0))})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(tts_enabled=True, tts_mode="smart"))
+    chat = main.build_nim_chat(config.load_settings(),
+                               config.Secrets(nvidia_api_key="nvapi-test"))
+    out = await chat([{"role": "user", "content": "status"}],
+                     tools=[{"type": "function",
+                             "function": {"name": "recent_tasks", "parameters": {}}}],
+                     dispatch=lambda *a: None)
+
+    assert out == "Ini jawabannya."
+    assert len(calls) == 2
+
+
+async def test_chat_stops_retrying_an_endlessly_empty_provider(hermes_home, monkeypatch):
+    """One nudge tells a hiccup from a model that will never answer; past that
+    the empty reply is reported honestly rather than looping."""
+    from hermes import config, main
+
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return type("R", (), {"choices": [type("C", (), {
+                "message": _StuckMessage(content="")})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(tts_enabled=False))
+    chat = main.build_nim_chat(config.load_settings(),
+                               config.Secrets(nvidia_api_key="nvapi-test"))
+    assert await chat([{"role": "user", "content": "status"}],
+                      tools=[{"type": "function",
+                              "function": {"name": "recent_tasks", "parameters": {}}}],
+                      dispatch=lambda *a: None) == ""
+    assert len(calls) == main.MAX_EMPTY_REPLY_ROUNDS + 1
+
+
 class _FakeMessage:
     def __init__(self, content):
         self.content = content
