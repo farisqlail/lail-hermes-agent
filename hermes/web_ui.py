@@ -63,6 +63,11 @@ class ResolveBody(BaseModel):
 CONV_WEB = "web"
 CHAT_HISTORY_LIMIT = 20   # turns fed back to the model — caps prompt cost
 
+# How long the start_task tool waits for handle_task to settle its gate before
+# answering the model. The slow part is one `git status` subprocess, so this is
+# generous; the task itself keeps running in the background either way.
+START_TASK_DECISION_TIMEOUT_S = 5.0
+
 # Tools the conversational agent may call. A curated, safe set — read-only
 # system queries plus start_task, which only ever QUEUES a task held for the
 # operator's one-tap confirm (bridge.handle_task force_confirm). Deliberately
@@ -404,17 +409,34 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     new_id = new_task_id()
                     import inspect
                     sig = inspect.signature(bridge.handle_task)
+                    def accepts(param: str) -> bool:
+                        return param in sig.parameters or any(
+                            p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
+                    # The gate settles long before the task does, but handle_task
+                    # only returns when the whole task is over. A future filled by
+                    # its callback is the only way to answer the model with what
+                    # actually happened instead of a guess.
+                    settled = asyncio.get_running_loop().create_future()
+                    def on_decision(status: str, reasons: list):
+                        if not settled.done():
+                            settled.set_result({"status": status, "reasons": reasons})
                     kwargs = {}
-                    if "session_id" in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+                    if accepts("session_id"):
                         kwargs["session_id"] = session_id
+                    if accepts("on_decision"):
+                        kwargs["on_decision"] = on_decision
                     t = asyncio.create_task(bridge.handle_task(
                         user_id=0, chat_id=0, text=desc, task_id=new_id,
                         trusted=True, force_confirm=True, **kwargs))
                     t.add_done_callback(_bg_crash_cb(store, new_id))
-                    return json.dumps(
-                        {"task_id": new_id, "status": "awaiting_confirm",
-                         "note": "Task diantre; menunggu operator menekan Run sebelum berjalan."},
-                        ensure_ascii=False)
+                    try:
+                        outcome = await asyncio.wait_for(
+                            settled, START_TASK_DECISION_TIMEOUT_S)
+                    except asyncio.TimeoutError:
+                        outcome = {"status": "queued", "reasons": [],
+                                   "note": "gate belum memutuskan; lihat kartu task"}
+                    return json.dumps({"task_id": new_id, **outcome},
+                                      ensure_ascii=False)
                 if name == "calendar_events":
                     url = config.load_settings().calendar_ics_url
                     if not url:
