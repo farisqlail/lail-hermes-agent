@@ -81,7 +81,18 @@ Berkas: `hermes/telegram_bridge.py`, di dalam `handle_task`.
    Tanpa ini `orchestrator.run_task` membuat workspace buangan di
    `projects/<task_id>` (orchestrator.py:426-430) dan mengerjakan sesuatu yang
    tidak diminta operator.
-3. Persempit penolakan "tidak ada kanal konfirmasi" (baris 172-176) menjadi
+3. Tambah satu alasan untuk task chat yang proyeknya tidak bisa diperiksa:
+
+   ```
+   force_confirm and proj is not None and self.git_dirty is None
+     -> "status git tidak bisa diperiksa — tidak ada bukti run ini bisa dibatalkan"
+   ```
+
+   `Bridge` memperlakukan `git_dirty` yang tidak terpasang sebagai "lewati
+   pemeriksaan dirty-tree" — docstring `main._build_bridge` (main.py:665-667)
+   sudah memperingatkan bahwa injeksi yang hilang mematikan gate tanpa satu tes
+   pun memerah. Untuk auto-run, diam itu harus dibaca sebagai berhenti.
+4. Persempit penolakan "tidak ada kanal konfirmasi" (baris 172-176) menjadi
    `force_confirm and reasons and not self.ask_confirm`. Tanpa alasan, tidak ada
    yang perlu ditanyakan, jadi tidak ada yang perlu dibatalkan.
 
@@ -96,6 +107,7 @@ Alur setelah perubahan:
 | `@proyek` + git bersih + non-risky | jalan langsung |
 | `@proyek` + ada perubahan belum di-commit | `awaiting_confirm`, alasan disebut |
 | `@proyek` + bukan repo git / git tak tersedia | `awaiting_confirm` |
+| `@proyek` + probe git tidak terpasang | `awaiting_confirm` |
 | teks berisiko (push/deploy/delete) | `awaiting_confirm`, walau `confirm_risky=False` |
 | tanpa `@proyek` | `awaiting_confirm` |
 
@@ -166,7 +178,8 @@ sudah ada di suite:
 3. `git_dirty` mengembalikan `None` → `awaiting_confirm`
 4. teks berisiko dengan `confirm_risky=False` → tetap `awaiting_confirm`
 5. tanpa `@proyek` → `awaiting_confirm`, alasan menyebut proyek tidak disebut
-6. dispatch `start_task` mengembalikan status hasil keputusan gate, bukan
+6. `git_dirty` tidak terpasang → `awaiting_confirm`
+7. dispatch `start_task` mengembalikan status hasil keputusan gate, bukan
    konstanta
 
 Isi prompt tidak dites. Menyamakan string prompt dengan literal mengunci
