@@ -97,8 +97,12 @@ CHAT_TOOLS = [
             "limit": {"type": "integer", "description": "berapa task terakhir diperiksa, default 50"}}}}},
     {"type": "function", "function": {
         "name": "start_task",
-        "description": ("Antre task orkestrasi baru. Task TIDAK berjalan sampai operator "
-                        "menekan Run — kamu hanya mengusulkan. Sertakan @nama-proyek bila relevan."),
+        "description": ("Antre lalu jalankan task orkestrasi. Bila permintaan menyebut "
+                        "@nama-proyek, repositorinya bersih, dan pekerjaannya tidak "
+                        "berisiko (push/deploy/hapus), task LANGSUNG berjalan; selain "
+                        "itu task ditahan sampai operator menekan Run. Hasil pemanggilan "
+                        "berisi status sebenarnya beserta alasannya — pakai itu, jangan "
+                        "menebak."),
         "parameters": {"type": "object", "properties": {
             "description": {"type": "string",
                             "description": "instruksi task, mis. '@myprofit jalankan pengujian'"}},
