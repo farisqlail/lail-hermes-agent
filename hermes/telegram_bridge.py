@@ -163,20 +163,29 @@ class Bridge:
                 reasons.append(
                     f"@{name} has uncommitted changes that could be lost")
 
-        # A chat-initiated task (the conversational agent's start_task tool) is
-        # ALWAYS held for a one-tap operator confirm, regardless of
-        # confirm_risky: the assistant proposes, the human disposes, so the LLM
-        # can never spend engine budget or touch a repo on its own judgment.
-        # It needs a confirm channel to be answerable — refuse rather than run
-        # silently if none is wired.
-        if force_confirm and not self.ask_confirm:
+        # A chat-initiated task (the conversational agent's start_task tool)
+        # runs on its own only when the gate found nothing to weigh: a named
+        # project, a repository that can undo the run, and no risky verb. That
+        # is the same `reasons` list /task is judged by — deliberately, so the
+        # two paths cannot drift. Anything in it is a reason to stop and ask.
+        if force_confirm:
+            if proj is None:
+                reasons.append("tidak ada proyek yang disebut — kerja akan "
+                               "jatuh ke workspace kosong")
+            elif self.git_dirty is None:
+                # _build_bridge's docstring warns that a dropped git_dirty
+                # injection disables the dirty-tree check silently. An
+                # unverifiable repo is not an undoable one.
+                reasons.append("status git tidak bisa diperiksa — tidak ada "
+                               "bukti run ini bisa dibatalkan")
+        must_confirm = force_confirm and bool(self.ask_confirm)
+        # Refuse rather than run a flagged task with nobody to ask. With no
+        # reasons there is no question, so there is nothing to refuse.
+        if force_confirm and reasons and not self.ask_confirm:
             await self.sender(
                 chat_id, f"Task {task_id} tidak dijalankan: tidak ada kanal konfirmasi.")
             self.store.set_task_status(task_id, "cancelled")
             return task_id
-        must_confirm = force_confirm and bool(self.ask_confirm)
-        if must_confirm and not reasons:
-            reasons = ["dimulai oleh asisten chat — konfirmasi sebelum menjalankan"]
 
         if reasons and (gate_live or must_confirm):
             self.confirm_reasons[task_id] = reasons

@@ -169,44 +169,64 @@ async def test_risky_task_cancelled_on_deny(hermes_home):
     assert ran == []
     assert store.get_task(tid)["status"] == "cancelled"
 
-async def test_force_confirm_holds_a_nonrisky_task(hermes_home):
-    """A chat-initiated task (start_task tool) is always held for confirmation,
-    even when it carries no risky verbs and would otherwise run directly."""
-    store = Store(hermes_home / "t.db"); store.init_schema()
-    settings = Settings(allowed_user_ids=[1])
+async def test_force_confirm_runs_a_clean_nonrisky_task(hermes_home):
+    """A chat-initiated task naming a project whose repository is clean, with no
+    risky verb, runs on its own. This is the whole point of the auto-run path."""
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
     ran, asked = [], []
     async def sender(chat, text, html=False): pass
     async def ask_confirm(chat, task_id, reasons): asked.append((task_id, reasons))
+    async def git_dirty(path): return False
     class FakeOrch:
-        async def run_task(self, task_id, chat_id, text, report, proj=None): ran.append(task_id)
-    b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm)
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            ran.append(task_id)
+    b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm,
+               git_dirty=git_dirty)
 
-    tid = await b.handle_task(user_id=0, chat_id=5, text="build app",
+    tid = await b.handle_task(user_id=0, chat_id=5, text="@myprofit tambah endpoint",
                               trusted=True, force_confirm=True)
-    assert tid is not None
-    assert ran == []                                        # not run on its own
-    assert store.get_task(tid)["status"] == "awaiting_confirm"
-    assert tid in b.confirm_reasons and tid in b.pending
-    assert asked and asked[0][0] == tid
-
-    assert await b.resolve_confirm(user_id=0, task_id=tid, approved=True, trusted=True)
-    assert ran == [tid]                                     # runs only after Run
+    assert ran == [tid]
+    assert asked == []
+    assert tid not in b.pending
 
 
-async def test_force_confirm_refuses_without_a_confirm_channel(hermes_home):
-    """force_confirm with no ask_confirm wired must NOT run silently — refuse."""
-    store = Store(hermes_home / "t.db"); store.init_schema()
-    settings = Settings(allowed_user_ids=[1])
+async def test_force_confirm_refuses_a_flagged_task_without_a_confirm_channel(hermes_home):
+    """A reason with nobody to ask must refuse, never run silently."""
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
     ran = []
     async def sender(chat, text, html=False): pass
+    async def git_dirty(path): return False
     class FakeOrch:
         async def run_task(self, *a, **k): ran.append(1)
-    b = Bridge(settings, store, FakeOrch(), sender)  # no ask_confirm
+    b = Bridge(settings, store, FakeOrch(), sender, git_dirty=git_dirty)  # no ask_confirm
 
-    tid = await b.handle_task(user_id=0, chat_id=5, text="build app",
+    tid = await b.handle_task(user_id=0, chat_id=5, text="@myprofit git push it",
                               trusted=True, force_confirm=True)
     assert ran == []
     assert store.get_task(tid)["status"] == "cancelled"
+
+
+async def test_force_confirm_runs_without_a_confirm_channel_when_nothing_is_flagged(hermes_home):
+    """No reasons means no question, so a missing confirm channel is not a
+    reason to cancel — the old code cancelled here."""
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
+    ran = []
+    async def sender(chat, text, html=False): pass
+    async def git_dirty(path): return False
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            ran.append(task_id)
+    b = Bridge(settings, store, FakeOrch(), sender, git_dirty=git_dirty)  # no ask_confirm
+
+    tid = await b.handle_task(user_id=0, chat_id=5, text="@myprofit tambah endpoint",
+                              trusted=True, force_confirm=True)
+    assert ran == [tid]
 
 
 async def test_confirm_gate_disabled_runs_directly(hermes_home):
@@ -274,6 +294,123 @@ async def test_gate_disabled_clean_project_gets_no_warning(hermes_home):
 
     await b.handle_task(user_id=1, chat_id=5, text="@myprofit refactor auth")
     assert not any("without confirmation" in t for t in sent)
+
+
+async def test_force_confirm_holds_a_dirty_project(hermes_home):
+    """Uncommitted work is the one thing that makes an engine run unrecoverable,
+    so it downgrades auto-run to a confirm rather than cancelling it."""
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
+    ran, asked = [], []
+    async def sender(chat, text, html=False): pass
+    async def ask_confirm(chat, task_id, reasons): asked.append((task_id, reasons))
+    async def git_dirty(path): return True
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            ran.append(task_id)
+    b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm,
+               git_dirty=git_dirty)
+
+    tid = await b.handle_task(user_id=0, chat_id=5, text="@myprofit tambah endpoint",
+                              trusted=True, force_confirm=True)
+    assert ran == []
+    assert store.get_task(tid)["status"] == "awaiting_confirm"
+    assert any("uncommitted" in r for r in b.confirm_reasons[tid])
+    assert asked and asked[0][0] == tid
+
+    assert await b.resolve_confirm(user_id=0, task_id=tid, approved=True, trusted=True)
+    assert ran == [tid]
+
+
+async def test_force_confirm_holds_when_there_is_no_git_undo(hermes_home):
+    """git_dirty returning None means 'cannot tell' — not a repo, ignored, or no
+    git. Auto-run must read that as a stop, not a yes."""
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
+    ran = []
+    async def sender(chat, text, html=False): pass
+    async def ask_confirm(chat, task_id, reasons): pass
+    async def git_dirty(path): return None
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            ran.append(task_id)
+    b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm,
+               git_dirty=git_dirty)
+
+    tid = await b.handle_task(user_id=0, chat_id=5, text="@myprofit tambah endpoint",
+                              trusted=True, force_confirm=True)
+    assert ran == []
+    assert store.get_task(tid)["status"] == "awaiting_confirm"
+
+
+async def test_force_confirm_holds_risky_text_even_with_the_gate_off(hermes_home):
+    """confirm_risky=False turns the gate off for /task. A chat-initiated push
+    must still be confirmed: must_confirm does not consult that setting."""
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], confirm_risky=False,
+                        projects={"myprofit": str(proj)})
+    ran = []
+    async def sender(chat, text, html=False): pass
+    async def ask_confirm(chat, task_id, reasons): pass
+    async def git_dirty(path): return False
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            ran.append(task_id)
+    b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm,
+               git_dirty=git_dirty)
+
+    tid = await b.handle_task(user_id=0, chat_id=5, text="@myprofit git push it",
+                              trusted=True, force_confirm=True)
+    assert ran == []
+    assert store.get_task(tid)["status"] == "awaiting_confirm"
+
+
+async def test_force_confirm_holds_a_task_that_names_no_project(hermes_home):
+    """Without a project, orchestrator.run_task invents a throwaway workspace
+    under projects/<task_id>. Auto-running into it burns an engine session on
+    work nobody asked for."""
+    store = _store(hermes_home)
+    settings = Settings(allowed_user_ids=[1])
+    ran = []
+    async def sender(chat, text, html=False): pass
+    async def ask_confirm(chat, task_id, reasons): pass
+    async def git_dirty(path): return False
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            ran.append(task_id)
+    b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm,
+               git_dirty=git_dirty)
+
+    tid = await b.handle_task(user_id=0, chat_id=5, text="tambah endpoint",
+                              trusted=True, force_confirm=True)
+    assert ran == []
+    assert store.get_task(tid)["status"] == "awaiting_confirm"
+    assert any("proyek" in r for r in b.confirm_reasons[tid])
+
+
+async def test_force_confirm_holds_when_the_git_probe_is_not_wired(hermes_home):
+    """Bridge treats a missing git_dirty as 'skip the dirty-tree check' —
+    main._build_bridge's docstring warns that a dropped injection would disable
+    the gate with every test still green. For auto-run that silence must be a
+    stop, because there is then no evidence the run can be undone."""
+    store = _store(hermes_home)
+    proj = hermes_home / "myprofit"; proj.mkdir()
+    settings = Settings(allowed_user_ids=[1], projects={"myprofit": str(proj)})
+    ran = []
+    async def sender(chat, text, html=False): pass
+    async def ask_confirm(chat, task_id, reasons): pass
+    class FakeOrch:
+        async def run_task(self, task_id, chat_id, text, report, proj=None):
+            ran.append(task_id)
+    b = Bridge(settings, store, FakeOrch(), sender, ask_confirm=ask_confirm)
+
+    tid = await b.handle_task(user_id=0, chat_id=5, text="@myprofit tambah endpoint",
+                              trusted=True, force_confirm=True)
+    assert ran == []
+    assert store.get_task(tid)["status"] == "awaiting_confirm"
 
 
 def _store(home):
