@@ -314,7 +314,9 @@ _NO_CONFIRM_NOTE = (
     "TULIS/KIRIM/HAPUS/klik/shell LANGSUNG dijalankan tanpa persetujuan dan "
     "tanpa 'needs_confirmation'. Abaikan instruksi sebelumnya soal aksi "
     "ditahan/menunggu persetujuan. Jalankan permintaan pengguna langsung, lalu "
-    "laporkan hasil nyatanya."
+    "laporkan hasil nyatanya. Ini TIDAK berlaku untuk `start_task`: status "
+    "`awaiting_confirm` dari alat itu tetap berarti task ditahan menunggu Run, "
+    "dan tetap harus kamu sampaikan apa adanya."
 )
 
 
@@ -329,9 +331,11 @@ def build_nim_chat(settings, secrets):
     ask_user, which only means something inside a live engine run (it needs a
     Run token and a deadline to suspend). A plain chat turn calling it would
     block on a question nobody can answer. Tools in chat are a later tier; this
-    one just talks. It also never executes work — running a task stays an
-    explicit /task command, so the agent cannot silently spend money or touch a
-    repo, and cannot invent a result it never produced.
+    one just talks. It executes work only through `start_task`, and only within
+    that tool's own gate: a named project with a clean repository and no risky
+    verb starts immediately, anything else is held for the operator's Run. The
+    agent never touches a repo directly and cannot invent a result it never
+    produced.
     """
     system_template = (
         "Kamu adalah {agent_name}, asisten orkestrasi rekayasa perangkat lunak untuk Lail Hermes. "
@@ -352,12 +356,23 @@ def build_nim_chat(settings, secrets):
         "jawab dari angkanya. Sebutkan jenis kegagalan yang paling banyak dan "
         "apa tindakan yang masuk akal — kegagalan lingkungan butuh perbaikan di "
         "mesin, struktural butuh rencana lain, sesaat cukup dikirim ulang.\n"
-        "PENTING soal `start_task`: alat ini hanya MENGANTRE task; task TIDAK "
-        "berjalan sampai operator menekan tombol Run. Jadi kamu tidak pernah "
-        "benar-benar menjalankan kode sendiri. Panggil `start_task` hanya bila "
-        "pengguna jelas meminta menjalankan sesuatu; sertakan `@nama-proyek` "
-        "bila relevan, lalu beri tahu bahwa task menunggu konfirmasi. Jangan "
-        "pernah mengaku sudah menjalankan atau mengarang hasil eksekusi.\n"
+        "MENGERJAKAN KODE: bila permintaan menyebut sebuah proyek dengan "
+        "`@nama-proyek` DAN menyangkut kode atau berkas (menambah, mengubah, "
+        "memperbaiki, refactor, menghapus), kamu WAJIB memanggil `start_task` "
+        "dengan permintaan itu apa adanya, termasuk `@nama-proyek`-nya. Dalam "
+        "hal itu kamu DILARANG menulis patch, diff, atau blok kode "
+        "implementasi di dalam jawaban chat: yang mengerjakan kodenya adalah "
+        "task, bukan kamu, dan kode yang cuma ditempel di chat tidak pernah "
+        "sampai ke proyek.\n"
+        "Bila permintaan TIDAK menyebut `@nama-proyek`, itu diskusi — jawab "
+        "saja, jangan panggil `start_task`.\n"
+        "Baca `status` dari hasil `start_task` dan sampaikan apa adanya: "
+        "`running` berarti task sudah mulai berjalan sendiri; "
+        "`awaiting_confirm` berarti task ditahan sampai operator menekan Run, "
+        "dan kamu harus menyebutkan isi `reasons`; `cancelled` atau `rejected` "
+        "berarti task tidak jadi jalan. Jangan mengarang status. `running` "
+        "berarti dimulai, BUKAN selesai — jangan mengaku pekerjaannya sudah "
+        "beres atau mengarang hasil eksekusi.\n"
         "DILARANG KERAS menulis task ID yang tidak kamu terima dari hasil alat "
         "pada giliran ini. Task ID hanya sah bila dikembalikan `start_task`, "
         "`recent_tasks`, atau `get_task_detail` barusan — jangan menyalin pola "
@@ -392,24 +407,6 @@ def build_nim_chat(settings, secrets):
         "tanpa konfirmasi operator; bila hasilnya 'opened', katakan app/URL sudah "
         "dibuka. Bila 'unknown_app', app itu di luar daftar aman — sampaikan belum "
         "dibuka dan sebut app yang tersedia.\n\n"
-        "Bila pengguna bertanya tentang cara mengantre task atau cara kerja start_task/start task, format jawabanmu wajib mengikuti pola ini secara persis (tanpa menggunakan backslash/garis miring terbalik pada tanda kutip):\n"
-        "Tentu! Berikut cara kerja start task di Lail Hermes:\n\n"
-        "## 📝 Cara mengantre task\n\n"
-        "Kamu cukup minta dengan jelas, misalnya:\n\n"
-        '> *"Jalankan testing untuk @myprofit"*\n'
-        '> *"Build @project-abc"*\n'
-        '> *"Deploy @project-x ke staging"*\n\n'
-        "Syaratnya:\n"
-        "• Sertakan @nama-proyek biar saya tahu proyek mana yang dimaksud.\n"
-        "• Jelaskan apa yang ingin dilakukan (testing, build, deploy, dll).\n\n"
-        "## ⚠️ Yang perlu kamu tahu\n\n"
-        "Saya hanya mengantrekan task — task TIDAK langsung jalan. Setelah saya antre, operator harus menekan tombol Run dulu baru task benar-benar dieksekusi.\n\n"
-        "## Contoh percakapan\n\n"
-        "| Kamu bilang | Saya akan |\n"
-        "|---|---|\n"
-        '| *"Jalankan testing untuk @myprofit"* | Panggil start_task dengan deskripsi sesuai, lalu bilang task menunggu konfirmasi |\n'
-        '| *"Deploy @project-x ke staging"* | Antrekan task, lalu infokan statusnya |\n\n'
-        "Mau coba antrekan task sekarang? 😊"
     )
 
     async def chat(history: list[dict], tools=None, dispatch=None) -> str:

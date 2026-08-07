@@ -118,7 +118,8 @@ class Bridge:
 
     async def handle_task(self, user_id: int, chat_id: int, text: str,
                           task_id: str | None = None, trusted: bool = False,
-                          force_confirm: bool = False, session_id: str | None = None):
+                          force_confirm: bool = False, session_id: str | None = None,
+                          on_decision=None):
         # trusted skips the Telegram allow-list for a caller that has already
         # authenticated by another route (the localhost web UI). It is NOT
         # inferable from user_id -- a Telegram id is never 0, so the old
@@ -129,6 +130,15 @@ class Bridge:
             await self.sender(chat_id, f"You are not authorized to use this bot. Your Telegram User ID is: {user_id}\n\nPlease add this ID to the allowed user list in the settings UI at http://127.0.0.1:8799")
             return None
 
+        # on_decision is a plain callable (status, reasons) fired once, the
+        # moment the gate settles and before any engine work starts. It exists
+        # because handle_task does not return until the whole task finishes, so
+        # a caller that backgrounds it -- the start_task tool -- otherwise has
+        # no way to learn whether the task was held or started.
+        def decided(status: str, why: list[str] | None = None):
+            if on_decision:
+                on_decision(status, list(why or []))
+
         # Resolve before anything else: a bad @name costs zero tokens because
         # the planner never runs, and the gate below needs the project path.
         name, text = parse_project_ref(text)
@@ -138,6 +148,7 @@ class Bridge:
                 proj = resolve_project(name, settings)
             except (ProjectNotFound, ProjectPathMissing) as e:
                 await self.sender(chat_id, str(e))
+                decided("rejected", [str(e)])
                 return None
 
         if task_id is None:
@@ -163,25 +174,36 @@ class Bridge:
                 reasons.append(
                     f"@{name} has uncommitted changes that could be lost")
 
-        # A chat-initiated task (the conversational agent's start_task tool) is
-        # ALWAYS held for a one-tap operator confirm, regardless of
-        # confirm_risky: the assistant proposes, the human disposes, so the LLM
-        # can never spend engine budget or touch a repo on its own judgment.
-        # It needs a confirm channel to be answerable — refuse rather than run
-        # silently if none is wired.
-        if force_confirm and not self.ask_confirm:
+        # A chat-initiated task (the conversational agent's start_task tool)
+        # runs on its own only when the gate found nothing to weigh: a named
+        # project, a repository that can undo the run, and no risky verb. That
+        # is the same `reasons` list /task is judged by — deliberately, so the
+        # two paths cannot drift. Anything in it is a reason to stop and ask.
+        if force_confirm:
+            if proj is None:
+                reasons.append("tidak ada proyek yang disebut — kerja akan "
+                               "jatuh ke workspace kosong")
+            elif self.git_dirty is None:
+                # _build_bridge's docstring warns that a dropped git_dirty
+                # injection disables the dirty-tree check silently. An
+                # unverifiable repo is not an undoable one.
+                reasons.append("status git tidak bisa diperiksa — tidak ada "
+                               "bukti run ini bisa dibatalkan")
+        must_confirm = force_confirm and bool(self.ask_confirm)
+        # Refuse rather than run a flagged task with nobody to ask. With no
+        # reasons there is no question, so there is nothing to refuse.
+        if force_confirm and reasons and not self.ask_confirm:
             await self.sender(
                 chat_id, f"Task {task_id} tidak dijalankan: tidak ada kanal konfirmasi.")
             self.store.set_task_status(task_id, "cancelled")
+            decided("cancelled", reasons)
             return task_id
-        must_confirm = force_confirm and bool(self.ask_confirm)
-        if must_confirm and not reasons:
-            reasons = ["dimulai oleh asisten chat — konfirmasi sebelum menjalankan"]
 
         if reasons and (gate_live or must_confirm):
             self.confirm_reasons[task_id] = reasons
             self.store.set_task_status(task_id, "awaiting_confirm")
             self.pending[task_id] = (user_id, chat_id, text, proj)
+            decided("awaiting_confirm", reasons)
             await self.ask_confirm(chat_id, task_id, reasons)
             return task_id
 
@@ -194,6 +216,7 @@ class Bridge:
                 + "; ".join(reasons))
         else:
             await self.sender(chat_id, f"Task {task_id} queued.")
+        decided("running", reasons)
         await self._run(task_id, chat_id, text, proj)
         return task_id
 

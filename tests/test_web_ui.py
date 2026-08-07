@@ -523,12 +523,14 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
             self.confirm_reasons = {}
             self.calls = []
         async def handle_task(self, user_id, chat_id, text, task_id=None,
-                              trusted=False, force_confirm=False):
+                              trusted=False, force_confirm=False, on_decision=None):
             self.calls.append((text, trusted, force_confirm))
             store.create_task(task_id, chat_id, text)
             if force_confirm:
                 self.confirm_reasons[task_id] = ["chat"]
                 store.set_task_status(task_id, "awaiting_confirm")
+                if on_decision:
+                    on_decision("awaiting_confirm", ["chat"])
     bridge = FakeBridge()
 
     out = {}
@@ -556,8 +558,9 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
     assert "step 0 [code]: ok" in out["detail"]["logs"]
     assert "error" in out["missing"]
 
-    # start_task queues, held for confirm; bridge saw trusted + force_confirm
+    # start_task reports the decision the bridge made, not a constant
     assert out["start"]["status"] == "awaiting_confirm"
+    assert out["start"]["reasons"] == ["chat"]
     assert bridge.calls and bridge.calls[0][1] is True and bridge.calls[0][2] is True
 
     # the fire-and-forget handle_task settles the task to awaiting_confirm
@@ -567,6 +570,73 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
         if (store.get_task(new_id) or {}).get("status") == "awaiting_confirm":
             break
     assert (store.get_task(new_id) or {}).get("status") == "awaiting_confirm"
+
+
+async def test_start_task_reports_a_run_that_started_on_its_own(hermes_home):
+    """The tool result is what the chat model tells the operator. When the gate
+    let the task run, saying 'menunggu Run' would be a lie — and that lie is
+    the bug this whole change exists to fix."""
+    import json as _json
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    proj_dir = hermes_home / "myprofit"; proj_dir.mkdir()
+    config.save_settings(config.Settings(projects={"myprofit": str(proj_dir)}))
+
+    class RunningBridge:
+        def __init__(self):
+            self.confirm_reasons = {}
+        async def handle_task(self, user_id, chat_id, text, task_id=None,
+                              trusted=False, force_confirm=False, on_decision=None):
+            store.create_task(task_id, chat_id, text)
+            store.set_task_status(task_id, "running")
+            if on_decision:
+                on_decision("running", [])
+
+    out = {}
+    async def tool_chat(history, tools=None, dispatch=None):
+        out["start"] = _json.loads(
+            await dispatch("start_task", {"description": "@myprofit tambah endpoint"}))
+        return "Sudah saya kerjakan."
+
+    client = TestClient(create_app(store, bridge=RunningBridge(), chat=tool_chat))
+    r = client.post("/api/tasks", json={"text": "@myprofit tambah endpoint"})
+    assert r.status_code == 200
+    assert out["start"]["status"] == "running"
+    assert out["start"]["reasons"] == []
+
+
+async def test_start_task_says_so_when_the_gate_never_decides(hermes_home):
+    """A bridge that never calls back must not be reported as anything. Guessing
+    here would reintroduce the hardcoded status this task removes."""
+    import json as _json
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    class SilentBridge:
+        def __init__(self):
+            self.confirm_reasons = {}
+        async def handle_task(self, user_id, chat_id, text, task_id=None,
+                              trusted=False, force_confirm=False, on_decision=None):
+            store.create_task(task_id, chat_id, text)
+
+    out = {}
+    async def tool_chat(history, tools=None, dispatch=None):
+        out["start"] = _json.loads(await dispatch("start_task", {"description": "apa saja"}))
+        return "ok"
+
+    from hermes import web_ui as _web_ui
+    original = _web_ui.START_TASK_DECISION_TIMEOUT_S
+    _web_ui.START_TASK_DECISION_TIMEOUT_S = 0.01
+    try:
+        client = TestClient(create_app(store, bridge=SilentBridge(), chat=tool_chat))
+        r = client.post("/api/tasks", json={"text": "apa saja"})
+        assert r.status_code == 200
+    finally:
+        _web_ui.START_TASK_DECISION_TIMEOUT_S = original
+
+    assert out["start"]["status"] == "queued"
+    assert "note" in out["start"]
 
 
 async def test_tasks_events_sse_streams_live_updates(hermes_home):
