@@ -7,6 +7,7 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
 from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth
 from .pending_actions import PendingStore
+from .project_resolve import parse_project_ref
 from .session_store import Store
 from .telegram_bridge import new_task_id
 
@@ -62,6 +63,57 @@ class ResolveBody(BaseModel):
 # dashboard is multi-user.
 CONV_WEB = "web"
 CHAT_HISTORY_LIMIT = 20   # turns fed back to the model — caps prompt cost
+
+# Code work aimed at a registered @project is routed into start_task by THIS
+# code, not by the model's judgement. The system prompt has told the model to
+# call the tool since the chat-auto-run change, and it still answered plenty of
+# "@proj perbaiki X" turns with a patch pasted in the chat pane — a patch that
+# never reaches the repository. An explicit sigil plus a code verb is explicit
+# intent, so the queueing is not left to a sampling outcome.
+#
+# The verb list is deliberately a plain heuristic in Indonesian and English:
+# the decision it makes is "queue a task", and a task still faces the bridge's
+# own risk gate before anything runs, so a false positive costs a card the
+# operator can cancel, never an unreviewed write.
+_CODE_INTENT = re.compile(
+    r"\b(tambah\w*|buat\w*|bikin\w*|ubah\w*|ganti\w*|perbaik\w*|betulkan|benerin|"
+    r"fix|refactor\w*|hapus\w*|implement\w*|terapkan|pasang|update|upgrade|"
+    r"optimas\w*|optimi\w*|migras\w*|integras\w*|rename|bug|error|debug\w*|"
+    r"test\w*|uji\w*|add|change|remove|delete|write|create|build|deploy)\b", re.I)
+# A question about a project is discussion, not work. Both anchors matter: the
+# trailing "?" catches "@proj kenapa build-nya error?" and the leading question
+# word catches the same sentence typed without punctuation.
+_QUESTION = re.compile(
+    r"^\s*(apa\w*|kenapa|mengapa|gimana|bagaimana|berapa|kapan|siapa|mana|"
+    r"why|what|how|when|where|which|who|is|are|does|do|can|should)\b", re.I)
+
+
+def wants_code_task(text: str, settings) -> bool:
+    """True when this chat turn is code work on a registered project.
+
+    Unregistered names are left alone on purpose: start_task would only reject
+    them, and the model's own answer (which lists the registered names) is the
+    more useful reply.
+    """
+    name, rest = parse_project_ref(text)
+    if name is None or name not in settings.projects:
+        return False
+    if rest.rstrip().endswith("?") or _QUESTION.match(rest):
+        return False
+    return bool(_CODE_INTENT.search(rest))
+
+
+# What the model is told after the task was queued for it. It is a user turn,
+# not a system one, because it has to be the last message in the prompt.
+AUTO_TASK_NOTE = (
+    "[SISTEM] Permintaan ini menyebut proyek terdaftar dan menyangkut kode, "
+    "jadi `start_task` SUDAH dijalankan otomatis untuk teks itu apa adanya. "
+    "Hasil alat: {result}\n"
+    "Laporkan `status`, `reasons`, dan Task ID di atas apa adanya — `running` "
+    "berarti task baru mulai, bukan selesai. JANGAN memanggil `start_task` "
+    "lagi untuk permintaan ini dan JANGAN menulis patch/diff di chat: yang "
+    "mengerjakan kodenya adalah task itu."
+)
 
 # How long the start_task tool waits for handle_task to settle its gate before
 # answering the model. The slow part is one `git status` subprocess, so this is
@@ -339,6 +391,44 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                            "content": uploads.as_content_parts(said, images)}
         return history
 
+    async def history_for_turn(sid: str, text: str, images: list[Path] | None,
+                               dispatch) -> tuple[list[dict], str | None]:
+        """The prompt for one chat turn, plus the id of any task queued for it.
+
+        See wants_code_task: when the turn is code work on a registered project
+        the task is started here, before the model speaks, and the model is left
+        to report it. `dispatch` must be the same callable handed to the model,
+        so its start_task memo covers both callers.
+        """
+        history = history_with_context(sid, images)
+        if not (text and wants_code_task(text, config.load_settings())):
+            return history, None
+        result = await dispatch("start_task", {"description": text})
+        try:
+            task_id = json.loads(result).get("task_id")
+        except ValueError:
+            task_id = None
+        return ([*history, {"role": "user",
+                            "content": AUTO_TASK_NOTE.format(result=result)}],
+                task_id)
+
+    def task_card_suffix(reply: str, task_id: str | None) -> str:
+        """The line that makes the queued task's Run/Cancel card appear, or "".
+
+        The card is drawn by the client for every task id it finds in the
+        assistant's text (findTaskIds in Dashboard.tsx). Leaving that to the
+        model's prose is how a held task ends up with no way to run it: the
+        model wrote "Task @v3 ditahan", no id, so the operator got a paragraph
+        about pressing Run and no button to press. The id is ours, not the
+        model's, so it is appended when the model left it out.
+
+        A suffix rather than a rewritten reply, so the streaming path can send
+        exactly these bytes as one more delta.
+        """
+        if not task_id or task_id in reply:
+            return ""
+        return f"\n\nTask `{task_id}`"
+
     def take_images(sid: str, names: list[str]) -> list[Path]:
         """Resolve upload names to files. Unknown names are dropped, not an
         error: a re-sent or already-discarded image should cost the operator a
@@ -366,6 +456,12 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             print(f"Could not learn from turn: {safe}")
 
     def make_chat_dispatch(session_id: str):
+        # One dispatch per turn, so this holds the turn's start_task outcome. The
+        # auto-route below queues the task before the model speaks; without a
+        # memo the model would obey its instructions, call start_task itself, and
+        # the same work would run twice against the same repository.
+        started: dict = {}
+
         async def chat_dispatch(name: str, args: dict) -> str:
             """Execute one chat tool call and return a JSON string for the model.
 
@@ -403,6 +499,12 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                                        "report": postmortem.render(summary)},
                                       ensure_ascii=False)
                 if name == "start_task":
+                    if started:
+                        return json.dumps(
+                            {**started,
+                             "note": ("task untuk giliran ini sudah diantre — "
+                                      "ini hasil yang sama, bukan task baru")},
+                            ensure_ascii=False)
                     bridge = getattr(app.state, "bridge", None)
                     if not bridge:
                         return json.dumps({"error": "bridge tidak tersedia — tidak bisa antre task"},
@@ -439,6 +541,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     except asyncio.TimeoutError:
                         outcome = {"status": "queued", "reasons": [],
                                    "note": "gate belum memutuskan; lihat kartu task"}
+                    started.update({"task_id": new_id, **outcome})
                     return json.dumps({"task_id": new_id, **outcome},
                                       ensure_ascii=False)
                 if name == "calendar_events":
@@ -796,6 +899,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             images = take_images(sid, body.images)
             store.add_message(sid, "user", text + (IMAGE_MARKER if images else ""))
             chat = getattr(app.state, "chat", None)
+            auto_id = None
             if chat is None:
                 s = config.load_settings()
                 agent_name = s.agent_name or "Lail Agent"
@@ -807,9 +911,10 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                 )
             else:
                 try:
-                    reply = await chat(history_with_context(sid, images),
-                                       tools=await _chat_tools(),
-                                       dispatch=make_chat_dispatch(sid))
+                    dispatch = make_chat_dispatch(sid)
+                    turn, auto_id = await history_for_turn(sid, text, images, dispatch)
+                    reply = await chat(turn, tools=await _chat_tools(),
+                                       dispatch=dispatch)
                 except Exception as e:
                     # A NIM outage or missing key must not 500 the chat pane;
                     # surface it as the assistant's turn so the thread stays
@@ -819,6 +924,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             # The tag is a transport detail between the model and the speech
             # path. Storing it would feed it back as context next turn.
             clean, _ = voice.strip_voice_tag(reply)
+            clean += task_card_suffix(clean, auto_id)
             store.add_message(sid, "assistant", clean)
             store.set_task_status(task_id, "done")
             store.append_log(task_id, f"answer: {clean}")
@@ -940,6 +1046,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         async def gen():
             acc = ""
             usage = None
+            auto_id = None
             if chat is None or not hasattr(chat, "stream"):
                 s = config.load_settings()
                 agent_name = s.agent_name or "Lail Agent"
@@ -948,7 +1055,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                        "`/help` untuk bantuan.")
                 yield sse({"delta": acc})
             else:
-                history = history_with_context(sid, images)
+                dispatch = make_chat_dispatch(sid)
+                history, auto_id = await history_for_turn(sid, text, images, dispatch)
                 if body.resume:
                     # Ephemeral, not stored: it steers this one turn and would be
                     # noise in the thread. Also guarantees the prompt ends on a
@@ -959,7 +1067,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     async for kind, payload in chat.stream(
                             history,
                             tools=await _chat_tools(),
-                            dispatch=make_chat_dispatch(sid)):
+                            dispatch=dispatch):
                         if kind == "token":
                             acc += payload
                             yield sse({"delta": payload})
@@ -974,6 +1082,13 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             # Persist whatever was actually produced (empty stays empty, not a
             # lie), minus the <voice> line the client already consumed.
             clean, _ = voice.strip_voice_tag(acc)
+            # The id has to reach the live stream too, not just the stored
+            # message: the pane renders the card off the streaming text and only
+            # re-reads the thread on the next load.
+            suffix = task_card_suffix(clean, auto_id)
+            if suffix:
+                yield sse({"delta": suffix})
+                clean += suffix
             store.add_message(sid, "assistant", clean)
             uploads.discard(images)      # looked at, answered, gone
             yield sse({"done": True, "usage": usage})

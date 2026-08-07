@@ -572,6 +572,146 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
     assert (store.get_task(new_id) or {}).get("status") == "awaiting_confirm"
 
 
+def test_wants_code_task_separates_work_from_discussion(hermes_home):
+    """The routing predicate: an explicit sigil plus a code verb is work; a
+    question, an unregistered name, or plain prose is not."""
+    from hermes.web_ui import wants_code_task
+    s = config.Settings(projects={"myprofit": str(hermes_home)})
+
+    assert wants_code_task("@myprofit perbaiki bug login di kasir", s)
+    assert wants_code_task("@myprofit tambahkan endpoint /api/refund", s)
+    assert wants_code_task("fix the export bug @myprofit", s)
+
+    assert not wants_code_task("@myprofit kenapa build-nya error", s)   # question word
+    assert not wants_code_task("@myprofit bug-nya di mana?", s)          # trailing ?
+    assert not wants_code_task("@myprofit ringkas arsitekturnya", s)     # no code verb
+    assert not wants_code_task("perbaiki bug login", s)                  # no sigil
+    assert not wants_code_task("@sayur perbaiki bug login", s)           # not registered
+
+
+async def test_code_request_queues_a_task_even_if_the_model_never_calls_the_tool(hermes_home):
+    """The bug this exists for: the model answered "@proj perbaiki X" with a
+    patch in the chat pane and no task was ever queued. Routing is code's job
+    now, so a model that calls nothing still gets the work started."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    proj_dir = hermes_home / "myprofit"; proj_dir.mkdir()
+    config.save_settings(config.Settings(projects={"myprofit": str(proj_dir)}))
+
+    class RunningBridge:
+        def __init__(self):
+            self.confirm_reasons = {}
+            self.texts = []
+        async def handle_task(self, user_id, chat_id, text, task_id=None,
+                              trusted=False, force_confirm=False, on_decision=None):
+            self.texts.append(text)
+            store.create_task(task_id, chat_id, text)
+            store.set_task_status(task_id, "running")
+            if on_decision:
+                on_decision("running", [])
+    bridge = RunningBridge()
+
+    seen = {}
+    async def mute_chat(history, tools=None, dispatch=None):
+        seen["history"] = history
+        return "Sudah saya antre."
+
+    client = TestClient(create_app(store, bridge=bridge, chat=mute_chat))
+    r = client.post("/api/tasks", json={"text": "@myprofit perbaiki bug login"})
+    assert r.status_code == 200
+
+    # queued with the request verbatim, sigil included, so the bridge resolves
+    # the project itself
+    assert bridge.texts == ["@myprofit perbaiki bug login"]
+    # and the model is told what happened, as the last thing it reads
+    last = seen["history"][-1]
+    assert last["role"] == "user"
+    assert "start_task" in last["content"] and '"status": "running"' in last["content"]
+
+
+async def test_auto_routed_task_id_reaches_the_reply_so_run_can_be_pressed(hermes_home):
+    """A held task with no id in the answer renders no card, so the operator is
+    told to press Run and given no Run to press. Both the stored message and the
+    live stream must carry the id, whatever the model wrote."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    proj_dir = hermes_home / "myprofit"; proj_dir.mkdir()
+    config.save_settings(config.Settings(projects={"myprofit": str(proj_dir)}))
+
+    class HoldingBridge:
+        def __init__(self):
+            self.confirm_reasons = {}
+        async def handle_task(self, user_id, chat_id, text, task_id=None,
+                              trusted=False, force_confirm=False, on_decision=None):
+            store.create_task(task_id, chat_id, text)
+            store.set_task_status(task_id, "awaiting_confirm")
+            self.confirm_reasons[task_id] = ["uncommitted changes"]
+            if on_decision:
+                on_decision("awaiting_confirm", ["uncommitted changes"])
+
+    # the model that caused the bug: prose about a held task, no id anywhere
+    class MuteChat:
+        async def __call__(self, history, tools=None, dispatch=None):
+            return "Task @myprofit ditahan. Tekan Run untuk menjalankan."
+        async def stream(self, history, tools=None, dispatch=None):
+            yield "token", "Task @myprofit ditahan. Tekan Run."
+
+    client = TestClient(create_app(store, bridge=HoldingBridge(), chat=MuteChat()))
+
+    r = client.post("/api/tasks", json={"text": "@myprofit perbaiki bug login",
+                                        "session_id": "s1"})
+    assert r.status_code == 200
+    said = store.get_messages("s1")[-1]["content"]
+    queued = [t["task_id"] for t in store.list_tasks() if t.get("chat_id", 0) >= 0]
+    assert any(tid in said for tid in queued), said
+
+    r = client.post("/api/chat/stream", json={"text": "@myprofit tambah endpoint",
+                                              "session_id": "s2"})
+    assert r.status_code == 200
+    streamed = r.text
+    said2 = store.get_messages("s2")[-1]["content"]
+    new_id = next(t["task_id"] for t in store.list_tasks()
+                  if t.get("chat_id", 0) >= 0 and t["text"].endswith("tambah endpoint"))
+    assert new_id in said2                 # thread on reload
+    assert new_id in streamed              # and the live pane
+
+
+async def test_auto_routed_task_is_not_queued_twice(hermes_home):
+    """A model that obeys its instructions and calls start_task anyway must get
+    the memo back, not a second run of the same work against the same repo."""
+    import json as _json
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    proj_dir = hermes_home / "myprofit"; proj_dir.mkdir()
+    config.save_settings(config.Settings(projects={"myprofit": str(proj_dir)}))
+
+    class CountingBridge:
+        def __init__(self):
+            self.confirm_reasons = {}
+            self.calls = 0
+        async def handle_task(self, user_id, chat_id, text, task_id=None,
+                              trusted=False, force_confirm=False, on_decision=None):
+            self.calls += 1
+            store.create_task(task_id, chat_id, text)
+            store.set_task_status(task_id, "running")
+            if on_decision:
+                on_decision("running", [])
+    bridge = CountingBridge()
+
+    out = {}
+    async def eager_chat(history, tools=None, dispatch=None):
+        out["second"] = _json.loads(
+            await dispatch("start_task", {"description": "@myprofit perbaiki bug login"}))
+        return "ok"
+
+    client = TestClient(create_app(store, bridge=bridge, chat=eager_chat))
+    r = client.post("/api/tasks", json={"text": "@myprofit perbaiki bug login"})
+    assert r.status_code == 200
+    assert bridge.calls == 1
+    assert out["second"]["status"] == "running"
+    assert "sudah diantre" in out["second"]["note"]
+
+
 async def test_start_task_reports_a_run_that_started_on_its_own(hermes_home):
     """The tool result is what the chat model tells the operator. When the gate
     let the task run, saying 'menunggu Run' would be a lie — and that lie is
