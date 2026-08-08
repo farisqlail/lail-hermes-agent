@@ -36,3 +36,30 @@ def ensure_dirs() -> None:
     for d in (config_dir(), projects_dir(), artifacts_dir(), uploads_dir(),
               vault_dir()):
         d.mkdir(parents=True, exist_ok=True)
+
+def ensure_vault() -> None:
+    """Make the vault a folder the obsidian MCP server will accept.
+
+    That server refuses a plain markdown directory — it wants a real vault, i.e.
+    a `.obsidian/` config. A fresh install (or a pull onto a new machine) has an
+    empty vault, so without this the default `obsidian` server would fail to
+    start and the agent would silently lose its knowledge tools. Every write is
+    idempotent (only missing files are created), so an existing vault the
+    operator has opened in Obsidian is left untouched.
+    """
+    v = vault_dir()
+    o = v / ".obsidian"
+    o.mkdir(parents=True, exist_ok=True)
+    seed = {"app.json": "{}", "appearance.json": "{}",
+            "core-plugins.json": "[]", "community-plugins.json": "[]"}
+    for name, body in seed.items():
+        f = o / name
+        if not f.exists():
+            f.write_text(body, encoding="utf-8")
+    index = v / "INDEX.md"
+    if not index.exists():
+        index.write_text(
+            "---\ntags: [index]\n---\n# Vault Agent\n\n"
+            "Basis pengetahuan agent: fakta operator ([[operator]]) di `facts/` "
+            "dan arsip task di `tasks/`. Ditulis & dibaca lewat Obsidian MCP.\n",
+            encoding="utf-8")

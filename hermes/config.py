@@ -63,6 +63,14 @@ def _default_mcp_servers() -> list[McpServer]:
         McpServer(name="memory", type="stdio", command="npx",
                   args=["-y", "@modelcontextprotocol/server-memory"],
                   env={"MEMORY_FILE_PATH": str(paths.config_dir() / "memory.jsonl")}),
+        # Markdown knowledge vault: the operator facts and per-task archive
+        # Hermes writes, plus any notes the operator keeps. Needs no credentials,
+        # only Node, so it ships enabled. The vault is this install's
+        # HERMES_HOME/vault, which paths.ensure_vault seeds with a valid
+        # .obsidian config at startup so the server starts on first boot rather
+        # than refusing an un-initialised folder.
+        McpServer(name="obsidian", type="stdio", command="npx",
+                  args=["-y", "obsidian-mcp", str(paths.vault_dir())]),
         McpServer(name="mail", type="stdio", command="npx",
                   args=["-y", "mcp-mail-server"], enabled=False,
                   env={"IMAP_HOST": "imap.gmail.com", "IMAP_PORT": "993",
