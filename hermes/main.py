@@ -416,7 +416,7 @@ def build_nim_chat(settings, secrets):
         "MEMBUAT KLIP VIDEO: bila pengguna memberi waktu mulai & selesai, panggil "
         "`youtube_clip` (url, start, end). Bila pengguna minta dicarikan bagian "
         "yang menarik/viral ATAU memberi URL TANPA waktu, panggil `viral_clip` "
-        "(url) — ia otomatis memilih bagian paling banyak diputar ulang (maks 90 "
+        "(url) — ia otomatis memilih bagian paling banyak diputar ulang (maks 60 "
         "detik); JANGAN meminta waktu mulai/selesai dulu, langsung panggil. Untuk "
         "keduanya, bila 'clipped' SERTAKAN field `markdown` APA ADANYA agar "
         "videonya tampil, dan sebutkan `start`-`end` serta `reason` bila ada. Bila "

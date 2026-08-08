@@ -233,13 +233,13 @@ CHAT_TOOLS = [
                         "(bagian yang paling banyak diputar ulang penonton) dari "
                         "YouTube. Pakai bila pengguna minta 'carikan bagian viral', "
                         "'potong yang menarik', atau memberi URL tanpa waktu mulai/"
-                        "selesai. Durasi maksimal default 90 detik (1:30). Hasilnya "
+                        "selesai. Durasi maksimal default 60 detik (1 menit). Hasilnya "
                         "berisi `markdown` (sertakan APA ADANYA agar video tampil), "
                         "serta `start`/`end`/`reason`."),
         "parameters": {"type": "object", "properties": {
             "url": {"type": "string", "description": "URL video YouTube"},
             "max_seconds": {"type": "integer",
-                            "description": "durasi maks klip dalam detik, default 90 (maks 90)"},
+                            "description": "durasi maks klip dalam detik, default 60 (maks 60)"},
             "vertical": {"type": "string", "enum": ["blur", "crop", "none"],
                          "description": "format 9:16 Shorts/TikTok, default 'blur' (utuh+background blur). 'crop' potong tengah, 'none' rasio asli."}},
             "required": ["url"]}}},
@@ -257,7 +257,7 @@ CHAT_TOOLS = [
             "url": {"type": "string", "description": "URL video YouTube"},
             "count": {"type": "integer", "description": "jumlah kandidat, default 3 (maks 3)"},
             "max_seconds": {"type": "integer",
-                            "description": "durasi maks tiap klip, default 90 (maks 90)"},
+                            "description": "durasi maks tiap klip, default 60 (maks 60)"},
             "vertical": {"type": "string", "enum": ["blur", "crop", "none"],
                          "description": "format 9:16 Shorts/TikTok, default 'blur'. 'crop' potong tengah, 'none' rasio asli."}},
             "required": ["url"]}}},
@@ -601,9 +601,9 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     return json.dumps(res, ensure_ascii=False)
                 if name == "viral_clip":
                     try:
-                        mx = min(float(args.get("max_seconds") or 90), 90.0)
+                        mx = min(float(args.get("max_seconds") or 60), 60.0)
                     except (TypeError, ValueError):
-                        mx = 90.0
+                        mx = 60.0
                     res = await asyncio.to_thread(
                         ytclip.viral_clip, str(args.get("url") or ""),
                         max_seconds=mx, vertical=str(args.get("vertical") or "blur"),
@@ -621,9 +621,9 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     s = config.load_settings()
                     sec = config.load_secrets()
                     try:
-                        mx = min(float(args.get("max_seconds") or 90), 90.0)
+                        mx = min(float(args.get("max_seconds") or 60), 60.0)
                     except (TypeError, ValueError):
-                        mx = 90.0
+                        mx = 60.0
                     try:
                         n = min(int(args.get("count") or 3), 3)
                     except (TypeError, ValueError):

@@ -57,7 +57,7 @@ def parse_timestamp(v) -> float | None:
     return secs
 
 
-def suggest_window(url: str, *, max_seconds: float = 90.0, timeout: int = 60) -> dict:
+def suggest_window(url: str, *, max_seconds: float = 60.0, timeout: int = 60) -> dict:
     """Pick the most viral-looking window of a video, from YouTube's own
     "most replayed" heatmap.
 
@@ -138,7 +138,7 @@ def _analyse(url: str, *, n: int, max_seconds: float, timeout: int):
     return _windows_from_heatmap(heat, duration, n, win), info, None
 
 
-def suggest_windows(url: str, *, n: int = 3, max_seconds: float = 90.0,
+def suggest_windows(url: str, *, n: int = 3, max_seconds: float = 60.0,
                     timeout: int = 60) -> dict:
     """Top-`n` viral-looking windows (most-replayed), newest-first by time."""
     windows, info, err = _analyse(url, n=n, max_seconds=max_seconds, timeout=timeout)
@@ -218,7 +218,7 @@ def viral_title(base_url: str, key: str, model: str, *, video_title: str,
         return ""
 
 
-def viral_clip(url: str, *, max_seconds: float = 90.0, out_dir: Path,
+def viral_clip(url: str, *, max_seconds: float = 60.0, out_dir: Path,
                vertical: str = "blur", timeout: int = 300) -> dict:
     """Find the most-replayed window of a video and cut it into a clip.
 
@@ -235,7 +235,7 @@ def viral_clip(url: str, *, max_seconds: float = 90.0, out_dir: Path,
     return res
 
 
-def viral_candidates(url: str, *, n: int = 3, max_seconds: float = 90.0,
+def viral_candidates(url: str, *, n: int = 3, max_seconds: float = 60.0,
                      out_dir: Path, base_url: str = "", key: str = "",
                      model: str = "", do_clip: bool = True,
                      vertical: str = "blur", timeout: int = 300) -> dict:
