@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth
+from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth, imagegen
 from .pending_actions import PendingStore
 from .project_resolve import parse_project_ref
 from .session_store import Store
@@ -200,6 +200,18 @@ CHAT_TOOLS = [
         "parameters": {"type": "object", "properties": {
             "run_id": {"type": "string"}, "value": {"type": "string"}},
             "required": ["run_id", "value"]}}},
+    {"type": "function", "function": {
+        "name": "generate_image",
+        "description": ("Buat/generate gambar dari deskripsi teks dan tampilkan ke "
+                        "pengguna. Pakai ini bila pengguna minta dibuatkan gambar, "
+                        "ilustrasi, logo, ikon, atau foto. Hasilnya berisi field "
+                        "`markdown` — sertakan APA ADANYA di jawabanmu agar gambarnya "
+                        "muncul. Jangan mengarang bahwa gambar sudah dibuat tanpa "
+                        "memanggil alat ini."),
+        "parameters": {"type": "object", "properties": {
+            "prompt": {"type": "string",
+                       "description": "deskripsi gambar dalam bahasa apa pun, sedetail mungkin"}},
+            "required": ["prompt"]}}},
 ]
 
 def _bg_crash_cb(store: Store, task_id: str):
@@ -503,6 +515,28 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     return json.dumps({**summary,
                                        "report": postmortem.render(summary)},
                                       ensure_ascii=False)
+                if name == "generate_image":
+                    s = config.load_settings()
+                    if not s.image_model:
+                        return json.dumps({"error": "image model tidak dikonfigurasi"},
+                                          ensure_ascii=False)
+                    prompt = str(args.get("prompt") or "").strip()
+                    if not prompt:
+                        return json.dumps({"error": "prompt kosong"}, ensure_ascii=False)
+                    sec = config.load_secrets()
+                    # Blocking HTTP + file write -> off the event loop.
+                    res = await asyncio.to_thread(
+                        imagegen.generate, prompt,
+                        base_url=s.nvidia_base_url, key=sec.nvidia_api_key,
+                        model=s.image_model,
+                        out_dir=paths.artifacts_dir() / "generated")
+                    if res.get("status") == "generated":
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['path'])}"
+                        return json.dumps(
+                            {"status": "generated", "url": url,
+                             "markdown": f"![gambar]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
                 if name == "start_task":
                     if started:
                         return json.dumps(
@@ -645,6 +679,9 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         servers sitting right there in the settings.
         """
         base = list(CHAT_TOOLS)
+        # No image model configured -> don't offer a tool that can only fail.
+        if not config.load_settings().image_model:
+            base = [t for t in base if t["function"]["name"] != "generate_image"]
         hub = getattr(app.state, "hub", None)
         if hub is None:
             return base

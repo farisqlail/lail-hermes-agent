@@ -407,6 +407,12 @@ def build_nim_chat(settings, secrets):
         "tanpa konfirmasi operator; bila hasilnya 'opened', katakan app/URL sudah "
         "dibuka. Bila 'unknown_app', app itu di luar daftar aman — sampaikan belum "
         "dibuka dan sebut app yang tersedia.\n\n"
+        "MEMBUAT GAMBAR: bila pengguna minta dibuatkan gambar/ilustrasi/logo/ikon/"
+        "foto, panggil `generate_image` dengan prompt sedetail mungkin. Bila "
+        "hasilnya berstatus 'generated', SERTAKAN nilai field `markdown` APA ADANYA "
+        "di jawabanmu agar gambarnya tampil inline; jangan cuma menautkannya dan "
+        "jangan mengarang bahwa gambar sudah jadi tanpa memanggil alatnya. Bila "
+        "'error', sampaikan gagalnya, jangan berpura-pura ada gambar.\n\n"
     )
 
     async def chat(history: list[dict], tools=None, dispatch=None) -> str:
