@@ -30,14 +30,16 @@ export function renderMarkdown(src: string): string {
   // Bold
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
 
-  // Images (before Links, so ![alt](url) is not consumed by the link rule).
+  // Media (before Links, so ![alt](url) is not consumed by the link rule).
   // Only same-origin (/…), http(s), or data:image URLs render — never
-  // javascript: or other schemes.
+  // javascript: or other schemes. A video extension renders a <video> player;
+  // everything else renders an <img>.
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
-    if (/^(https?:\/\/|\/|data:image\/)/.test(url)) {
-      return `<img src="${url}" alt="${alt}" loading="lazy" style="max-width:100%;height:auto;border-radius:8px;display:block;margin:8px 0;" />`;
+    if (!/^(https?:\/\/|\/|data:image\/)/.test(url)) return m;
+    if (/\.(mp4|webm)(\?|$)/i.test(url)) {
+      return `<video src="${url}" controls preload="metadata" style="max-width:100%;height:auto;border-radius:8px;display:block;margin:8px 0;"></video>`;
     }
-    return m;
+    return `<img src="${url}" alt="${alt}" loading="lazy" style="max-width:100%;height:auto;border-radius:8px;display:block;margin:8px 0;" />`;
   });
 
   // Links

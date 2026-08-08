@@ -413,6 +413,11 @@ def build_nim_chat(settings, secrets):
         "di jawabanmu agar gambarnya tampil inline; jangan cuma menautkannya dan "
         "jangan mengarang bahwa gambar sudah jadi tanpa memanggil alatnya. Bila "
         "'error', sampaikan gagalnya, jangan berpura-pura ada gambar.\n\n"
+        "MEMBUAT KLIP VIDEO: bila pengguna minta dipotongkan klip/cuplikan dari "
+        "URL video (YouTube dll), panggil `youtube_clip` dengan url, start, dan "
+        "end (detik atau MM:SS). Bila 'clipped', SERTAKAN field `markdown` APA "
+        "ADANYA agar videonya tampil. Bila 'error', sampaikan gagalnya apa "
+        "adanya; jangan mengarang klip.\n\n"
     )
 
     async def chat(history: list[dict], tools=None, dispatch=None) -> str:

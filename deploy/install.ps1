@@ -56,6 +56,17 @@ try {
   Write-Host "  uv install failed - the 'win' MCP server will be skipped at startup." -ForegroundColor Yellow
 }
 
+# Video clipping extra (yt-dlp + a bundled ffmpeg) for the youtube_clip chat
+# tool. Best-effort: without it that one tool reports "yt-dlp belum terpasang"
+# and everything else works.
+Write-Host "Installing optional media extra (yt-dlp + ffmpeg)..." -ForegroundColor Cyan
+try {
+  & $py -m pip install -e ".[media]"
+  Write-Host "  media extra installed (youtube_clip enabled)" -ForegroundColor Green
+} catch {
+  Write-Host "  media extra install failed - youtube_clip will be disabled." -ForegroundColor Yellow
+}
+
 # playwright is optional; browser testing needs it but it may fail on bleeding-edge Python
 Write-Host "Installing optional browser extra (playwright)..." -ForegroundColor Cyan
 try {

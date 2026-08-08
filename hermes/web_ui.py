@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth, imagegen
+from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth, imagegen, ytclip
 from .pending_actions import PendingStore
 from .project_resolve import parse_project_ref
 from .session_store import Store
@@ -212,6 +212,18 @@ CHAT_TOOLS = [
             "prompt": {"type": "string",
                        "description": "deskripsi gambar dalam bahasa apa pun, sedetail mungkin"}},
             "required": ["prompt"]}}},
+    {"type": "function", "function": {
+        "name": "youtube_clip",
+        "description": ("Potong sebuah klip dari video YouTube (atau URL video lain) "
+                        "pada rentang waktu tertentu, lalu tampilkan ke pengguna. "
+                        "Pakai bila pengguna minta dibuatkan klip/potongan/cuplikan "
+                        "video dari sebuah tautan. Hasilnya berisi field `markdown` — "
+                        "sertakan APA ADANYA di jawabanmu agar videonya muncul."),
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string", "description": "URL video, mis. https://youtube.com/watch?v=..."},
+            "start": {"type": "string", "description": "waktu mulai, detik atau MM:SS / HH:MM:SS"},
+            "end": {"type": "string", "description": "waktu selesai, detik atau MM:SS / HH:MM:SS"}},
+            "required": ["url", "start", "end"]}}},
 ]
 
 def _bg_crash_cb(store: Store, task_id: str):
@@ -537,6 +549,18 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                             {"status": "generated", "url": url,
                              "markdown": f"![gambar]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
+                if name == "youtube_clip":
+                    res = await asyncio.to_thread(
+                        ytclip.clip, str(args.get("url") or ""),
+                        start=args.get("start"), end=args.get("end"),
+                        out_dir=paths.artifacts_dir() / "clips")
+                    if res.get("status") == "clipped":
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['path'])}"
+                        return json.dumps(
+                            {"status": "clipped", "url": url, "seconds": res.get("seconds"),
+                             "markdown": f"![clip]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
                 if name == "start_task":
                     if started:
                         return json.dumps(
@@ -682,6 +706,10 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         # No image model configured -> don't offer a tool that can only fail.
         if not config.load_settings().image_model:
             base = [t for t in base if t["function"]["name"] != "generate_image"]
+        # yt-dlp not installed (the optional `media` extra) -> hide youtube_clip.
+        import importlib.util
+        if importlib.util.find_spec("yt_dlp") is None:
+            base = [t for t in base if t["function"]["name"] != "youtube_clip"]
         hub = getattr(app.state, "hub", None)
         if hub is None:
             return base
@@ -785,7 +813,11 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             resolved.relative_to(paths.home().resolve())
         except ValueError:
             raise HTTPException(status_code=403, detail="Access denied")
-        media_type = "image/png" if resolved.suffix.lower() in (".png", ".jpg", ".jpeg") else "application/octet-stream"
+        media_type = {
+            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".gif": "image/gif", ".webp": "image/webp",
+            ".mp4": "video/mp4", ".webm": "video/webm",
+        }.get(resolved.suffix.lower(), "application/octet-stream")
         return FileResponse(str(resolved), media_type=media_type)
 
     @app.get("/api/tasks")
