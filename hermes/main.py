@@ -843,6 +843,9 @@ async def run():
     settings = config.load_settings()
     secrets = config.load_secrets()
     paths.ensure_dirs()
+    # Seed a valid .obsidian config so the default `obsidian` MCP server starts
+    # against a fresh install's empty vault instead of refusing it.
+    paths.ensure_vault()
     store = Store(paths.db_path()); store.init_schema()
     # Unconditional, and before the bot: anything still marked live is a lie
     # left by the last exit, and the dashboard must be honest even when no

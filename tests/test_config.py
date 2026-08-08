@@ -12,7 +12,7 @@ def test_fresh_install_ships_the_default_mcp_servers(hermes_home):
     paths.ensure_dirs()
     s = config.load_settings()
     assert [m.name for m in s.mcp_servers] == [
-        "pc", "browser", "win", "memory", "mail", "web", "spotify"]
+        "pc", "browser", "win", "memory", "obsidian", "mail", "web", "spotify"]
     # Credential-hungry servers ship off, so a first boot never fails on an
     # empty API key; the rest work with nothing but Node (and uv for `win`).
     assert {m.name for m in s.mcp_servers if not m.enabled} == {"mail", "web", "spotify"}
@@ -20,6 +20,11 @@ def test_fresh_install_ships_the_default_mcp_servers(hermes_home):
     # happened to unpack the package.
     memory = next(m for m in s.mcp_servers if m.name == "memory")
     assert memory.env["MEMORY_FILE_PATH"] == str(paths.config_dir() / "memory.jsonl")
+    # Obsidian ships enabled (no credentials) and points at this install's vault,
+    # not wherever npx unpacks the package.
+    obsidian = next(m for m in s.mcp_servers if m.name == "obsidian")
+    assert obsidian.enabled
+    assert obsidian.args[-1] == str(paths.vault_dir())
 
 def test_existing_config_is_not_overwritten_by_the_defaults(hermes_home):
     """A pull must never re-add servers someone deliberately removed."""

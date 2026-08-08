@@ -22,7 +22,7 @@ this rule. Reads (list, search, read, screenshot) are not.
 
 ## What ships by default
 
-A fresh install (no `config.yaml` yet) starts with seven servers, defined in
+A fresh install (no `config.yaml` yet) starts with eight servers, defined in
 `_default_mcp_servers` in `hermes/config.py`:
 
 | server | on | needs |
@@ -31,6 +31,7 @@ A fresh install (no `config.yaml` yet) starts with seven servers, defined in
 | `browser` | ✅ | Node (downloads a browser engine on first run) |
 | `win` | ✅ | `uv` — `install.ps1` puts it in the venv |
 | `memory` | ✅ | Node |
+| `obsidian` | ✅ | Node — vault auto-seeded, see [Obsidian vault](#obsidian-vault) |
 | `mail` | ⛔ | Gmail address + app password |
 | `web` | ⛔ | Tavily API key — usually unnecessary, see [Web search](#web-search) |
 | `spotify` | ⛔ | Spotify Client ID + a one-time `auth` run |
@@ -168,12 +169,41 @@ env:     { "MEMORY_FILE_PATH": "C:\\Hermes\\config\\memory.jsonl" }
 ```
 
 Set `MEMORY_FILE_PATH` — the default writes `memory.jsonl` inside the npx package
-directory, which a cache clear deletes. This overlaps the built-in `user_facts`
-table; it earns its place only for relations between entities, not flat facts.
+directory, which a cache clear deletes. This overlaps the vault's operator facts
+(see [Obsidian vault](#obsidian-vault)); it earns its place only for relations
+between entities, not flat facts.
 
 `read_graph` / `search_nodes` are reads; every `create_*` / `delete_*` /
 `add_observations` is gated, which means the agent cannot record a memory on its
 own in web chat.
+
+## Obsidian vault
+
+The agent's markdown knowledge store: the operator facts and per-task archive
+Hermes writes itself, plus any notes the operator keeps, as plain files under
+`HERMES_HOME/vault`.
+
+```
+name:    obsidian
+type:    stdio
+command: npx
+args:    ["-y", "obsidian-mcp", "C:\\Hermes\\vault"]
+```
+
+Two things use the vault. Hermes reads and writes the facts (`vault/facts/`) and
+task notes (`vault/tasks/`) directly on disk — this is the source of truth for
+what it remembers, replacing the old `user_facts` SQLite table. The MCP server
+is the *agent's* live-access layer over the same files: `read-note`,
+`search-vault`, `create-note`, `edit-note`, tags, etc.
+
+The vault path is auto-derived per install (`paths.vault_dir()`), so the default
+needs no editing. `paths.ensure_vault()` seeds a valid `.obsidian/` config at
+startup — the server refuses a folder without one — while leaving any files an
+operator has already put there untouched.
+
+Network note: `npx -y obsidian-mcp` downloads the package on first `tools/list`.
+On a machine where the npm registry is slow or blocked, pre-warm it (or install
+it locally and point `command`/`args` at `node <path>/build/main.js`).
 
 ## Web search
 
