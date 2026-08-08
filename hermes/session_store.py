@@ -31,6 +31,48 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
             return meta, text[end + 4:].lstrip("\n")
     return meta, text
 
+
+def _fact_value(body: str) -> str:
+    """The fact text out of a note body, tolerant of how it was written.
+
+    A fact note may be written by Hermes (value, then a `Terkait:` footer) or
+    edited by the operator or the agent through the obsidian MCP server, which
+    need not keep that exact shape. So the value is everything up to the first
+    `Terkait:` line rather than a fixed split — an edit that moved a blank line
+    no longer swallows the footer into the value or loses the value entirely.
+    """
+    out = []
+    for ln in body.splitlines():
+        if ln.strip().startswith("Terkait:"):
+            break
+        out.append(ln)
+    return "\n".join(out).strip()
+
+
+def _body_field(body: str, label: str) -> str:
+    """The value of a `- <label>: ...` line in a note body, or ""."""
+    prefix = f"- {label}:"
+    for ln in body.splitlines():
+        s = ln.strip()
+        if s.startswith(prefix):
+            return s[len(prefix):].strip()
+    return ""
+
+
+def _task_request(body: str) -> str:
+    """The original request text out of an archived task note: the lines between
+    the `# Task` heading and the first `- ` metadata bullet."""
+    out = []
+    for ln in body.splitlines():
+        s = ln.strip()
+        if s.startswith("# Task"):
+            continue
+        if s.startswith("- ") or s.startswith("Terkait:"):
+            break
+        if s:
+            out.append(s)
+    return " ".join(out)[:300]
+
 # Statuses that only a live in-process task can advance. Nothing else ever
 # moves them, so after a restart they are lies. "interrupted" is deliberately
 # absent: it is terminal, which is what makes the sweep idempotent and keeps
@@ -296,12 +338,24 @@ class Store:
                 meta, body = _parse_frontmatter(p.read_text(encoding="utf-8"))
             except OSError:
                 continue
-            try:
-                ts = float(meta.get("ts", "0"))
-            except ValueError:
-                ts = 0.0
+            # ts orders the facts and decides which survive the limit. A note the
+            # agent created through obsidian MCP has no `ts` frontmatter, so fall
+            # back to the file's own mtime rather than 0 — a 0 would banish every
+            # agent-written fact to the bottom and quietly drop it past the cap.
+            ts = None
+            raw_ts = meta.get("ts")
+            if raw_ts:
+                try:
+                    ts = float(raw_ts)
+                except ValueError:
+                    ts = None
+            if ts is None:
+                try:
+                    ts = p.stat().st_mtime
+                except OSError:
+                    ts = 0.0
             rows.append({"key": meta.get("key") or p.stem,
-                         "value": body.split("\n\nTerkait:")[0].strip(),
+                         "value": _fact_value(body),
                          "ts": ts})
         rows.sort(key=lambda r: r["ts"], reverse=True)
         return rows[:limit]
@@ -313,7 +367,9 @@ class Store:
     # Written when a task reaches a terminal status: a human-readable record of
     # what ran, in the same vault as the facts, linked to [[operator]] and the
     # project. Best-effort by construction — a failed note write must never turn
-    # a finished task into a failed status update.
+    # a finished task into a failed status update. The outcome line and the
+    # `project` frontmatter are what makes an archive worth reading back: they
+    # let recall_tasks feed a project's past results into the next plan.
 
     def _archive_task(self, task_id) -> None:
         try:
@@ -326,8 +382,19 @@ class Store:
             when = (datetime.fromtimestamp(created).isoformat(timespec="seconds")
                     if created else "")
             arts = self.get_artifacts(task_id)
-            lines = [f"---\ntype: task\ntask_id: {task_id}\n"
-                     f"status: {t.get('status', '')}\ncreated: {when}\n---",
+            # The last log line is the task's own verdict — "task complete", a
+            # failure message, or the step that stopped it. It is the single most
+            # useful thing a later plan can learn from, so it rides in the note.
+            outcome = ""
+            for line in reversed(self.get_logs(task_id)):
+                if line and line.strip():
+                    outcome = " ".join(line.split())[:300]
+                    break
+            fm = ["type: task", f"task_id: {task_id}",
+                  f"status: {t.get('status', '')}", f"created: {when}"]
+            if name:
+                fm.append(f"project: {name}")
+            lines = ["---", *fm, "---",
                      f"# Task {task_id}", "",
                      (t.get("text") or "").strip(), "",
                      f"- Status: {t.get('status', '')}"]
@@ -335,6 +402,8 @@ class Store:
                 lines.append(f"- Dibuat: {when}")
             if name:
                 lines.append(f"- Proyek: [[proyek-{name}]]")
+            if outcome:
+                lines.append(f"- Hasil: {outcome}")
             for a in arts:
                 lines.append(f"- {a['kind']}: `{a['path']}`")
             lines.append("\nTerkait: [[operator]]")
@@ -342,5 +411,71 @@ class Store:
             d.mkdir(parents=True, exist_ok=True)
             (d / f"{_safe_name(str(task_id))}.md").write_text(
                 "\n".join(lines) + "\n", encoding="utf-8")
+            if name:
+                self._upsert_project_note(name)
         except Exception:
             pass
+
+    def recall_tasks(self, project: str | None = None, query: str | None = None,
+                     limit: int = 5) -> list[dict]:
+        """Past task archives, newest first, for feeding back into a plan.
+
+        Filtered by `project` when given (the strong signal: what happened last
+        time this repo was touched); otherwise by keyword `query` against the
+        request text. Reads the vault notes directly — the same sync file I/O the
+        facts use, so a planner can call it without an MCP round-trip.
+
+        Task ids lead with a sortable timestamp, so ordering by note stem is
+        newest-first without parsing any date.
+        """
+        d = self.vault_dir / "tasks"
+        if not d.is_dir():
+            return []
+        q = (query or "").lower()
+        rows = []
+        for p in sorted(d.glob("*.md"), key=lambda x: x.stem, reverse=True):
+            try:
+                meta, body = _parse_frontmatter(p.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            proj = meta.get("project") or ""
+            request = _task_request(body)
+            if project is not None:
+                if proj != project:
+                    continue
+            elif q and q not in request.lower() and q not in body.lower():
+                continue
+            rows.append({"task_id": meta.get("task_id") or p.stem,
+                         "status": meta.get("status", ""),
+                         "project": proj,
+                         "text": request,
+                         "outcome": _body_field(body, "Hasil")})
+            if len(rows) >= limit:
+                break
+        return rows
+
+    # --- project notes ---
+    # One note per project, regenerated from the task archive whenever a task
+    # for it finishes. It both resolves the [[proyek-x]] links the task notes
+    # emit (an un-backed wikilink is a dead node in the graph) and gives the
+    # operator — and the planner, via recall_tasks — a single place that lists
+    # every task run against that project.
+
+    def _upsert_project_note(self, name: str) -> None:
+        tasks = self.recall_tasks(project=name, limit=1000)
+        lines = ["---", "type: project", f"name: {name}", "---",
+                 f"# Proyek {name}", "", "## Riwayat task", ""]
+        if tasks:
+            for t in tasks:
+                first = (t["text"].splitlines()[0][:80] if t["text"] else "")
+                entry = f"- [[{t['task_id']}]] [{t['status']}] {first}".rstrip()
+                if t["outcome"]:
+                    entry += f" — {t['outcome']}"
+                lines.append(entry)
+        else:
+            lines.append("(belum ada task)")
+        lines.append("\nTerkait: [[operator]]")
+        d = self.vault_dir / "projects"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"proyek-{_safe_name(name)}.md").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
