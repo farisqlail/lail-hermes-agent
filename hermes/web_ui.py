@@ -224,6 +224,21 @@ CHAT_TOOLS = [
             "start": {"type": "string", "description": "waktu mulai, detik atau MM:SS / HH:MM:SS"},
             "end": {"type": "string", "description": "waktu selesai, detik atau MM:SS / HH:MM:SS"}},
             "required": ["url", "start", "end"]}}},
+    {"type": "function", "function": {
+        "name": "viral_clip",
+        "description": ("Analisa sebuah video YouTube dan otomatis potong bagian yang "
+                        "PALING BERPOTENSI VIRAL — memakai data 'most replayed' "
+                        "(bagian yang paling banyak diputar ulang penonton) dari "
+                        "YouTube. Pakai bila pengguna minta 'carikan bagian viral', "
+                        "'potong yang menarik', atau memberi URL tanpa waktu mulai/"
+                        "selesai. Durasi maksimal default 90 detik (1:30). Hasilnya "
+                        "berisi `markdown` (sertakan APA ADANYA agar video tampil), "
+                        "serta `start`/`end`/`reason`."),
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string", "description": "URL video YouTube"},
+            "max_seconds": {"type": "integer",
+                            "description": "durasi maks klip dalam detik, default 90 (maks 90)"}},
+            "required": ["url"]}}},
 ]
 
 def _bg_crash_cb(store: Store, task_id: str):
@@ -561,6 +576,23 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                             {"status": "clipped", "url": url, "seconds": res.get("seconds"),
                              "markdown": f"![clip]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
+                if name == "viral_clip":
+                    try:
+                        mx = min(float(args.get("max_seconds") or 90), 90.0)
+                    except (TypeError, ValueError):
+                        mx = 90.0
+                    res = await asyncio.to_thread(
+                        ytclip.viral_clip, str(args.get("url") or ""),
+                        max_seconds=mx, out_dir=paths.artifacts_dir() / "clips")
+                    if res.get("status") == "clipped":
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['path'])}"
+                        return json.dumps(
+                            {"status": "clipped", "url": url,
+                             "start": res.get("start"), "end": res.get("end"),
+                             "reason": res.get("reason"), "title": res.get("title"),
+                             "markdown": f"![clip]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
                 if name == "start_task":
                     if started:
                         return json.dumps(
@@ -706,10 +738,11 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         # No image model configured -> don't offer a tool that can only fail.
         if not config.load_settings().image_model:
             base = [t for t in base if t["function"]["name"] != "generate_image"]
-        # yt-dlp not installed (the optional `media` extra) -> hide youtube_clip.
+        # yt-dlp not installed (the optional `media` extra) -> hide the clip tools.
         import importlib.util
         if importlib.util.find_spec("yt_dlp") is None:
-            base = [t for t in base if t["function"]["name"] != "youtube_clip"]
+            base = [t for t in base
+                    if t["function"]["name"] not in ("youtube_clip", "viral_clip")]
         hub = getattr(app.state, "hub", None)
         if hub is None:
             return base
