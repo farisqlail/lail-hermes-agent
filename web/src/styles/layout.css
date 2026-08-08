@@ -246,10 +246,77 @@
   position: relative;
   overflow: hidden;
   cursor: grab;
+  animation: electric-hum 2.4s ease-in-out infinite;
 }
 
 .graph-canvas-container:active {
   cursor: grabbing;
+}
+
+/* An electric arc travelling around the graph's edge. A conic gradient rotated
+   via the registered --elec-angle, masked to just the border ring so only the
+   edge lights up. pointer-events:none keeps the graph draggable underneath. */
+@property --elec-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.graph-canvas-container::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 2px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--elec-angle),
+      transparent 0deg, transparent 298deg,
+      var(--accent) 326deg, #eafcff 348deg, var(--accent) 356deg, transparent 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  filter: drop-shadow(0 0 5px var(--accent)) drop-shadow(0 0 9px var(--accent));
+  pointer-events: none;
+  z-index: 4;
+  animation: electric-orbit 2.6s linear infinite;
+}
+
+/* A second arc on the opposite side so the box always looks energised. */
+.graph-canvas-container::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 2px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--elec-angle),
+      transparent 0deg, transparent 118deg,
+      var(--accent) 146deg, #eafcff 168deg, var(--accent) 176deg, transparent 180deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  filter: drop-shadow(0 0 4px var(--accent)) drop-shadow(0 0 8px var(--accent));
+  pointer-events: none;
+  z-index: 4;
+  opacity: 0.7;
+  animation: electric-orbit 2.6s linear infinite;
+}
+
+@keyframes electric-orbit {
+  to { --elec-angle: 360deg; }
+}
+
+@keyframes electric-hum {
+  0%, 100% { box-shadow: inset 0 0 12px rgba(150, 240, 255, 0.05); }
+  50%      { box-shadow: inset 0 0 22px rgba(150, 240, 255, 0.14); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-canvas-container,
+  .graph-canvas-container::before,
+  .graph-canvas-container::after {
+    animation: none;
+  }
 }
 
 .graph-canvas-bg {
