@@ -26,6 +26,13 @@ def wakewords_dir() -> Path:
 def db_path() -> Path:
     return home() / "hermes.db"
 
+def vault_dir() -> Path:
+    # Obsidian vault: the agent's knowledge store (operator facts + task
+    # archive), as plain markdown the human can browse and the obsidian MCP
+    # server reads. Separate from hermes.db, which stays the operational store.
+    return home() / "vault"
+
 def ensure_dirs() -> None:
-    for d in (config_dir(), projects_dir(), artifacts_dir(), uploads_dir()):
+    for d in (config_dir(), projects_dir(), artifacts_dir(), uploads_dir(),
+              vault_dir()):
         d.mkdir(parents=True, exist_ok=True)
