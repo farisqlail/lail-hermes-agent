@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth, imagegen
+from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth, imagegen, ytclip
 from .pending_actions import PendingStore
 from .project_resolve import parse_project_ref
 from .session_store import Store
@@ -212,6 +212,55 @@ CHAT_TOOLS = [
             "prompt": {"type": "string",
                        "description": "deskripsi gambar dalam bahasa apa pun, sedetail mungkin"}},
             "required": ["prompt"]}}},
+    {"type": "function", "function": {
+        "name": "youtube_clip",
+        "description": ("Potong sebuah klip dari video YouTube (atau URL video lain) "
+                        "pada rentang waktu tertentu, lalu tampilkan ke pengguna. "
+                        "Pakai bila pengguna minta dibuatkan klip/potongan/cuplikan "
+                        "video dari sebuah tautan. Hasilnya berisi field `markdown` — "
+                        "sertakan APA ADANYA di jawabanmu agar videonya muncul."),
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string", "description": "URL video, mis. https://youtube.com/watch?v=..."},
+            "start": {"type": "string", "description": "waktu mulai, detik atau MM:SS / HH:MM:SS"},
+            "end": {"type": "string", "description": "waktu selesai, detik atau MM:SS / HH:MM:SS"},
+            "vertical": {"type": "string", "enum": ["blur", "crop", "none"],
+                         "description": "format 9:16 untuk Shorts/TikTok: 'blur' (utuh+background blur, DEFAULT), 'crop' (potong tengah), 'none' (rasio asli)."}},
+            "required": ["url", "start", "end"]}}},
+    {"type": "function", "function": {
+        "name": "viral_clip",
+        "description": ("Analisa sebuah video YouTube dan otomatis potong bagian yang "
+                        "PALING BERPOTENSI VIRAL — memakai data 'most replayed' "
+                        "(bagian yang paling banyak diputar ulang penonton) dari "
+                        "YouTube. Pakai bila pengguna minta 'carikan bagian viral', "
+                        "'potong yang menarik', atau memberi URL tanpa waktu mulai/"
+                        "selesai. Durasi maksimal default 60 detik (1 menit). Hasilnya "
+                        "berisi `markdown` (sertakan APA ADANYA agar video tampil), "
+                        "serta `start`/`end`/`reason`."),
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string", "description": "URL video YouTube"},
+            "max_seconds": {"type": "integer",
+                            "description": "durasi maks klip dalam detik, default 60 (maks 60)"},
+            "vertical": {"type": "string", "enum": ["blur", "crop", "none"],
+                         "description": "format 9:16 Shorts/TikTok, default 'blur' (utuh+background blur). 'crop' potong tengah, 'none' rasio asli."}},
+            "required": ["url"]}}},
+    {"type": "function", "function": {
+        "name": "viral_clips",
+        "description": ("Hasilkan BEBERAPA (default 3) kandidat klip viral dari satu "
+                        "video YouTube sekaligus: tiap kandidat adalah bagian yang "
+                        "paling banyak diputar ulang, LENGKAP dengan judul viral yang "
+                        "dibuatkan otomatis. Pakai bila pengguna minta 'beberapa "
+                        "kandidat', 'top 3', atau pilihan klip. Hasil berisi daftar "
+                        "`candidates`, tiap item punya `title`, `start`, `end`, dan "
+                        "`markdown` — tampilkan SETIAP `markdown` apa adanya agar "
+                        "semua videonya muncul."),
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string", "description": "URL video YouTube"},
+            "count": {"type": "integer", "description": "jumlah kandidat, default 3 (maks 3)"},
+            "max_seconds": {"type": "integer",
+                            "description": "durasi maks tiap klip, default 60 (maks 60)"},
+            "vertical": {"type": "string", "enum": ["blur", "crop", "none"],
+                         "description": "format 9:16 Shorts/TikTok, default 'blur'. 'crop' potong tengah, 'none' rasio asli."}},
+            "required": ["url"]}}},
 ]
 
 def _bg_crash_cb(store: Store, task_id: str):
@@ -537,6 +586,66 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                             {"status": "generated", "url": url,
                              "markdown": f"![gambar]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
+                if name == "youtube_clip":
+                    res = await asyncio.to_thread(
+                        ytclip.clip, str(args.get("url") or ""),
+                        start=args.get("start"), end=args.get("end"),
+                        vertical=str(args.get("vertical") or "blur"),
+                        out_dir=paths.artifacts_dir() / "clips")
+                    if res.get("status") == "clipped":
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['path'])}"
+                        return json.dumps(
+                            {"status": "clipped", "url": url, "seconds": res.get("seconds"),
+                             "markdown": f"![clip]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+                if name == "viral_clip":
+                    try:
+                        mx = min(float(args.get("max_seconds") or 60), 60.0)
+                    except (TypeError, ValueError):
+                        mx = 60.0
+                    res = await asyncio.to_thread(
+                        ytclip.viral_clip, str(args.get("url") or ""),
+                        max_seconds=mx, vertical=str(args.get("vertical") or "blur"),
+                        out_dir=paths.artifacts_dir() / "clips")
+                    if res.get("status") == "clipped":
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['path'])}"
+                        return json.dumps(
+                            {"status": "clipped", "url": url,
+                             "start": res.get("start"), "end": res.get("end"),
+                             "reason": res.get("reason"), "title": res.get("title"),
+                             "markdown": f"![clip]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+                if name == "viral_clips":
+                    s = config.load_settings()
+                    sec = config.load_secrets()
+                    try:
+                        mx = min(float(args.get("max_seconds") or 60), 60.0)
+                    except (TypeError, ValueError):
+                        mx = 60.0
+                    try:
+                        n = min(int(args.get("count") or 3), 3)
+                    except (TypeError, ValueError):
+                        n = 3
+                    res = await asyncio.to_thread(
+                        ytclip.viral_candidates, str(args.get("url") or ""),
+                        n=n, max_seconds=mx, out_dir=paths.artifacts_dir() / "clips",
+                        vertical=str(args.get("vertical") or "blur"),
+                        base_url=s.nvidia_base_url, key=sec.nvidia_api_key,
+                        model=(s.chat_model or s.model))
+                    if res.get("status") == "ok":
+                        from urllib.parse import quote
+                        cands = []
+                        for c in res["candidates"]:
+                            u = f"/api/artifacts/view?path={quote(c['path'])}"
+                            cands.append({"title": c["title"], "start": c["start"],
+                                          "end": c["end"],
+                                          "markdown": f"### {c['title']}\n![clip]({u})"})
+                        return json.dumps({"status": "ok",
+                                           "video_title": res["video_title"],
+                                           "candidates": cands}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
                 if name == "start_task":
                     if started:
                         return json.dumps(
@@ -682,6 +791,12 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         # No image model configured -> don't offer a tool that can only fail.
         if not config.load_settings().image_model:
             base = [t for t in base if t["function"]["name"] != "generate_image"]
+        # yt-dlp not installed (the optional `media` extra) -> hide the clip tools.
+        import importlib.util
+        if importlib.util.find_spec("yt_dlp") is None:
+            base = [t for t in base
+                    if t["function"]["name"] not in
+                    ("youtube_clip", "viral_clip", "viral_clips")]
         hub = getattr(app.state, "hub", None)
         if hub is None:
             return base
@@ -785,7 +900,11 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             resolved.relative_to(paths.home().resolve())
         except ValueError:
             raise HTTPException(status_code=403, detail="Access denied")
-        media_type = "image/png" if resolved.suffix.lower() in (".png", ".jpg", ".jpeg") else "application/octet-stream"
+        media_type = {
+            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".gif": "image/gif", ".webp": "image/webp",
+            ".mp4": "video/mp4", ".webm": "video/webm",
+        }.get(resolved.suffix.lower(), "application/octet-stream")
         return FileResponse(str(resolved), media_type=media_type)
 
     @app.get("/api/tasks")

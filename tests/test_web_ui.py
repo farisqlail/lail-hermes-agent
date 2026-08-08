@@ -551,7 +551,8 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
                                  "get_task_detail", "failure_report",
                                  "start_task", "calendar_events", "open_app",
                                  "integrate_mcp", "integrate_status",
-                                 "integrate_secret", "generate_image"]
+                                 "integrate_secret", "generate_image",
+                                 "youtube_clip", "viral_clip", "viral_clips"]
     assert out["projects"] == [{"name": "myprofit", "path": str(proj_dir), "exists": True}]
     assert any(t["task_id"] == "seed1" for t in out["recent"])
     assert out["detail"]["status"] == "done"
