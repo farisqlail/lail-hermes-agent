@@ -63,3 +63,28 @@ def build(summary: str, ptype: str, is_new: bool,
         lines.append(_NOT_ANDROID)
     return ("\n".join(lines)
             + f"\n\n# Project structure (top two levels)\n{summary}")
+
+
+_RECALL_HEADING = "# Past tasks (from the vault — learn from these outcomes)"
+
+
+def recall_block(recalled: list[dict]) -> str:
+    """A short digest of earlier tasks for the planner, or "".
+
+    Each line is one past task's request and its verdict, so the planner can
+    avoid repeating a step that already failed and reuse an approach that
+    worked. Deliberately terse — this rides in every plan prompt, and the point
+    is the outcomes, not a transcript. Empty (no block at all) when nothing was
+    recalled, so a first task on a fresh project pays nothing.
+    """
+    if not recalled:
+        return ""
+    lines = [_RECALL_HEADING]
+    for t in recalled:
+        request = (t.get("text") or "").strip() or "(no text)"
+        line = f"- [{t.get('status', '?')}] {request}"
+        outcome = (t.get("outcome") or "").strip()
+        if outcome:
+            line += f" -> {outcome}"
+        lines.append(line)
+    return "\n".join(lines)

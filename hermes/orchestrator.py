@@ -436,7 +436,7 @@ class Orchestrator:
             snapshot = None
         await report(task_id, "planning...")
         try:
-            raw = await self.planner(text, self._plan_context(proj, is_new))
+            raw = await self.planner(text, self._plan_context(proj, is_new, text))
             try:
                 steps = parse_plan(raw)
                 validate_plan(steps, self.settings.default_test_mode)
@@ -509,7 +509,7 @@ class Orchestrator:
         # HTML. Every other report is raw engine text that must not be parsed.
         await report(task_id, done_msg, html=summary is not None)
 
-    def _plan_context(self, proj: Path, is_new: bool) -> str:
+    def _plan_context(self, proj: Path, is_new: bool, text: str = "") -> str:
         """The project facts handed to the planner.
 
         Called inside run_task's planning `try`, so a failure here reports as a
@@ -518,12 +518,30 @@ class Orchestrator:
         `detect` is read off deps like every other capability: absent — as in
         the many tests that inject only `run_engine` — means no type is
         claimed, not that the type is unknown.
+
+        The project context is followed by a recall block: past tasks from the
+        vault, filtered to this project when it is a registered one, or matched
+        on the request text for a throwaway workspace. It is what lets the plan
+        learn from earlier runs. Best-effort — an empty or unreadable vault just
+        yields no block, never a planning failure.
         """
         from . import plan_context
         detect = self.deps.get("detect")
         ptype = detect(proj) if detect and not is_new else ""
         summary = "" if is_new else _project_summary(proj)
-        return plan_context.build(summary, ptype or "", is_new, proj.name)
+        ctx = plan_context.build(summary, ptype or "", is_new, proj.name)
+        try:
+            # Match the archive's own `project` key — parse_project_ref of the
+            # task text — not proj.name, which is the directory basename and
+            # differs from the @-ref a registered project is filed under.
+            from .project_resolve import parse_project_ref
+            name, _ = parse_project_ref(text or "")
+            recalled = self.store.recall_tasks(
+                project=name or None, query=text, limit=5)
+            block = plan_context.recall_block(recalled)
+        except Exception:
+            block = ""
+        return ctx + ("\n\n" + block if block else "")
 
     def _save_engine_transcript(self, task_id: str, idx: int, engine: str,
                                 attempts: list) -> None:
