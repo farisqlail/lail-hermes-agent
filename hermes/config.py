@@ -57,12 +57,6 @@ def _default_mcp_servers() -> list[McpServer]:
         # puts uv in the venv whose Scripts dir start.bat activates.
         McpServer(name="win", type="stdio", command="uvx",
                   args=["windows-mcp", "serve"]),
-        # Knowledge graph that survives a restart. The file path is explicit
-        # because the default writes inside the npx package directory, which a
-        # cache clear deletes.
-        McpServer(name="memory", type="stdio", command="npx",
-                  args=["-y", "@modelcontextprotocol/server-memory"],
-                  env={"MEMORY_FILE_PATH": str(paths.config_dir() / "memory.jsonl")}),
         # Markdown knowledge vault: the operator facts and per-task archive
         # Hermes writes, plus any notes the operator keeps. Needs no credentials,
         # only Node, so it ships enabled. The vault is this install's

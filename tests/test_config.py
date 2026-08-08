@@ -12,14 +12,13 @@ def test_fresh_install_ships_the_default_mcp_servers(hermes_home):
     paths.ensure_dirs()
     s = config.load_settings()
     assert [m.name for m in s.mcp_servers] == [
-        "pc", "browser", "win", "memory", "obsidian", "mail", "web", "spotify"]
+        "pc", "browser", "win", "obsidian", "mail", "web", "spotify"]
     # Credential-hungry servers ship off, so a first boot never fails on an
     # empty API key; the rest work with nothing but Node (and uv for `win`).
     assert {m.name for m in s.mcp_servers if not m.enabled} == {"mail", "web", "spotify"}
-    # The graph file belongs under this install's HERMES_HOME, not wherever npx
-    # happened to unpack the package.
-    memory = next(m for m in s.mcp_servers if m.name == "memory")
-    assert memory.env["MEMORY_FILE_PATH"] == str(paths.config_dir() / "memory.jsonl")
+    # The obsidian vault is the memory store; the old server-memory graph is no
+    # longer a default, so nothing overlaps it out of the box.
+    assert "memory" not in {m.name for m in s.mcp_servers}
     # Obsidian ships enabled (no credentials) and points at this install's vault,
     # not wherever npx unpacks the package.
     obsidian = next(m for m in s.mcp_servers if m.name == "obsidian")
