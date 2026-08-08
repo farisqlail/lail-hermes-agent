@@ -423,7 +423,9 @@ def build_nim_chat(settings, secrets):
         "pengguna minta BEBERAPA pilihan/kandidat atau 'top 3', panggil "
         "`viral_clips` — hasilnya daftar `candidates`, dan kamu WAJIB menampilkan "
         "`markdown` SETIAP kandidat (judul + video) apa adanya, satu per satu. Bila "
-        "'error', sampaikan gagalnya apa adanya; jangan mengarang klip.\n\n"
+        "'error', sampaikan gagalnya apa adanya; jangan mengarang klip. Klip "
+        "viral otomatis dibuat 9:16 (vertikal, siap Shorts/TikTok); bila pengguna "
+        "mau rasio asli, pakai vertical='none'.\n\n"
     )
 
     async def chat(history: list[dict], tools=None, dispatch=None) -> str:

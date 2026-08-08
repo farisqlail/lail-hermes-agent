@@ -222,7 +222,9 @@ CHAT_TOOLS = [
         "parameters": {"type": "object", "properties": {
             "url": {"type": "string", "description": "URL video, mis. https://youtube.com/watch?v=..."},
             "start": {"type": "string", "description": "waktu mulai, detik atau MM:SS / HH:MM:SS"},
-            "end": {"type": "string", "description": "waktu selesai, detik atau MM:SS / HH:MM:SS"}},
+            "end": {"type": "string", "description": "waktu selesai, detik atau MM:SS / HH:MM:SS"},
+            "vertical": {"type": "string", "enum": ["none", "blur", "crop"],
+                         "description": "format 9:16 untuk Shorts/TikTok: 'blur' (utuh+background blur), 'crop' (potong tengah), 'none' (rasio asli). Default 'none'."}},
             "required": ["url", "start", "end"]}}},
     {"type": "function", "function": {
         "name": "viral_clip",
@@ -237,7 +239,9 @@ CHAT_TOOLS = [
         "parameters": {"type": "object", "properties": {
             "url": {"type": "string", "description": "URL video YouTube"},
             "max_seconds": {"type": "integer",
-                            "description": "durasi maks klip dalam detik, default 90 (maks 90)"}},
+                            "description": "durasi maks klip dalam detik, default 90 (maks 90)"},
+            "vertical": {"type": "string", "enum": ["blur", "crop", "none"],
+                         "description": "format 9:16 Shorts/TikTok, default 'blur' (utuh+background blur). 'crop' potong tengah, 'none' rasio asli."}},
             "required": ["url"]}}},
     {"type": "function", "function": {
         "name": "viral_clips",
@@ -253,7 +257,9 @@ CHAT_TOOLS = [
             "url": {"type": "string", "description": "URL video YouTube"},
             "count": {"type": "integer", "description": "jumlah kandidat, default 3 (maks 3)"},
             "max_seconds": {"type": "integer",
-                            "description": "durasi maks tiap klip, default 90 (maks 90)"}},
+                            "description": "durasi maks tiap klip, default 90 (maks 90)"},
+            "vertical": {"type": "string", "enum": ["blur", "crop", "none"],
+                         "description": "format 9:16 Shorts/TikTok, default 'blur'. 'crop' potong tengah, 'none' rasio asli."}},
             "required": ["url"]}}},
 ]
 
@@ -584,6 +590,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     res = await asyncio.to_thread(
                         ytclip.clip, str(args.get("url") or ""),
                         start=args.get("start"), end=args.get("end"),
+                        vertical=str(args.get("vertical") or "none"),
                         out_dir=paths.artifacts_dir() / "clips")
                     if res.get("status") == "clipped":
                         from urllib.parse import quote
@@ -599,7 +606,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                         mx = 90.0
                     res = await asyncio.to_thread(
                         ytclip.viral_clip, str(args.get("url") or ""),
-                        max_seconds=mx, out_dir=paths.artifacts_dir() / "clips")
+                        max_seconds=mx, vertical=str(args.get("vertical") or "blur"),
+                        out_dir=paths.artifacts_dir() / "clips")
                     if res.get("status") == "clipped":
                         from urllib.parse import quote
                         url = f"/api/artifacts/view?path={quote(res['path'])}"
@@ -623,6 +631,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     res = await asyncio.to_thread(
                         ytclip.viral_candidates, str(args.get("url") or ""),
                         n=n, max_seconds=mx, out_dir=paths.artifacts_dir() / "clips",
+                        vertical=str(args.get("vertical") or "blur"),
                         base_url=s.nvidia_base_url, key=sec.nvidia_api_key,
                         model=(s.chat_model or s.model))
                     if res.get("status") == "ok":

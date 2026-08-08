@@ -11,12 +11,27 @@ the operator is entitled to clip (their own, licensed, or fair use).
 from __future__ import annotations
 
 import re
+import subprocess
 import uuid
 from pathlib import Path
 
 # Accepts the common YouTube host shapes plus generic http(s); yt-dlp itself is
 # the real validator, this just rejects obvious non-URLs early.
 _URL_RE = re.compile(r"^https?://\S+$", re.I)
+
+# 9:16 reformat filters for Shorts/Reels/TikTok, on a 1080x1920 canvas.
+#  - blur: the whole frame stays visible, scaled to fit, over a scaled+blurred
+#          copy of itself — the standard "vertical with blurred bars" look.
+#  - crop: a centre 9:16 slice, filling the screen but cutting the sides.
+_VERTICAL = {
+    "blur": ("-filter_complex",
+             "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+             "crop=1080:1920,boxblur=20:5[bg];"
+             "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
+             "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[outv]"),
+    "crop": ("-vf",
+             "crop='min(iw,ih*9/16)':ih,scale=1080:1920,setsar=1"),
+}
 
 #: A clip longer than this is almost certainly a mistake (and a large download),
 #: so it is refused rather than silently fetched.
@@ -204,12 +219,16 @@ def viral_title(base_url: str, key: str, model: str, *, video_title: str,
 
 
 def viral_clip(url: str, *, max_seconds: float = 90.0, out_dir: Path,
-               timeout: int = 300) -> dict:
-    """Find the most-replayed window of a video and cut it into a clip."""
+               vertical: str = "blur", timeout: int = 300) -> dict:
+    """Find the most-replayed window of a video and cut it into a clip.
+
+    `vertical` defaults to "blur": a viral clip is for Shorts/Reels, which want
+    9:16. Pass "none" to keep the source aspect."""
     sug = suggest_window(url, max_seconds=max_seconds, timeout=min(timeout, 120))
     if sug.get("status") != "suggested":
         return sug
-    res = clip(url, start=sug["start"], end=sug["end"], out_dir=out_dir, timeout=timeout)
+    res = clip(url, start=sug["start"], end=sug["end"], out_dir=out_dir,
+               vertical=vertical, timeout=timeout)
     if res.get("status") == "clipped":
         res.update(start=sug["start"], end=sug["end"],
                    reason=sug["reason"], title=sug["title"])
@@ -219,7 +238,7 @@ def viral_clip(url: str, *, max_seconds: float = 90.0, out_dir: Path,
 def viral_candidates(url: str, *, n: int = 3, max_seconds: float = 90.0,
                      out_dir: Path, base_url: str = "", key: str = "",
                      model: str = "", do_clip: bool = True,
-                     timeout: int = 300) -> dict:
+                     vertical: str = "blur", timeout: int = 300) -> dict:
     """Top-`n` viral candidates: each a most-replayed window with an LLM title
     and (by default) a cut clip.
 
@@ -243,7 +262,7 @@ def viral_candidates(url: str, *, n: int = 3, max_seconds: float = 90.0,
                 "reason": "paling banyak diputar ulang (most replayed)"}
         if do_clip:
             res = clip(url, start=w["start"], end=w["end"], out_dir=out_dir,
-                       timeout=timeout)
+                       vertical=vertical, timeout=timeout)
             if res.get("status") != "clipped":
                 continue                       # skip a candidate we could not cut
             cand["path"] = res["path"]
@@ -287,8 +306,47 @@ def _ensure_ffmpeg() -> str | None:
     return d
 
 
-def clip(url: str, *, start, end, out_dir: Path, timeout: int = 300) -> dict:
+def _ffmpeg_exe() -> str | None:
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def _to_vertical(src: Path, mode: str, timeout: int) -> Path | None:
+    """Re-encode `src` to a 1080x1920 (9:16) mp4 for Shorts/Reels/TikTok, and
+    replace the original. Returns the new path, or None if it could not (unknown
+    mode, no ffmpeg, or a failed run) — the caller then keeps the source clip."""
+    spec = _VERTICAL.get(mode)
+    exe = _ffmpeg_exe()
+    if spec is None or exe is None:
+        return None
+    flag, filt = spec
+    out = src.with_name(src.stem + "_v.mp4")
+    cmd = [exe, "-y", "-i", str(src), flag, filt]
+    if mode == "blur":
+        cmd += ["-map", "[outv]", "-map", "0:a?"]
+    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(out)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode == 0 and out.exists() and out.stat().st_size > 0:
+        src.unlink(missing_ok=True)
+        return out
+    out.unlink(missing_ok=True)
+    return None
+
+
+def clip(url: str, *, start, end, out_dir: Path, vertical: str = "none",
+         timeout: int = 300) -> dict:
     """Download the [start, end] segment of `url` and save it as one mp4.
+
+    `vertical` reframes the clip for vertical platforms: "blur" (whole frame on a
+    blurred 9:16 canvas), "crop" (centre 9:16 slice), or "none" (keep source
+    aspect). A reformat failure falls back to the source clip, never an error.
 
     Returns {"status": "clipped", "path": <file>, "seconds": <dur>} or
     {"status": "error", "error": <why>}.
@@ -338,4 +396,10 @@ def clip(url: str, *, start, end, out_dir: Path, timeout: int = 300) -> dict:
     files = sorted(out.glob(f"{stem}.*"))
     if not files:
         return {"status": "error", "error": "klip gagal dibuat (tidak ada berkas keluaran)"}
-    return {"status": "clipped", "path": str(files[0]), "seconds": round(e - s, 1)}
+    path = files[0]
+    if vertical in _VERTICAL:
+        v = _to_vertical(path, vertical, timeout)
+        if v is not None:
+            path = v
+    return {"status": "clipped", "path": str(path), "seconds": round(e - s, 1),
+            "vertical": vertical if path.name.endswith("_v.mp4") else "none"}

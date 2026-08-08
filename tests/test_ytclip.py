@@ -144,7 +144,7 @@ def test_viral_candidates_builds_titled_clips(tmp_path, monkeypatch):
     monkeypatch.setattr(ytclip, "_transcript_segments", lambda info: [])
     monkeypatch.setitem(sys.modules, "yt_dlp", _fake_ydl_with_info(info))
 
-    def fake_clip(url, *, start, end, out_dir, timeout=300):
+    def fake_clip(url, *, start, end, out_dir, vertical="none", timeout=300):
         from pathlib import Path
         p = Path(out_dir)
         p.mkdir(parents=True, exist_ok=True)
@@ -160,6 +160,50 @@ def test_viral_candidates_builds_titled_clips(tmp_path, monkeypatch):
     assert len(r["candidates"]) == 2
     # no LLM creds -> template title, and each has a clip path
     assert all(c["title"] and c["path"].endswith(".mp4") for c in r["candidates"])
+
+
+def test_clip_reformats_vertical(tmp_path, monkeypatch):
+    """clip() runs the vertical reformat and returns the reframed file."""
+    made = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            self.opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def download(self, urls):
+            path = self.opts["outtmpl"].replace("%(ext)s", "mp4")
+            with open(path, "wb") as f:
+                f.write(b"src")
+
+    fake = types.ModuleType("yt_dlp")
+    fake.YoutubeDL = FakeYDL
+    utils = types.ModuleType("yt_dlp.utils")
+    utils.download_range_func = lambda a, b: None
+    fake.utils = utils
+    monkeypatch.setitem(sys.modules, "yt_dlp", fake)
+    monkeypatch.setitem(sys.modules, "yt_dlp.utils", utils)
+    monkeypatch.setattr(ytclip, "_ensure_ffmpeg", lambda: None)
+
+    def fake_vertical(src, mode, timeout):
+        made["mode"] = mode
+        out = src.with_name(src.stem + "_v.mp4")
+        out.write_bytes(b"vertical")
+        src.unlink(missing_ok=True)
+        return out
+
+    monkeypatch.setattr(ytclip, "_to_vertical", fake_vertical)
+    r = ytclip.clip("https://youtu.be/x", start=0, end=5,
+                    out_dir=tmp_path / "c", vertical="blur")
+    assert r["status"] == "clipped"
+    assert made["mode"] == "blur"
+    assert r["path"].endswith("_v.mp4")
+    assert r["vertical"] == "blur"
 
 
 def test_clip_reports_yt_dlp_error(tmp_path, monkeypatch):
