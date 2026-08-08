@@ -239,6 +239,22 @@ CHAT_TOOLS = [
             "max_seconds": {"type": "integer",
                             "description": "durasi maks klip dalam detik, default 90 (maks 90)"}},
             "required": ["url"]}}},
+    {"type": "function", "function": {
+        "name": "viral_clips",
+        "description": ("Hasilkan BEBERAPA (default 3) kandidat klip viral dari satu "
+                        "video YouTube sekaligus: tiap kandidat adalah bagian yang "
+                        "paling banyak diputar ulang, LENGKAP dengan judul viral yang "
+                        "dibuatkan otomatis. Pakai bila pengguna minta 'beberapa "
+                        "kandidat', 'top 3', atau pilihan klip. Hasil berisi daftar "
+                        "`candidates`, tiap item punya `title`, `start`, `end`, dan "
+                        "`markdown` — tampilkan SETIAP `markdown` apa adanya agar "
+                        "semua videonya muncul."),
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string", "description": "URL video YouTube"},
+            "count": {"type": "integer", "description": "jumlah kandidat, default 3 (maks 3)"},
+            "max_seconds": {"type": "integer",
+                            "description": "durasi maks tiap klip, default 90 (maks 90)"}},
+            "required": ["url"]}}},
 ]
 
 def _bg_crash_cb(store: Store, task_id: str):
@@ -593,6 +609,34 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                              "reason": res.get("reason"), "title": res.get("title"),
                              "markdown": f"![clip]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
+                if name == "viral_clips":
+                    s = config.load_settings()
+                    sec = config.load_secrets()
+                    try:
+                        mx = min(float(args.get("max_seconds") or 90), 90.0)
+                    except (TypeError, ValueError):
+                        mx = 90.0
+                    try:
+                        n = min(int(args.get("count") or 3), 3)
+                    except (TypeError, ValueError):
+                        n = 3
+                    res = await asyncio.to_thread(
+                        ytclip.viral_candidates, str(args.get("url") or ""),
+                        n=n, max_seconds=mx, out_dir=paths.artifacts_dir() / "clips",
+                        base_url=s.nvidia_base_url, key=sec.nvidia_api_key,
+                        model=(s.chat_model or s.model))
+                    if res.get("status") == "ok":
+                        from urllib.parse import quote
+                        cands = []
+                        for c in res["candidates"]:
+                            u = f"/api/artifacts/view?path={quote(c['path'])}"
+                            cands.append({"title": c["title"], "start": c["start"],
+                                          "end": c["end"],
+                                          "markdown": f"### {c['title']}\n![clip]({u})"})
+                        return json.dumps({"status": "ok",
+                                           "video_title": res["video_title"],
+                                           "candidates": cands}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
                 if name == "start_task":
                     if started:
                         return json.dumps(
@@ -742,7 +786,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         import importlib.util
         if importlib.util.find_spec("yt_dlp") is None:
             base = [t for t in base
-                    if t["function"]["name"] not in ("youtube_clip", "viral_clip")]
+                    if t["function"]["name"] not in
+                    ("youtube_clip", "viral_clip", "viral_clips")]
         hub = getattr(app.state, "hub", None)
         if hub is None:
             return base

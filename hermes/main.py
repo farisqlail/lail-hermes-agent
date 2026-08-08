@@ -420,6 +420,9 @@ def build_nim_chat(settings, secrets):
         "detik); JANGAN meminta waktu mulai/selesai dulu, langsung panggil. Untuk "
         "keduanya, bila 'clipped' SERTAKAN field `markdown` APA ADANYA agar "
         "videonya tampil, dan sebutkan `start`-`end` serta `reason` bila ada. Bila "
+        "pengguna minta BEBERAPA pilihan/kandidat atau 'top 3', panggil "
+        "`viral_clips` — hasilnya daftar `candidates`, dan kamu WAJIB menampilkan "
+        "`markdown` SETIAP kandidat (judul + video) apa adanya, satu per satu. Bila "
         "'error', sampaikan gagalnya apa adanya; jangan mengarang klip.\n\n"
     )
 

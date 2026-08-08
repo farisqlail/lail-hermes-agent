@@ -52,58 +52,160 @@ def suggest_window(url: str, *, max_seconds: float = 90.0, timeout: int = 60) ->
     the footage. Returns {"status":"suggested","start","end","reason","title"}
     or {"status":"error",...} (e.g. a video with no heatmap).
     """
-    url = (url or "").strip()
-    if not _URL_RE.match(url):
-        return {"status": "error", "error": "URL tidak valid"}
-    try:
-        from yt_dlp import YoutubeDL
-    except ImportError:
-        return {"status": "error", "error": "yt-dlp belum terpasang"}
-    # Prime ffmpeg on PATH before the first extractor run: yt-dlp caches ffmpeg
-    # availability there, and a later clip() would inherit a cached "missing".
-    _ensure_ffmpeg()
-    try:
-        with YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True,
-                        "noplaylist": True, "socket_timeout": timeout}) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except Exception as ex:
-        return {"status": "error", "error": str(ex)[:300]}
-
-    duration = float(info.get("duration") or 0)
-    heat = info.get("heatmap") or []
-    if not heat or duration <= 0:
-        return {"status": "error",
-                "error": "video ini tidak punya data 'most replayed' — "
-                         "sebutkan waktu mulai & selesai manual"}
-
-    buckets = sorted(heat, key=lambda h: h.get("start_time", 0))
-    width = (buckets[0].get("end_time", 0) - buckets[0].get("start_time", 0)) or (
-        duration / len(buckets))
-    win = min(max_seconds, duration)
-    k = max(1, round(win / width))                 # buckets per window
-    vals = [float(b.get("value") or 0) for b in buckets]
-
-    best_i, best_sum = 0, -1.0
-    for i in range(0, max(1, len(buckets) - k + 1)):
-        total = sum(vals[i:i + k])
-        if total > best_sum:
-            best_sum, best_i = total, i
-    start = float(buckets[best_i].get("start_time", 0))
-    if start + win > duration:                     # keep the full window inside the video
-        start = max(0.0, duration - win)
-    end = min(start + win, duration)
-    return {"status": "suggested", "start": round(start, 1), "end": round(end, 1),
+    windows, info, err = _analyse(url, n=1, max_seconds=max_seconds, timeout=timeout)
+    if err:
+        return {"status": "error", "error": err}
+    w = windows[0]
+    return {"status": "suggested", "start": w["start"], "end": w["end"],
             "title": info.get("title") or "",
             "reason": "bagian yang paling banyak diputar ulang (most replayed)"}
 
 
+def _extract_info(url: str, timeout: int):
+    from yt_dlp import YoutubeDL
+    # Prime ffmpeg on PATH before the first extractor run: yt-dlp caches ffmpeg
+    # availability there, and a later clip() would inherit a cached "missing".
+    _ensure_ffmpeg()
+    with YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True,
+                    "noplaylist": True, "socket_timeout": timeout}) as ydl:
+        return ydl.extract_info(url, download=False)
+
+
+def _windows_from_heatmap(heat: list, duration: float, n: int,
+                          win: float) -> list[dict]:
+    """Top-`n` non-overlapping windows of length `win`, hottest first by replay
+    heat, returned in time order. Greedy: take the highest-scoring window, bar
+    everything it overlaps, repeat."""
+    buckets = sorted(heat, key=lambda h: h.get("start_time", 0))
+    width = (buckets[0].get("end_time", 0) - buckets[0].get("start_time", 0)) or (
+        duration / len(buckets))
+    k = max(1, round(win / width))
+    vals = [float(b.get("value") or 0) for b in buckets]
+    scored = sorted(
+        ((sum(vals[i:i + k]), i) for i in range(0, max(1, len(buckets) - k + 1))),
+        reverse=True)
+    chosen, used = [], []
+    for score, i in scored:
+        if len(chosen) >= n:
+            break
+        if any(i < b and i + k > a for a, b in used):   # overlaps a taken window
+            continue
+        used.append((i, i + k))
+        start = float(buckets[i].get("start_time", 0))
+        if start + win > duration:
+            start = max(0.0, duration - win)
+        chosen.append({"start": round(start, 1),
+                       "end": round(min(start + win, duration), 1),
+                       "score": round(score, 3)})
+    chosen.sort(key=lambda w: w["start"])
+    return chosen
+
+
+def _analyse(url: str, *, n: int, max_seconds: float, timeout: int):
+    """(windows, info, error). Shared by suggest_window(s) and viral_candidates."""
+    url = (url or "").strip()
+    if not _URL_RE.match(url):
+        return None, None, "URL tidak valid"
+    try:
+        import yt_dlp  # noqa: F401
+    except ImportError:
+        return None, None, "yt-dlp belum terpasang"
+    try:
+        info = _extract_info(url, timeout)
+    except Exception as ex:
+        return None, None, str(ex)[:300]
+    duration = float(info.get("duration") or 0)
+    heat = info.get("heatmap") or []
+    if not heat or duration <= 0:
+        return None, info, ("video ini tidak punya data 'most replayed' — "
+                            "sebutkan waktu mulai & selesai manual")
+    win = min(max_seconds, duration)
+    return _windows_from_heatmap(heat, duration, n, win), info, None
+
+
+def suggest_windows(url: str, *, n: int = 3, max_seconds: float = 90.0,
+                    timeout: int = 60) -> dict:
+    """Top-`n` viral-looking windows (most-replayed), newest-first by time."""
+    windows, info, err = _analyse(url, n=n, max_seconds=max_seconds, timeout=timeout)
+    if err:
+        return {"status": "error", "error": err}
+    return {"status": "suggested", "title": info.get("title") or "",
+            "windows": windows}
+
+
+def _transcript_segments(info: dict) -> list[tuple[float, str]]:
+    """Timed transcript lines [(start_s, text)] from the video's captions, or [].
+
+    Prefers manual subs, falls back to auto-captions; Indonesian then English.
+    Fetches the json3 caption track directly — no file writes. Best-effort: any
+    failure yields [], and titling simply proceeds without a transcript."""
+    import urllib.request
+
+    tracks = {**(info.get("automatic_captions") or {}),
+              **(info.get("subtitles") or {})}   # manual wins on key collision
+    fmts = None
+    for lang in ("id", "en", "a.id", "a.en", "en-US", "en-GB"):
+        if tracks.get(lang):
+            fmts = tracks[lang]
+            break
+    if not fmts:
+        return []
+    j3 = next((f for f in fmts if f.get("ext") == "json3"), None) or fmts[0]
+    url = j3.get("url")
+    if not url:
+        return []
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r:
+            data = json.loads(r.read().decode())
+    except Exception:
+        return []
+    out = []
+    for ev in data.get("events", []):
+        segs = ev.get("segs")
+        if not segs:
+            continue
+        text = "".join(s.get("utf8", "") for s in segs).strip()
+        if text:
+            out.append((float(ev.get("tStartMs", 0)) / 1000.0, text))
+    return out
+
+
+def _snippet(segments: list[tuple[float, str]], start: float, end: float,
+             limit: int = 700) -> str:
+    """The transcript text spoken within [start, end]."""
+    return " ".join(t for ts, t in segments if start <= ts < end).strip()[:limit]
+
+
+def viral_title(base_url: str, key: str, model: str, *, video_title: str,
+                snippet: str, start: float, timeout: int = 40) -> str:
+    """A short catchy clip title from the LLM, or "" on any failure.
+
+    Uses the same gateway as the chat agent. Best-effort: no key, no model, or a
+    network error just yields no title and the caller falls back to a template.
+    """
+    if not (base_url and key and model):
+        return ""
+    ctx = f"Judul video: {video_title}\n"
+    if snippet:
+        ctx += f"Transkrip bagian ini: {snippet}\n"
+    else:
+        ctx += f"(tanpa transkrip; bagian pada detik {int(start)})\n"
+    prompt = (ctx + "\nBuat SATU judul pendek yang menarik/clickbait wajar untuk "
+              "klip pendek (Shorts/Reels) dari bagian ini, maksimal 8 kata, "
+              "bahasa Indonesia, tanpa tanda kutip. Keluarkan judulnya saja.")
+    try:
+        # local import to avoid a hard dependency cycle; imagegen owns the POST.
+        from . import imagegen
+        data = imagegen._post(base_url, key, model, prompt, timeout)
+        title = (data["choices"][0]["message"]["content"] or "").strip()
+        return title.splitlines()[0].strip(' "\'')[:120]
+    except Exception:
+        return ""
+
+
 def viral_clip(url: str, *, max_seconds: float = 90.0, out_dir: Path,
                timeout: int = 300) -> dict:
-    """Find the most-replayed window of a video and cut it into a clip.
-
-    One call: analyse (suggest_window) then clip. Returns the clip result with
-    the chosen `start`/`end`/`reason` folded in, or the analysis error.
-    """
+    """Find the most-replayed window of a video and cut it into a clip."""
     sug = suggest_window(url, max_seconds=max_seconds, timeout=min(timeout, 120))
     if sug.get("status") != "suggested":
         return sug
@@ -112,6 +214,48 @@ def viral_clip(url: str, *, max_seconds: float = 90.0, out_dir: Path,
         res.update(start=sug["start"], end=sug["end"],
                    reason=sug["reason"], title=sug["title"])
     return res
+
+
+def viral_candidates(url: str, *, n: int = 3, max_seconds: float = 90.0,
+                     out_dir: Path, base_url: str = "", key: str = "",
+                     model: str = "", do_clip: bool = True,
+                     timeout: int = 300) -> dict:
+    """Top-`n` viral candidates: each a most-replayed window with an LLM title
+    and (by default) a cut clip.
+
+    Returns {"status":"ok","video_title","candidates":[{start,end,title,path?},...]}
+    or {"status":"error",...}. Titling and clipping are per-candidate best-effort
+    — a candidate whose clip fails is dropped, but the rest still come back.
+    """
+    windows, info, err = _analyse(url, n=n, max_seconds=max_seconds,
+                                  timeout=min(timeout, 120))
+    if err:
+        return {"status": "error", "error": err}
+    video_title = info.get("title") or ""
+    segments = _transcript_segments(info)
+    out = []
+    for w in windows:
+        snip = _snippet(segments, w["start"], w["end"])
+        title = viral_title(base_url, key, model, video_title=video_title,
+                            snippet=snip, start=w["start"]) or \
+            f"{video_title} — momen {_fmt(w['start'])}"
+        cand = {"start": w["start"], "end": w["end"], "title": title,
+                "reason": "paling banyak diputar ulang (most replayed)"}
+        if do_clip:
+            res = clip(url, start=w["start"], end=w["end"], out_dir=out_dir,
+                       timeout=timeout)
+            if res.get("status") != "clipped":
+                continue                       # skip a candidate we could not cut
+            cand["path"] = res["path"]
+        out.append(cand)
+    if not out:
+        return {"status": "error", "error": "tidak ada kandidat yang berhasil dibuat"}
+    return {"status": "ok", "video_title": video_title, "candidates": out}
+
+
+def _fmt(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 60}:{s % 60:02d}"
 
 
 def _ensure_ffmpeg() -> str | None:

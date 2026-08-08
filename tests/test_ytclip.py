@@ -117,6 +117,51 @@ def test_suggest_window_errors_without_heatmap(monkeypatch):
     assert r["status"] == "error"
 
 
+def test_suggest_windows_returns_n_in_time_order(monkeypatch):
+    # three separated hot bands over a 600s video, 10s buckets
+    hot = {5, 6, 25, 26, 45, 46}
+    heat = [{"start_time": i * 10, "end_time": i * 10 + 10,
+             "value": 1.0 if i in hot else 0.0} for i in range(60)]
+    info = {"duration": 600, "title": "T", "heatmap": heat}
+    monkeypatch.setitem(sys.modules, "yt_dlp", _fake_ydl_with_info(info))
+    monkeypatch.setattr(ytclip, "_ensure_ffmpeg", lambda: None)
+    r = ytclip.suggest_windows("https://youtu.be/x", n=3, max_seconds=90)
+    assert r["status"] == "suggested"
+    ws = r["windows"]
+    assert len(ws) == 3
+    assert [w["start"] for w in ws] == sorted(w["start"] for w in ws)  # time order
+
+
+def test_viral_title_empty_without_credentials():
+    assert ytclip.viral_title("", "", "", video_title="v", snippet="s", start=0) == ""
+
+
+def test_viral_candidates_builds_titled_clips(tmp_path, monkeypatch):
+    heat = [{"start_time": i * 10, "end_time": i * 10 + 10,
+             "value": 1.0 if i in (10, 30) else 0.0} for i in range(50)]
+    info = {"duration": 500, "title": "Video Keren", "heatmap": heat}
+    monkeypatch.setattr(ytclip, "_extract_info", lambda url, timeout: info)
+    monkeypatch.setattr(ytclip, "_transcript_segments", lambda info: [])
+    monkeypatch.setitem(sys.modules, "yt_dlp", _fake_ydl_with_info(info))
+
+    def fake_clip(url, *, start, end, out_dir, timeout=300):
+        from pathlib import Path
+        p = Path(out_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        f = p / f"{int(start)}.mp4"
+        f.write_bytes(b"x")
+        return {"status": "clipped", "path": str(f), "seconds": end - start}
+
+    monkeypatch.setattr(ytclip, "clip", fake_clip)
+    r = ytclip.viral_candidates("https://youtu.be/x", n=2, max_seconds=90,
+                                out_dir=tmp_path / "c", do_clip=True)
+    assert r["status"] == "ok"
+    assert r["video_title"] == "Video Keren"
+    assert len(r["candidates"]) == 2
+    # no LLM creds -> template title, and each has a clip path
+    assert all(c["title"] and c["path"].endswith(".mp4") for c in r["candidates"])
+
+
 def test_clip_reports_yt_dlp_error(tmp_path, monkeypatch):
     class BoomYDL:
         def __init__(self, opts):
