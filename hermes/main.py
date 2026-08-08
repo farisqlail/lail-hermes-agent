@@ -407,6 +407,12 @@ def build_nim_chat(settings, secrets):
         "tanpa konfirmasi operator; bila hasilnya 'opened', katakan app/URL sudah "
         "dibuka. Bila 'unknown_app', app itu di luar daftar aman — sampaikan belum "
         "dibuka dan sebut app yang tersedia.\n\n"
+        "MEMBUAT GAMBAR: bila pengguna minta dibuatkan gambar/ilustrasi/logo/ikon/"
+        "foto, panggil `generate_image` dengan prompt sedetail mungkin. Bila "
+        "hasilnya berstatus 'generated', SERTAKAN nilai field `markdown` APA ADANYA "
+        "di jawabanmu agar gambarnya tampil inline; jangan cuma menautkannya dan "
+        "jangan mengarang bahwa gambar sudah jadi tanpa memanggil alatnya. Bila "
+        "'error', sampaikan gagalnya, jangan berpura-pura ada gambar.\n\n"
     )
 
     async def chat(history: list[dict], tools=None, dispatch=None) -> str:
@@ -851,6 +857,10 @@ async def run():
     from . import vault_git
     vault_git.ensure_repo(paths.vault_dir())
     vault_git.autocommit(paths.vault_dir(), "vault: session start")
+    # Off-machine backup, opt-in: pushes only when the operator has added a
+    # remote to the vault. No remote -> no-op. Once per boot, so a session's own
+    # task commits sync on the next start rather than paying network per task.
+    vault_git.push(paths.vault_dir())
     store = Store(paths.db_path()); store.init_schema()
     # Unconditional, and before the bot: anything still marked live is a lie
     # left by the last exit, and the dashboard must be honest even when no

@@ -65,6 +65,16 @@ def test_terminal_status_writes_enriched_archive(tmp_path):
     assert "[[proyek-demo]]" in note
 
 
+def test_outcome_is_only_the_verdict_headline(tmp_path):
+    s = _store(tmp_path)
+    s.create_task("t1", 1, "@demo bikin login")
+    s.append_log("t1", "task complete\n\n| file | change |\n|---|---|\n| a.py | +5 |")
+    s.set_task_status("t1", "done")
+    note = (tmp_path / "vault" / "tasks" / "t1.md").read_text(encoding="utf-8")
+    assert "- Hasil: task complete" in note
+    assert "| file |" not in note  # the git summary table stays out of recall
+
+
 def test_archive_backs_the_project_note(tmp_path):
     s = _store(tmp_path)
     s.create_task("t1", 1, "@demo tambah search")

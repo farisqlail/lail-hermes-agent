@@ -66,6 +66,26 @@ try {
   Write-Host "  playwright install failed on this Python - browser testing disabled until fixed. Emulator testing still works." -ForegroundColor Yellow
 }
 
+# obsidian-mcp is a default server launched with `npx -y obsidian-mcp`. On first
+# boot that download races the hub's start timeout and, on a slow or blocked
+# registry, loses — leaving the agent without its knowledge tools. Pre-warm the
+# npx cache here, while the network is already in use. A throwaway vault path is
+# passed on purpose: the server rejects a non-vault and exits immediately, so the
+# package downloads without a server process left running. Best-effort.
+Write-Host "Pre-warming obsidian-mcp (default 'obsidian' server)..." -ForegroundColor Cyan
+try {
+  $warm = Start-Job { param($p) npx -y obsidian-mcp $p 2>&1 | Out-Null } -ArgumentList "$HermesHome\__vault_warm__"
+  if (Wait-Job $warm -Timeout 180) {
+    Write-Host "  obsidian-mcp cached (obsidian server ready on first boot)" -ForegroundColor Green
+  } else {
+    Stop-Job $warm
+    Write-Host "  pre-warm timed out - obsidian-mcp will download on first use." -ForegroundColor Yellow
+  }
+  Remove-Job $warm -Force
+} catch {
+  Write-Host "  pre-warm skipped (npx unavailable)." -ForegroundColor Yellow
+}
+
 # 4. Seed empty config + secrets (filled via web UI)
 if (-not (Test-Path "$HermesHome\config\config.yaml")) {
   & $py -c "from hermes import config, paths; paths.ensure_dirs(); config.save_settings(config.load_settings()); config.save_secrets(config.load_secrets())"

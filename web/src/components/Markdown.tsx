@@ -29,7 +29,17 @@ export function renderMarkdown(src: string): string {
   
   // Bold
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-  
+
+  // Images (before Links, so ![alt](url) is not consumed by the link rule).
+  // Only same-origin (/…), http(s), or data:image URLs render — never
+  // javascript: or other schemes.
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
+    if (/^(https?:\/\/|\/|data:image\/)/.test(url)) {
+      return `<img src="${url}" alt="${alt}" loading="lazy" style="max-width:100%;height:auto;border-radius:8px;display:block;margin:8px 0;" />`;
+    }
+    return m;
+  });
+
   // Links
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   

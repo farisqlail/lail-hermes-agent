@@ -203,8 +203,18 @@ startup — the server refuses a folder without one — while leaving any files 
 operator has already put there untouched.
 
 Network note: `npx -y obsidian-mcp` downloads the package on first `tools/list`.
-On a machine where the npm registry is slow or blocked, pre-warm it (or install
-it locally and point `command`/`args` at `node <path>/build/main.js`).
+`install.ps1` pre-warms the npx cache so a fresh install starts cleanly; on a
+machine where the npm registry is slow or blocked, pre-warm it manually (or
+install it locally and point `command`/`args` at `node <path>/build/main.js`).
+
+Versioning + backup. The vault is put under git at startup and committed on each
+finished task (`hermes/vault_git.py`), so knowledge has a history and edits are
+recoverable — no setup needed, and nothing happens if git is not installed. For
+off-machine backup, add a remote once and Hermes pushes it at each startup:
+
+```
+git -C C:\Hermes\vault remote add origin <url>
+```
 
 ## Web search
 

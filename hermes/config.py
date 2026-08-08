@@ -94,6 +94,11 @@ class Settings(BaseModel):
     # reason to split them appears.
     chat_model: str = ""
     chat_temperature: float = 0.3
+    # Image generation runs through the same OpenAI-compatible gateway, but a
+    # different model: one that returns a picture inline in the chat reply (a
+    # `data:image/...;base64` link), e.g. 9Router's `ag/gemini-3.1-flash-image`.
+    # Empty disables the generate_image chat tool — no model, no tool offered.
+    image_model: str = "ag/gemini-3.1-flash-image"
     agent_name: str = "Lail Agent"
     allowed_user_ids: list[int] = Field(default_factory=list)
     default_engine: Literal["claude", "antigravity", "auto"] = "auto"

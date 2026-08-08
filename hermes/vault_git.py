@@ -52,6 +52,23 @@ def ensure_repo(vault: Path) -> bool:
     return is_repo(vault)
 
 
+def has_remote(vault: Path) -> bool:
+    r = _git(Path(vault), "remote")
+    return bool(r and r.returncode == 0 and r.stdout.strip())
+
+
+def push(vault: Path) -> bool:
+    """Push the vault to its remote, if one is configured. Off-machine backup is
+    opt-in: a fresh `git init` has no remote, so this is a no-op until the
+    operator adds one (`git -C <vault> remote add origin <url>`). Best-effort —
+    an offline or rejected push never disturbs the local repo."""
+    vault = Path(vault)
+    if not is_repo(vault) or not has_remote(vault):
+        return False
+    done = _git(vault, "push")
+    return bool(done and done.returncode == 0)
+
+
 def autocommit(vault: Path, message: str) -> bool:
     """Stage everything and commit, if there is anything to commit.
 
