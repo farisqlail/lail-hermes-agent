@@ -1484,12 +1484,14 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
                         ))}
                       </div>
                     ) : (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ fontSize: '10px', color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>CONNECTING STREAM</span>
-                        <div className="typing-indicator">
-                          <span></span>
-                          <span></span>
-                          <span></span>
+                      <div className="electric-thinking">
+                        <span className="electric-label">MENYIAPKAN JAWABAN</span>
+                        <div className="electric-wire">
+                          <div className="electric-current" />
+                          <div className="electric-current electric-current--2" />
+                          <svg className="electric-bolt" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M13 2 L4 14 L11 14 L9 22 L20 9 L13 9 Z" />
+                          </svg>
                         </div>
                       </div>
                     )}

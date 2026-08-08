@@ -246,10 +246,77 @@
   position: relative;
   overflow: hidden;
   cursor: grab;
+  animation: electric-hum 2.4s ease-in-out infinite;
 }
 
 .graph-canvas-container:active {
   cursor: grabbing;
+}
+
+/* An electric arc travelling around the graph's edge. A conic gradient rotated
+   via the registered --elec-angle, masked to just the border ring so only the
+   edge lights up. pointer-events:none keeps the graph draggable underneath. */
+@property --elec-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.graph-canvas-container::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 2px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--elec-angle),
+      transparent 0deg, transparent 298deg,
+      var(--accent) 326deg, #eafcff 348deg, var(--accent) 356deg, transparent 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  filter: drop-shadow(0 0 5px var(--accent)) drop-shadow(0 0 9px var(--accent));
+  pointer-events: none;
+  z-index: 4;
+  animation: electric-orbit 2.6s linear infinite;
+}
+
+/* A second arc on the opposite side so the box always looks energised. */
+.graph-canvas-container::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 2px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--elec-angle),
+      transparent 0deg, transparent 118deg,
+      var(--accent) 146deg, #eafcff 168deg, var(--accent) 176deg, transparent 180deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  filter: drop-shadow(0 0 4px var(--accent)) drop-shadow(0 0 8px var(--accent));
+  pointer-events: none;
+  z-index: 4;
+  opacity: 0.7;
+  animation: electric-orbit 2.6s linear infinite;
+}
+
+@keyframes electric-orbit {
+  to { --elec-angle: 360deg; }
+}
+
+@keyframes electric-hum {
+  0%, 100% { box-shadow: inset 0 0 12px rgba(150, 240, 255, 0.05); }
+  50%      { box-shadow: inset 0 0 22px rgba(150, 240, 255, 0.14); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-canvas-container,
+  .graph-canvas-container::before,
+  .graph-canvas-container::after {
+    animation: none;
+  }
 }
 
 .graph-canvas-bg {
@@ -516,6 +583,81 @@
   border-bottom: 1px dashed var(--border);
   padding-bottom: 4px;
   text-transform: uppercase;
+}
+
+/* "Electricity flowing" thinking indicator (agent preparing an answer) */
+.electric-thinking {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.electric-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  text-shadow: 0 0 6px var(--accent);
+  animation: electric-flicker 1.6s infinite;
+}
+
+.electric-wire {
+  position: relative;
+  width: 96px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(150, 240, 255, 0.12);
+  box-shadow: inset 0 0 4px rgba(150, 240, 255, 0.25);
+  overflow: visible;
+}
+
+/* The travelling "current" — a bright glowing segment sweeping along the wire. */
+.electric-current {
+  position: absolute;
+  top: 50%;
+  left: -34%;
+  width: 34%;
+  height: 3px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent) 40%, #fff 50%, var(--accent) 60%, transparent);
+  filter: drop-shadow(0 0 6px var(--accent)) drop-shadow(0 0 10px var(--accent));
+  animation: electric-flow 1.1s linear infinite;
+}
+
+/* A second pulse, offset, so the flow never looks empty. */
+.electric-current--2 {
+  animation-delay: 0.55s;
+  opacity: 0.7;
+}
+
+.electric-bolt {
+  position: absolute;
+  right: -7px;
+  top: -8px;
+  width: 18px;
+  height: 18px;
+  fill: var(--accent);
+  filter: drop-shadow(0 0 5px var(--accent)) drop-shadow(0 0 9px var(--accent));
+  animation: electric-flicker 0.9s infinite steps(1, end);
+}
+
+@keyframes electric-flow {
+  0%   { left: -34%; }
+  100% { left: 100%; }
+}
+
+/* Irregular on/off so it reads as an unstable electric arc, not a smooth fade. */
+@keyframes electric-flicker {
+  0%, 18%, 22%, 54%, 58%, 100% { opacity: 1; }
+  20%, 56%, 70%                { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .electric-current, .electric-current--2, .electric-bolt, .electric-label {
+    animation: none;
+  }
+  .electric-current { left: 33%; }
 }
 
 /* Pulsing Avatar/Camera Placeholder */
