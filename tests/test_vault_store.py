@@ -30,6 +30,28 @@ def test_fact_value_stops_at_footer(tmp_path):
     assert facts["hari_deploy"] == "Jumat"  # no "Terkait:" footer leaks in
 
 
+def test_root_note_read_only_when_marked_fact(tmp_path):
+    """A root note the agent files as a fact (type: fact) is picked up; the hub
+    notes at the root (no marker) are not mistaken for facts."""
+    s = _store(tmp_path)
+    v = tmp_path / "vault"
+    v.mkdir(parents=True, exist_ok=True)
+    (v / "operator.md").write_text("---\ntags: [operator]\n---\n# Operator\n", encoding="utf-8")
+    (v / "kota.md").write_text("---\ntype: fact\nkey: kota\n---\nJakarta\n", encoding="utf-8")
+    facts = {f["key"]: f["value"] for f in s.list_facts()}
+    assert facts.get("kota") == "Jakarta"
+    assert "operator" not in facts
+
+
+def test_facts_dir_wins_over_root_on_key_collision(tmp_path):
+    s = _store(tmp_path)
+    v = tmp_path / "vault"
+    s.set_fact("kota", "Bandung")  # -> facts/kota.md
+    (v / "kota.md").write_text("---\ntype: fact\nkey: kota\n---\nJakarta\n", encoding="utf-8")
+    facts = {f["key"]: f["value"] for f in s.list_facts()}
+    assert facts["kota"] == "Bandung"
+
+
 # --- #2: archive + project note ---
 
 def test_terminal_status_writes_enriched_archive(tmp_path):
@@ -50,6 +72,19 @@ def test_archive_backs_the_project_note(tmp_path):
     proj = (tmp_path / "vault" / "projects" / "proyek-demo.md").read_text(encoding="utf-8")
     assert "[[t1]]" in proj
     assert "type: project" in proj
+
+
+def test_delete_session_purges_task_notes_and_relinks_project(tmp_path):
+    s = _store(tmp_path)
+    s.create_session("sess1", "x")
+    s.create_task("t1", 1, "@demo satu", session_id="sess1")
+    s.set_task_status("t1", "done")
+    note = tmp_path / "vault" / "tasks" / "t1.md"
+    assert note.exists()
+    s.delete_session("sess1")
+    assert not note.exists()
+    proj = (tmp_path / "vault" / "projects" / "proyek-demo.md").read_text(encoding="utf-8")
+    assert "[[t1]]" not in proj  # link no longer dangles
 
 
 # --- #1: recall for the planner ---

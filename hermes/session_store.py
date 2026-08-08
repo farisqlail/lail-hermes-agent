@@ -1,5 +1,5 @@
 from __future__ import annotations
-import sqlite3, time
+import os, sqlite3, time
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
@@ -8,6 +8,14 @@ from contextlib import contextmanager
 # repeated "failed" just overwrites the same note, so the write is idempotent.
 _ARCHIVE_STATUSES = ("done", "failed")
 _FACT_FOOTER = "\n\nTerkait: [[operator]]\n"
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write via a temp file and rename, so a reader (or a second Hermes process)
+    never sees a half-written note. os.replace is atomic within a directory."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _safe_name(name: str) -> str:
@@ -172,8 +180,34 @@ class Store:
                 c.execute("DELETE FROM logs WHERE task_id=?", (tid,))
                 c.execute("DELETE FROM artifacts WHERE task_id=?", (tid,))
             c.execute("DELETE FROM tasks WHERE session_id=?", (session_id,))
+        self._purge_task_notes(task_ids)
         self.publish({"type": "session_deleted", "session_id": session_id})
         return task_ids
+
+    def _purge_task_notes(self, task_ids) -> None:
+        """Remove the vault archive notes for deleted tasks, and rebuild the
+        project notes that referenced them so no `[[task]]` link dangles. The
+        knowledge store must not outlive the tasks its notes describe."""
+        tdir = self.vault_dir / "tasks"
+        projects = set()
+        for tid in task_ids:
+            p = tdir / f"{_safe_name(str(tid))}.md"
+            try:
+                if p.exists():
+                    meta, _ = _parse_frontmatter(p.read_text(encoding="utf-8"))
+                    if meta.get("project"):
+                        projects.add(meta["project"])
+                    p.unlink()
+            except OSError:
+                pass
+        for name in projects:
+            try:
+                self._upsert_project_note(name)
+            except Exception:
+                pass
+        if task_ids:
+            from . import vault_git
+            vault_git.autocommit(self.vault_dir, "vault: purge deleted tasks")
 
     def list_sessions(self):
         with self._conn() as c:
@@ -323,21 +357,40 @@ class Store:
     def set_fact(self, key, value):
         d = self._facts_dir()
         d.mkdir(parents=True, exist_ok=True)
-        (d / f"{_safe_name(key)}.md").write_text(
-            f"---\nkey: {key}\nts: {time.time()}\n---\n{value}{_FACT_FOOTER}",
-            encoding="utf-8")
+        _atomic_write(d / f"{_safe_name(key)}.md",
+                      f"---\nkey: {key}\nts: {time.time()}\n---\n{value}{_FACT_FOOTER}")
+
+    def _fact_files(self):
+        """The notes list_facts reads: every note under facts/, plus any note at
+        the vault root explicitly marked `type: fact` in its frontmatter.
+
+        facts/ is the canonical home and the only place set_fact writes. The root
+        allowance is a safety net for the future tier where the chat agent edits
+        memory through obsidian tools: `create-note` drops a note at the root by
+        default, so a fact the agent files there stays visible instead of being
+        silently lost. The root scan is non-recursive and marker-gated, so it
+        never walks tasks/ or projects/ or slurps the hub notes (INDEX, operator).
+        """
+        d = self._facts_dir()
+        if d.is_dir():
+            yield from ((p, False) for p in d.glob("*.md"))
+        if self.vault_dir.is_dir():
+            yield from ((p, True) for p in self.vault_dir.glob("*.md"))
 
     def list_facts(self, limit=50):
         """Newest first, so a `limit` that bites drops the stalest facts."""
-        d = self._facts_dir()
-        if not d.is_dir():
-            return []
-        rows = []
-        for p in d.glob("*.md"):
+        rows, seen = [], set()
+        for p, is_root in self._fact_files():
             try:
                 meta, body = _parse_frontmatter(p.read_text(encoding="utf-8"))
             except OSError:
                 continue
+            if is_root and meta.get("type") != "fact":
+                continue        # an unmarked root note is not a fact
+            key = meta.get("key") or p.stem
+            if key in seen:
+                continue        # facts/ wins over a root note of the same key
+            seen.add(key)
             # ts orders the facts and decides which survive the limit. A note the
             # agent created through obsidian MCP has no `ts` frontmatter, so fall
             # back to the file's own mtime rather than 0 — a 0 would banish every
@@ -354,9 +407,7 @@ class Store:
                     ts = p.stat().st_mtime
                 except OSError:
                     ts = 0.0
-            rows.append({"key": meta.get("key") or p.stem,
-                         "value": _fact_value(body),
-                         "ts": ts})
+            rows.append({"key": key, "value": _fact_value(body), "ts": ts})
         rows.sort(key=lambda r: r["ts"], reverse=True)
         return rows[:limit]
 
@@ -409,10 +460,15 @@ class Store:
             lines.append("\nTerkait: [[operator]]")
             d = self.vault_dir / "tasks"
             d.mkdir(parents=True, exist_ok=True)
-            (d / f"{_safe_name(str(task_id))}.md").write_text(
-                "\n".join(lines) + "\n", encoding="utf-8")
+            _atomic_write(d / f"{_safe_name(str(task_id))}.md",
+                          "\n".join(lines) + "\n")
             if name:
                 self._upsert_project_note(name)
+            # A finished task is a natural checkpoint: commit the new archive note
+            # and any facts learned since the last one. Best-effort by import too,
+            # so a store built in a test without git in scope stays unaffected.
+            from . import vault_git
+            vault_git.autocommit(self.vault_dir, f"vault: task {task_id} {t.get('status', '')}")
         except Exception:
             pass
 
@@ -477,5 +533,5 @@ class Store:
         lines.append("\nTerkait: [[operator]]")
         d = self.vault_dir / "projects"
         d.mkdir(parents=True, exist_ok=True)
-        (d / f"proyek-{_safe_name(name)}.md").write_text(
-            "\n".join(lines) + "\n", encoding="utf-8")
+        _atomic_write(d / f"proyek-{_safe_name(name)}.md",
+                      "\n".join(lines) + "\n")

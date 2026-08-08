@@ -22,7 +22,7 @@ this rule. Reads (list, search, read, screenshot) are not.
 
 ## What ships by default
 
-A fresh install (no `config.yaml` yet) starts with eight servers, defined in
+A fresh install (no `config.yaml` yet) starts with seven servers, defined in
 `_default_mcp_servers` in `hermes/config.py`:
 
 | server | on | needs |
@@ -30,7 +30,6 @@ A fresh install (no `config.yaml` yet) starts with eight servers, defined in
 | `pc` | ✅ | Node |
 | `browser` | ✅ | Node (downloads a browser engine on first run) |
 | `win` | ✅ | `uv` — `install.ps1` puts it in the venv |
-| `memory` | ✅ | Node |
 | `obsidian` | ✅ | Node — vault auto-seeded, see [Obsidian vault](#obsidian-vault) |
 | `mail` | ⛔ | Gmail address + app password |
 | `web` | ⛔ | Tavily API key — usually unnecessary, see [Web search](#web-search) |
@@ -156,9 +155,13 @@ Only `Snapshot` and `Screenshot` run ungated. Everything else — `Click`, `Type
 hands-free GUI automation there means approving every step. Drive long GUI
 sequences through Telegram `/task` instead.
 
-## Memory (knowledge graph)
+## Memory (knowledge graph) — optional, not a default
 
-Entities, relations and observations that survive a restart:
+**No longer shipped by default.** The [Obsidian vault](#obsidian-vault) is the
+memory store now — operator facts and the task archive live there as markdown —
+so the flat-fact use this server was carrying is covered without a second
+always-on subprocess. Add it back only if you specifically want a graph of
+*relations between entities*, which the vault does not model:
 
 ```
 name:    memory
@@ -169,9 +172,7 @@ env:     { "MEMORY_FILE_PATH": "C:\\Hermes\\config\\memory.jsonl" }
 ```
 
 Set `MEMORY_FILE_PATH` — the default writes `memory.jsonl` inside the npx package
-directory, which a cache clear deletes. This overlaps the vault's operator facts
-(see [Obsidian vault](#obsidian-vault)); it earns its place only for relations
-between entities, not flat facts.
+directory, which a cache clear deletes.
 
 `read_graph` / `search_nodes` are reads; every `create_*` / `delete_*` /
 `add_observations` is gated, which means the agent cannot record a memory on its

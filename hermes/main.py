@@ -846,6 +846,11 @@ async def run():
     # Seed a valid .obsidian config so the default `obsidian` MCP server starts
     # against a fresh install's empty vault instead of refusing it.
     paths.ensure_vault()
+    # Put the vault under git and snapshot whatever the last session left, so the
+    # agent's knowledge has a history and a backup. Best-effort: no git, no harm.
+    from . import vault_git
+    vault_git.ensure_repo(paths.vault_dir())
+    vault_git.autocommit(paths.vault_dir(), "vault: session start")
     store = Store(paths.db_path()); store.init_schema()
     # Unconditional, and before the bot: anything still marked live is a lie
     # left by the last exit, and the dashboard must be honest even when no
