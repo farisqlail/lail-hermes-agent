@@ -448,6 +448,11 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         extract = getattr(app.state, "facts", None)
         if extract is None or not reply.strip():
             return
+        # Skip the model call on turns that plainly carry nothing durable
+        # (greetings, one-word acks): extraction runs every turn, so this is a
+        # free token/latency saving with no risk of dropping a real fact.
+        if not brain.worth_extracting(user_text):
+            return
         try:
             for f in await extract(user_text, reply):
                 store.set_fact(f["key"], f["value"])

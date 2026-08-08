@@ -433,13 +433,15 @@ class Store:
             when = (datetime.fromtimestamp(created).isoformat(timespec="seconds")
                     if created else "")
             arts = self.get_artifacts(task_id)
-            # The last log line is the task's own verdict — "task complete", a
-            # failure message, or the step that stopped it. It is the single most
-            # useful thing a later plan can learn from, so it rides in the note.
+            # The last log entry is the task's own verdict — "task complete", a
+            # failure message, or the step that stopped it. Only its first
+            # physical line is the verdict: a done task appends the change summary
+            # (a git table) under it, which is noise in a recall prompt, so take
+            # the headline and drop the rest.
             outcome = ""
             for line in reversed(self.get_logs(task_id)):
                 if line and line.strip():
-                    outcome = " ".join(line.split())[:300]
+                    outcome = line.strip().splitlines()[0].strip()[:200]
                     break
             fm = ["type: task", f"task_id: {task_id}",
                   f"status: {t.get('status', '')}", f"created: {when}"]

@@ -42,3 +42,26 @@ def test_autocommit_on_non_repo_is_a_noop(tmp_path):
     v = tmp_path / "plain"
     v.mkdir()
     assert vault_git.autocommit(v, "x") is False
+
+
+def test_push_without_remote_is_a_noop(tmp_path):
+    v = tmp_path / "vault"
+    v.mkdir()
+    vault_git.ensure_repo(v)
+    assert vault_git.has_remote(v) is False
+    assert vault_git.push(v) is False
+
+
+def test_push_to_a_configured_remote(tmp_path):
+    remote = tmp_path / "remote.git"
+    vault_git._git(tmp_path, "init", "--bare", str(remote))
+    v = tmp_path / "vault"
+    v.mkdir()
+    (v / "INDEX.md").write_text("hi", encoding="utf-8")
+    vault_git.ensure_repo(v)
+    vault_git._git(v, "remote", "add", "origin", str(remote))
+    vault_git._git(v, "push", "-u", "origin", "HEAD")
+    (v / "facts").mkdir()
+    (v / "facts" / "a.md").write_text("Faris", encoding="utf-8")
+    vault_git.autocommit(v, "add fact")
+    assert vault_git.push(v) is True

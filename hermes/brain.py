@@ -18,6 +18,7 @@ Nothing here does I/O; every caller gathers the facts first.
 """
 from __future__ import annotations
 import json
+import re
 from datetime import datetime
 
 from .orchestrator import json_objects
@@ -169,6 +170,41 @@ def parse_facts(raw: str) -> list[dict]:
     except Exception:
         pass
     return []
+
+
+# Words that, alone, carry no durable fact — greetings and acknowledgements. A
+# turn made only of these is not worth a model call. Kept small and lowercase;
+# the point is to catch the common trivial turns, not every possible one.
+_ACK_WORDS = frozenset({
+    "ok", "oke", "okay", "sip", "siap", "makasih", "terima", "kasih", "thanks",
+    "thx", "ya", "iya", "yaudah", "yoi", "mantap", "noted", "baik", "oks",
+    "halo", "hai", "hi", "hello", "hey", "pagi", "siang", "sore", "malam",
+    "bye", "dah", "udah", "yes", "no", "yup", "nope", "wkwk", "haha",
+})
+
+#: A turn shorter than this (characters) cannot state a durable fact worth the
+#: extraction call. "nama saya Faris" clears it; "ok" and "makasih" do not.
+_MIN_EXTRACT_CHARS = 8
+
+
+def worth_extracting(user_text: str) -> bool:
+    """Whether this turn is worth a fact-extraction model call.
+
+    Extraction runs on every chat turn, and most turns — greetings, one-word
+    acknowledgements, "ok makasih" — carry nothing durable. Skipping those is a
+    free saving on tokens and latency. Deliberately conservative: it only rules
+    out turns that are plainly trivial (too short, or made entirely of
+    acknowledgement words), so a real fact is never dropped to save a call.
+    """
+    t = (user_text or "").strip()
+    if len(t) < _MIN_EXTRACT_CHARS:
+        return False
+    words = [w for w in re.split(r"[^\wÀ-ÿ]+", t.lower()) if w]
+    if len(words) < 3:
+        return False
+    if all(w in _ACK_WORDS for w in words):
+        return False
+    return True
 
 
 def conversation_snippet(user_text: str, reply: str) -> str:

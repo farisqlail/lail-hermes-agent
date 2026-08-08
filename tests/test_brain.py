@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pytest
+
 from hermes import brain
 from hermes.session_store import Store
 
@@ -105,6 +107,19 @@ def test_facts_are_keyed_so_a_relearned_fact_replaces_the_old_value(tmp_path):
     assert facts == {"hari_deploy": "Kamis", "editor": "VS Code"}
     store.delete_fact("editor")
     assert [f["key"] for f in store.list_facts()] == ["hari_deploy"]
+
+
+@pytest.mark.parametrize("text", [
+    "", "ok", "makasih", "halo", "ok makasih ya", "iya siap", "  hai  "])
+def test_worth_extracting_skips_trivial_turns(text):
+    assert brain.worth_extracting(text) is False
+
+
+@pytest.mark.parametrize("text", [
+    "nama saya Faris", "aku biasanya deploy hari jumat",
+    "pakai VS Code dan suka dark mode"])
+def test_worth_extracting_keeps_substantive_turns(text):
+    assert brain.worth_extracting(text) is True
 
 
 def test_step_status_event_carries_its_kind(tmp_path):
