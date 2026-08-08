@@ -223,8 +223,8 @@ CHAT_TOOLS = [
             "url": {"type": "string", "description": "URL video, mis. https://youtube.com/watch?v=..."},
             "start": {"type": "string", "description": "waktu mulai, detik atau MM:SS / HH:MM:SS"},
             "end": {"type": "string", "description": "waktu selesai, detik atau MM:SS / HH:MM:SS"},
-            "vertical": {"type": "string", "enum": ["none", "blur", "crop"],
-                         "description": "format 9:16 untuk Shorts/TikTok: 'blur' (utuh+background blur), 'crop' (potong tengah), 'none' (rasio asli). Default 'none'."}},
+            "vertical": {"type": "string", "enum": ["blur", "crop", "none"],
+                         "description": "format 9:16 untuk Shorts/TikTok: 'blur' (utuh+background blur, DEFAULT), 'crop' (potong tengah), 'none' (rasio asli)."}},
             "required": ["url", "start", "end"]}}},
     {"type": "function", "function": {
         "name": "viral_clip",
@@ -590,7 +590,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     res = await asyncio.to_thread(
                         ytclip.clip, str(args.get("url") or ""),
                         start=args.get("start"), end=args.get("end"),
-                        vertical=str(args.get("vertical") or "none"),
+                        vertical=str(args.get("vertical") or "blur"),
                         out_dir=paths.artifacts_dir() / "clips")
                     if res.get("status") == "clipped":
                         from urllib.parse import quote

@@ -340,7 +340,7 @@ def _to_vertical(src: Path, mode: str, timeout: int) -> Path | None:
     return None
 
 
-def clip(url: str, *, start, end, out_dir: Path, vertical: str = "none",
+def clip(url: str, *, start, end, out_dir: Path, vertical: str = "blur",
          timeout: int = 300) -> dict:
     """Download the [start, end] segment of `url` and save it as one mp4.
 
