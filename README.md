@@ -1,13 +1,12 @@
 # Hermes Agent
 
-A Windows-local, **Telegram-driven** orchestrator for coding and testing tasks. You send a task
-in a Telegram chat; Hermes plans it with a NVIDIA NIM model, delegates the actual coding to the
-CLI agents you already have (**Claude Code** and **Antigravity**), builds Android APKs, tests the
-result in a headless browser or an Android emulator, and reports back — all configured from a local
-web UI.
+A Windows-local, **Telegram-driven** orchestrator. Send a task in Telegram — Hermes plans it with
+an LLM, hands the coding to your CLI agents (**Claude Code** / **Antigravity**), builds Android
+APKs, tests in a browser or Android emulator, and reports back. Everything is configured from a
+local web UI, and you can also **talk to it**: voice in via local Whisper (STT), voice out via
+edge-tts.
 
-Hermes is an **orchestrator, not a coder**. Its own brain (a NVIDIA NIM / OpenAI-compatible model)
-plans and drives; `claude -p` and `agy -p` do the code writing.
+**Orchestrator, not a coder.** Hermes plans and drives; `claude -p` and `agy -p` write the code.
 
 ## How it works
 
@@ -42,55 +41,43 @@ plans and drives; `claude -p` and `agy -p` do the code writing.
 
 ```mermaid
 flowchart TD
-    TG(["📱 Telegram<br/>/task ..."])
-    OP(["👤 Operator (Web/Browser)"])
+    TG(["📱 Telegram<br/><sub>/task ...</sub>"])
+    OP(["👤 Operator<br/><sub>web UI · voice</sub>"])
     GW["🌐 LLM endpoint<br/><sub>NVIDIA NIM · or local 9router :20128</sub>"]
 
     subgraph HERMES["🏛️ LAIL HERMES"]
         direction TB
-        BR["🔐 telegram_bridge<br/><sub>whitelist · confirm gate</sub>"]
-        OR["🧠 orchestrator<br/><sub>OpenAI-compatible planner</sub>"]
-        HUB["🔌 mcp_hub<br/><sub>stdio / SSE tools</sub>"]
+        OR["🧠 orchestrator<br/><sub>plan · drive · classify failures</sub>"]
+        HUB["🔌 mcp_hub<br/><sub>MCP tools · stdio / SSE</sub>"]
 
         subgraph EXEC["execution"]
-            direction TB
-            ENG["⚙️ engine_runner<br/><sub>claude -p · agy -p</sub>"]
-            BLD["📦 build_runner<br/><sub>flutter / gradle → APK</sub>"]
-            TST["🧪 test_runner<br/><sub>playwright · adb emulator</sub>"]
-            ENG --> BLD --> TST
+            direction LR
+            ENG["⚙️ code<br/><sub>claude -p · agy -p</sub>"] --> BLD["📦 build<br/><sub>flutter / gradle</sub>"] --> TST["🧪 test<br/><sub>playwright · emulator</sub>"]
         end
 
-        subgraph VOICE_SYS["🎙️ Voice Pipeline (browser)"]
-            direction TB
-            VAD["Local VAD & Commands<br/><sub>VAD (RMS) · Stop Detector · auto-send</sub>"]
-            EXT["voicetag Extractor<br/><sub>stream splitter · low-latency</sub>"]
-            Q["SpeechQueue<br/><sub>In-flight Fetch-Ahead</sub>"]
-            IND["Voice-state indicator<br/><sub>idle · listen · think · speak</sub>"]
-            STT_SRV["STT Server<br/><sub>FastAPI · faster-whisper (model configurable)</sub>"]
-            TTS_SRV["TTS Server<br/><sub>FastAPI · edge-tts (multilingual)</sub>"]
+        subgraph VOICE["🎙️ voice"]
+            direction LR
+            STT["STT<br/><sub>faster-whisper (CPU)</sub>"]
+            TTS["TTS<br/><sub>edge-tts</sub>"]
         end
 
-        UI["🖥️ web_ui · FastAPI<br/><sub>127.0.0.1:8799 · /api/voice bridge</sub>"]
-        DB[("🗄️ SQLite<br/><sub>tasks · logs · artifacts · user_facts</sub>")]
+        UI["🖥️ web_ui · FastAPI<br/><sub>127.0.0.1:8799</sub>"]
+        DB[("🗄️ SQLite<br/><sub>tasks · logs · artifacts · facts</sub>")]
 
-        BR --> OR
-        OR <-.->|"tool calls"| HUB
-        OR -.->|"OpenAI API · base_url"| GW
         OR --> EXEC
+        OR <-.->|"tool calls"| HUB
         OR --> DB
         UI --- DB
+        UI --- VOICE
     end
 
-    TRAY["🛰️ tray helper · python -m hermes.tray<br/><sub>wake word (openWakeWord) · pystray · always-on mic</sub>"]
+    TRAY["🛰️ tray helper<br/><sub>wake word (openWakeWord) · always-on mic</sub>"]
 
-    TG -->|"/task"| BR
+    TG -->|"/task · whitelist · confirm gate"| OR
     OR -.->|"status · APK · screenshots"| TG
-
-    OP <-->|"Audio Capture (VAD)<br/>Audio Playback (Queue)"| VOICE_SYS
-    VOICE_SYS <-->|"STT / TTS API"| UI
-    OP <-->|"Interact"| UI
-    TRAY <-.->|"wake event · state poll<br/>(tab may be closed)"| UI
-    TRAY -.->|"'Hey &lt;name&gt;' opens dashboard"| OP
+    OR <-.->|"OpenAI API · base_url"| GW
+    OP <-->|"chat · voice"| UI
+    TRAY <-.->|"wake event · state poll"| UI
 
     classDef ext fill:#229ED9,stroke:#1a7fb0,color:#fff
     classDef brain fill:#76B900,stroke:#5a8c00,color:#fff
