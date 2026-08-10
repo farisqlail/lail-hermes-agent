@@ -6,6 +6,7 @@ import { errorMessage, api } from '../api/client';
 import { Markdown } from '../components/Markdown';
 import { Button } from '../components/Button';
 import { Modal } from '../components/Modal';
+import { CameraCapture } from '../components/CameraCapture';
 import { useToast } from '../components/Toast';
 import { useTasksContext } from '../api/events';
 import {
@@ -18,7 +19,7 @@ import { SpeechQueue, HtmlAudioSink, sharedAudioSink, sharedSpeechQueue } from '
 import { splitSentences, flushSentence } from '../sentences';
 import { useVoiceLoop } from '../hooks/useVoiceLoop';
 import { VoiceStateIndicator, deriveVoiceState } from '../components/VoiceStateIndicator';
-import { STOP_ACK } from '../commands';
+import { STOP_ACK, CAMERA_ACK, matchLocalCommand } from '../commands';
 import { VoiceTagExtractor } from '../voicetag';
 import { WaveConstellationGraph } from '../components/WaveConstellationGraph';
 import { taskLinkTarget } from '../graph';
@@ -339,6 +340,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   // pick would leave orphans on the server every time the operator changes
   // their mind.
   const [attached, setAttached] = useState<{ file: File; url: string }[]>([]);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const holdingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -355,6 +357,11 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
       if (cmd === 'stop') {
         shutUp();
         toast(STOP_ACK, 'ok');
+        return;
+      }
+      if (cmd === 'camera') {
+        setCameraOpen(true);
+        toast(CAMERA_ACK, 'ok');
         return;
       }
       // confirm / decline: only act when something is actually parked. With
@@ -567,6 +574,16 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   const submitText = async (text: string, opts?: { resume?: boolean }) => {
     const resume = opts?.resume === true;
     if ((!text && attached.length === 0 && !resume) || streaming) return;
+    // "buka kamera" typed (or auto-sent from a voice transcript) opens the
+    // webcam locally instead of going to the chat model — the same whole-
+    // utterance match the voice loop uses, so the two paths behave alike.
+    // Skipped when a picture is already staged: then the words are its caption.
+    if (attached.length === 0 && !resume && matchLocalCommand(text) === 'camera') {
+      setCameraOpen(true);
+      toast(CAMERA_ACK, 'ok');
+      setInputText('');
+      return;
+    }
     // An image with no caption still needs words: an empty text part is
     // rejected by some providers, and the operator should see exactly what
     // was asked on their behalf.
@@ -1084,6 +1101,13 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
           onNavigateSession={(sId) => navigate(`#/session/${sId}`)}
         />
 
+        {/* Camera fills this HUD section while open, covering the graph */}
+        <CameraCapture
+          isOpen={cameraOpen}
+          onClose={() => setCameraOpen(false)}
+          onCapture={(file) => addFiles([file])}
+        />
+
 
         <Modal
           isOpen={!!reviewPending}
@@ -1210,7 +1234,19 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
             >
               📎
             </button>
-            
+
+            {/* Snap a photo from the webcam for this turn — recognised by the
+                same vision path as an attached picture */}
+            <button
+              type="button"
+              className="ask-action-btn"
+              disabled={streaming}
+              title="Ambil foto dari kamera"
+              onClick={() => setCameraOpen(true)}
+            >
+              📷
+            </button>
+
             {/* Audio MUTE feedback */}
             {speaking && (
               <button

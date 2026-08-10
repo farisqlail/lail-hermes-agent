@@ -46,6 +46,21 @@ test('recognises decline words', () => {
   }
 });
 
+test('recognises camera-open words', () => {
+  for (const s of ['buka kamera', 'nyalakan kamera', 'aktifkan kamera',
+                   'liat kamera', 'kamera',
+                   'open camera', 'open the camera', 'turn on the camera',
+                   'start camera', 'Buka Kamera!']) {
+    assert.equal(matchLocalCommand(s), 'camera', s);
+  }
+});
+
+test('a camera word inside a real question is not a command', () => {
+  // a question about a camera must reach the chat model, not open the webcam
+  assert.equal(matchLocalCommand('jelaskan cara kerja kamera ini'), null);
+  assert.equal(matchLocalCommand('kamera apa yang bagus untuk vlog'), null);
+});
+
 test('a confirm word inside a longer sentence is not a command', () => {
   // whole-utterance only — a spoken instruction that happens to contain "ya"
   // must reach the chat, not be swallowed as a confirmation

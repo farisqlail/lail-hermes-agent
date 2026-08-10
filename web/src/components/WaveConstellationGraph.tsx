@@ -513,13 +513,6 @@ export const WaveConstellationGraph: React.FC<WaveConstellationGraphProps> = ({
           {hovered.node.status ? ` — ${hovered.node.status}` : ''}
         </div>
       )}
-
-      <div style={{
-        position: 'absolute', bottom: '16px', left: '16px', color: 'rgba(255,255,255,0.6)',
-        fontFamily: 'var(--font-mono)', fontSize: '9px', pointerEvents: 'none', zIndex: 20,
-      }}>
-        Drag to rotate | Scroll to zoom | Double-click to reset view
-      </div>
     </div>
   );
 };

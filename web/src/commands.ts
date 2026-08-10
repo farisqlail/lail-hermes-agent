@@ -4,11 +4,28 @@
  *  a round trip to learn the operator wants silence, which is the one request
  *  where latency is the whole point. */
 
-export type LocalCommand = 'stop' | 'confirm' | 'decline';
+export type LocalCommand = 'stop' | 'confirm' | 'decline' | 'camera';
 
 /** Spoken after a recognised stop, so the operator gets confirmation in the
  *  thread that the command landed rather than wondering if the mic heard it. */
 export const STOP_ACK = 'Baik, saya diam.';
+
+/** Shown when the camera opens by voice/text, so the operator knows the phrase
+ *  was heard as a command and not sent to the chat model. */
+export const CAMERA_ACK = 'Membuka kamera.';
+
+/** Whole-utterance only: "buka kamera" opens the webcam locally. A camera word
+ *  inside a longer sentence ("jelaskan cara kerja kamera ini") is a question,
+ *  not a command, and must still reach the chat model. */
+const CAMERA_PHRASES = new Set([
+  // Indonesian
+  'buka kamera', 'nyalakan kamera', 'aktifkan kamera', 'kamera',
+  'buka kameranya', 'nyalakan kameranya', 'tolong buka kamera',
+  'lihat kamera', 'liat kamera',
+  // English
+  'open camera', 'open the camera', 'turn on camera', 'turn on the camera',
+  'start camera', 'camera',
+]);
 
 /** Whole-utterance matches only. A stop word inside a longer sentence
  *  ("stop the build after tests pass") is an instruction, not an interruption,
@@ -53,6 +70,7 @@ export function matchLocalCommand(text: string): LocalCommand | null {
     .replace(/\s+/g, ' ');
   if (!normalised) return null;
   if (STOP_PHRASES.has(normalised)) return 'stop';
+  if (CAMERA_PHRASES.has(normalised)) return 'camera';
   if (CONFIRM_PHRASES.has(normalised)) return 'confirm';
   if (DECLINE_PHRASES.has(normalised)) return 'decline';
   return null;
