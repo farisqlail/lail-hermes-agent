@@ -75,3 +75,37 @@ def test_startup_sweep_survives_a_broken_store(hermes_home, capsys):
         def conversation_ids(self): raise OSError("db is on fire")
     assert main.sweep_orphan_files(Broken()) == ([], [])
     assert "Could not sweep orphan files" in capsys.readouterr().out
+
+
+def test_cleanup_old_images_deletes_expired_files(tmp_path, monkeypatch):
+    import time
+    d = tmp_path / "images"
+    d.mkdir()
+    old_img = d / "old.png"
+    old_img.write_bytes(b"old_data")
+    new_img = d / "new.png"
+    new_img.write_bytes(b"new_data")
+    other_file = d / "old.txt"
+    other_file.write_bytes(b"text_data")
+
+    now = time.time()
+    # Set old_img mtime to 10 days ago
+    import os
+    os.utime(old_img, (now - 10 * 86400, now - 10 * 86400))
+    os.utime(other_file, (now - 10 * 86400, now - 10 * 86400))
+
+    res = cleanup.cleanup_old_images([d], max_age_days=7)
+    assert res["deleted_count"] == 1
+    assert not old_img.exists()
+    assert new_img.exists()
+    assert other_file.exists()  # txt non-image files are untouched
+
+
+def test_cleanup_old_images_disabled_when_zero(tmp_path):
+    d = tmp_path / "images"
+    d.mkdir()
+    img = d / "test.png"
+    img.write_bytes(b"data")
+    res = cleanup.cleanup_old_images([d], max_age_days=0)
+    assert res["deleted_count"] == 0
+    assert img.exists()

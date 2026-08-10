@@ -1342,6 +1342,18 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         config.save_settings(body)
         return {"ok": True}
 
+    @app.post("/api/cleanup/images")
+    def trigger_image_cleanup(days: int | None = None):
+        s = config.load_settings()
+        retention = days if days is not None else s.image_retention_days
+        target_dirs = [
+            paths.artifacts_dir() / "generated",
+            paths.uploads_dir(),
+            paths.artifacts_dir(),
+        ]
+        res = cleanup.cleanup_old_images(target_dirs, retention)
+        return {"ok": True, "retention_days": retention, **res}
+
     @app.get("/api/secrets/status")
     def secrets_status():
         s = config.load_secrets()

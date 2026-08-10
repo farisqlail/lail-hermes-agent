@@ -67,3 +67,49 @@ def purge_orphans(base: Path, keep: set[str]) -> list[str]:
         if child.is_dir() and child.name not in keep and purge(base, child.name):
             removed.append(child.name)
     return removed
+
+
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+
+
+def cleanup_old_images(dirs: list[Path], max_age_days: int) -> dict:
+    """Delete image files in `dirs` whose modification time is older than `max_age_days`.
+
+    If `max_age_days` <= 0, cleanup is disabled and returns zero count.
+    Never raises; best-effort file removal.
+    Returns {"deleted_count": N, "freed_bytes": total_bytes, "removed_files": [path_str, ...]}.
+    """
+    if max_age_days <= 0:
+        return {"deleted_count": 0, "freed_bytes": 0, "removed_files": []}
+
+    import time
+    now = time.time()
+    cutoff_seconds = max_age_days * 86400
+    deleted_count = 0
+    freed_bytes = 0
+    removed_files = []
+
+    for d in dirs:
+        if not d or not d.exists():
+            continue
+        try:
+            for p in d.rglob("*"):
+                if p.is_file() and p.suffix.lower() in _IMAGE_EXTENSIONS:
+                    try:
+                        mtime = p.stat().st_mtime
+                        if now - mtime > cutoff_seconds:
+                            sz = p.stat().st_size
+                            p.unlink(missing_ok=True)
+                            deleted_count += 1
+                            freed_bytes += sz
+                            removed_files.append(str(p))
+                    except OSError as e:
+                        print(f"Could not check/remove image file {p}: {e}")
+        except OSError as e:
+            print(f"Could not scan directory {d} for old images: {e}")
+
+    return {
+        "deleted_count": deleted_count,
+        "freed_bytes": freed_bytes,
+        "removed_files": removed_files,
+    }

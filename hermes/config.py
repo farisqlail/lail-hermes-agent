@@ -99,6 +99,7 @@ class Settings(BaseModel):
     # `data:image/...;base64` link), e.g. 9Router's `ag/gemini-3.1-flash-image`.
     # Empty disables the generate_image chat tool — no model, no tool offered.
     image_model: str = "ag/gemini-3.1-flash-image"
+    image_retention_days: int = 7
     agent_name: str = "Lail Agent"
     allowed_user_ids: list[int] = Field(default_factory=list)
     default_engine: Literal["claude", "antigravity", "auto"] = "auto"

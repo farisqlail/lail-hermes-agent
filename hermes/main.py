@@ -850,6 +850,14 @@ def sweep_orphan_files(store) -> tuple[list[str], list[str]]:
         live_tasks = {t["task_id"] for t in store.list_tasks(limit=100000)}
         uploads = cleanup.purge_orphans(paths.uploads_dir(), keep)
         artifacts = cleanup.purge_orphans(paths.artifacts_dir(), live_tasks)
+        retention = config.load_settings().image_retention_days
+        if retention > 0:
+            img_res = cleanup.cleanup_old_images(
+                [paths.artifacts_dir() / "generated", paths.uploads_dir(), paths.artifacts_dir()],
+                retention
+            )
+            if img_res["deleted_count"] > 0:
+                print(f"Startup image cleanup: deleted {img_res['deleted_count']} old image file(s) (> {retention} days), freed {img_res['freed_bytes']} bytes.")
     except Exception as e:
         print(f"Could not sweep orphan files: {_console_safe(e)}")
         return ([], [])
