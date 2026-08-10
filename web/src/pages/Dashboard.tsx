@@ -20,6 +20,7 @@ import { useVoiceLoop } from '../hooks/useVoiceLoop';
 import { VoiceStateIndicator, deriveVoiceState } from '../components/VoiceStateIndicator';
 import { STOP_ACK } from '../commands';
 import { VoiceTagExtractor } from '../voicetag';
+import { WaveConstellationGraph } from '../components/WaveConstellationGraph';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -1048,150 +1049,16 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
         </div>
       )}
 
-      {/* Center Viewport */}
+      {/* Center Viewport HUD Container */}
       <div className="dashboard-hud-container" style={{ marginTop: !isConnected ? '30px' : '0' }}>
-        
-        {/* Top Controls Toolbar */}
-        <div className="graph-controls">
-          <button className="control-btn" onClick={handleFit}>Fit</button>
-          <button className={`control-btn ${showLabels ? 'active' : ''}`} onClick={() => setShowLabels(!showLabels)}>Aa</button>
-          <div style={{ width: '1px', height: '12px', backgroundColor: 'var(--border)' }}></div>
-          <span style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-faint)', textTransform: 'uppercase' }}>
-            NODE_COUNT: {graphNodes.length}
-          </span>
-        </div>
+        <WaveConstellationGraph
+          systemNodes={graphNodes}
+          systemLinks={graphLinks}
+          sessionId={sessionId}
+          onSelectNode={onSelectNode}
+          onNavigateSession={(sId) => navigate(`#/session/${sId}`)}
+        />
 
-        {/* Interactive SVG force graph */}
-        <div 
-          className="graph-canvas-container"
-          onMouseDown={handleSvgMouseDown}
-          onMouseMove={handleSvgMouseMove}
-          onMouseUp={handleSvgMouseUp}
-          onMouseLeave={handleSvgMouseUp}
-          onWheel={handleWheel}
-        >
-          <svg className="graph-svg" ref={svgRef}>
-            <rect ref={bgRectRef} width="100%" height="100%" fill="transparent" />
-            
-            {/* Jarvis HUD Stationary Overlay */}
-            <g style={{ pointerEvents: 'none' }}>
-              {/* Radar Crosshairs */}
-              <line x1="5%" y1="50%" x2="45%" y2="50%" stroke="var(--border)" strokeWidth="0.5" strokeDasharray="3,6" opacity="0.3" />
-              <line x1="55%" y1="50%" x2="95%" y2="50%" stroke="var(--border)" strokeWidth="0.5" strokeDasharray="3,6" opacity="0.3" />
-              <line x1="50%" y1="5%" x2="50%" y2="40%" stroke="var(--border)" strokeWidth="0.5" strokeDasharray="3,6" opacity="0.3" />
-              <line x1="50%" y1="60%" x2="50%" y2="95%" stroke="var(--border)" strokeWidth="0.5" strokeDasharray="3,6" opacity="0.3" />
-
-              {/* Diagonal Crosshairs ticks */}
-              <line x1="48%" y1="48%" x2="49%" y2="49%" stroke="var(--accent)" strokeWidth="1.5" opacity="0.5" />
-              <line x1="52%" y1="48%" x2="51%" y2="49%" stroke="var(--accent)" strokeWidth="1.5" opacity="0.5" />
-              <line x1="48%" y1="52%" x2="49%" y2="51%" stroke="var(--accent)" strokeWidth="1.5" opacity="0.5" />
-              <line x1="52%" y1="52%" x2="51%" y2="51%" stroke="var(--accent)" strokeWidth="1.5" opacity="0.5" />
-
-              {/* Concentric rings centered at (50%, 50%) */}
-              <circle cx="50%" cy="50%" r="50" stroke="var(--accent)" strokeWidth="1" fill="none" opacity="0.1" />
-              <circle cx="50%" cy="50%" r="90" stroke="var(--accent)" strokeWidth="0.5" fill="none" opacity="0.15" strokeDasharray="5,10" />
-              
-              {/* Rotating outer rings */}
-              <circle cx="50%" cy="50%" r="160" stroke="var(--accent)" strokeWidth="1" fill="none" opacity="0.25" strokeDasharray="90,10,30,10" className="hud-spin-cw" />
-              <circle cx="50%" cy="50%" r="165" stroke="var(--accent)" strokeWidth="0.75" fill="none" opacity="0.15" strokeDasharray="6,12" className="hud-spin-ccw" />
-              <circle cx="50%" cy="50%" r="240" stroke="var(--accent)" strokeWidth="1.5" fill="none" opacity="0.2" strokeDasharray="180,15,40,15" className="hud-spin-ccw" />
-              
-              {/* Outer boundary bracket lines or ring */}
-              <circle cx="50%" cy="50%" r="320" stroke="var(--border)" strokeWidth="0.5" fill="none" opacity="0.15" strokeDasharray="4,8" />
-              
-              {/* Ring with tick marks (compass style) */}
-              <circle cx="50%" cy="50%" r="130" stroke="var(--accent)" strokeWidth="3" fill="none" opacity="0.12" strokeDasharray="2,8" className="hud-spin-ccw" />
-            </g>
-
-            {/* HUD Telemetry Labels */}
-            <g style={{ pointerEvents: 'none', fontFamily: 'var(--font-mono)', fontSize: '8px', fill: 'var(--text-faint)' }}>
-              {/* Center-left readout */}
-              <text x="38%" y="45%" opacity="0.45">SYS.LOC: [45.9281, -12.4092]</text>
-              <text x="38%" y="47%" opacity="0.45">ALT.REF: 1,024m</text>
-              <text x="38%" y="49%" opacity="0.45">RADAR.SYNC: 98.4%</text>
-
-              {/* Center-right readout */}
-              <text x="62%" y="45%" opacity="0.45" textAnchor="end">CORE_TEMP: 38.2°C</text>
-              <text x="62%" y="47%" opacity="0.45" textAnchor="end">GRID_STATUS: ACTIVE</text>
-              <text x="62%" y="49%" opacity="0.45" textAnchor="end">COGNITIVE_SYNC: 1.0</text>
-              
-              {/* Circular percentage widget status */}
-              <text x="44%" y="58%" opacity="0.5">N-LOCK: TRUE</text>
-              <text x="56%" y="58%" opacity="0.5" textAnchor="end">DECRYPT: 100%</text>
-            </g>
-
-            <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
-              
-              {/* Force Link lines */}
-              {graphLinks.map((link, idx) => {
-                const sNode = graphNodes.find(n => n.id === link.source);
-                const tNode = graphNodes.find(n => n.id === link.target);
-                if (!sNode || !tNode) return null;
-                return (
-                  <line
-                    key={idx}
-                    className="graph-link"
-                    x1={sNode.x}
-                    y1={sNode.y}
-                    x2={tNode.x}
-                    y2={tNode.y}
-                  />
-                );
-              })}
-
-              {/* Force Node circles */}
-              {graphNodes.map((node) => {
-                const isFocused = sessionId === node.id;
-                let fill = 'var(--text-dim)';
-                let size = 8;
-                let stroke = 'rgba(3,6,10,0.8)';
-                let glow = 'none';
-
-                if (node.type === 'core') {
-                  fill = 'var(--accent)';
-                  size = 18;
-                  glow = 'drop-shadow(0 0 8px var(--accent))';
-                } else if (node.type === 'session') {
-                  fill = isFocused ? 'var(--accent)' : 'rgba(180, 100, 50, 0.45)';
-                  size = isFocused ? 14 : 11;
-                  glow = isFocused ? 'drop-shadow(0 0 6px var(--accent))' : 'none';
-                  stroke = isFocused ? 'var(--text)' : 'rgba(3,6,10,0.8)';
-                } else if (node.type === 'task') {
-                  size = 7;
-                  if (node.status === 'queued') fill = '#888';
-                  else if (node.status === 'running') { fill = 'var(--accent)'; glow = 'drop-shadow(0 0 4px var(--accent))'; }
-                  else if (node.status === 'done') { fill = 'var(--ok)'; glow = 'drop-shadow(0 0 4px var(--ok))'; }
-                  else if (node.status === 'failed') { fill = 'var(--err)'; glow = 'drop-shadow(0 0 4px var(--err))'; }
-                }
-
-                return (
-                  <g key={node.id} transform={`translate(${node.x}, ${node.y})`}>
-                    <circle
-                      className="graph-node"
-                      r={size}
-                      fill={fill}
-                      stroke={stroke}
-                      style={{ filter: glow }}
-                      onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                      onClick={() => handleNodeClick(node)}
-                      onDoubleClick={() => handleNodeDoubleClick(node)}
-                    />
-                    {showLabels && (
-                      <text
-                        y={size + 12}
-                        className={`graph-label ${isFocused ? 'focused' : ''}`}
-                        style={{ fontSize: node.type === 'core' ? '10px' : '9px' }}
-                      >
-                        {node.label}
-                      </text>
-                    )}
-                  </g>
-                );
-              })}
-
-            </g>
-          </svg>
-        </div>
 
         <Modal
           isOpen={!!reviewPending}
