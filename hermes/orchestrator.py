@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, json, uuid
+import asyncio, copy, json, uuid
 from pathlib import Path
 from . import failure
 from .config import Settings
@@ -406,6 +406,9 @@ class Orchestrator:
         self.store = store
         self.planner = planner          # async (text, tools) -> str
         self.deps = deps                # run_engine, build_apk, detect, test_*
+        # False on the one instance main.py builds and shares; True on the
+        # per-task clone run_task makes. See run_task.
+        self._task_local = False
 
     def get_settings(self):
         from . import config, paths
@@ -416,6 +419,17 @@ class Orchestrator:
     async def run_task(self, task_id: str, chat_id: int, text: str, report,
                        proj: Path | None = None, send_file=None) -> None:
         from . import paths
+        # Tasks run concurrently (the web UI backgrounds them with
+        # asyncio.create_task), and `settings` is refreshed here and then read
+        # from `self` by every step below. On the shared instance a second task
+        # starting mid-run would swap the settings out from under the first —
+        # its engine, model and timeouts would change halfway through. So a task
+        # runs on its own shallow clone: store, planner and deps stay shared by
+        # reference (they are meant to be), only `settings` becomes per-task.
+        if not self._task_local:
+            mine = copy.copy(self)
+            mine._task_local = True
+            return await mine.run_task(task_id, chat_id, text, report, proj, send_file)
         self.settings = self.get_settings()
         self.store.set_task_status(task_id, "running")
         # Captured before the workspace is created: afterwards the two cases are

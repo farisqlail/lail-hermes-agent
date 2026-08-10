@@ -1128,3 +1128,39 @@ async def test_a_transient_build_failure_is_waited_out_not_repaired(hermes_home)
 
     assert len(builds) == 2 and slept == [5]
     assert store.get_task("t1")["status"] == "done"
+
+async def test_a_second_task_cannot_swap_settings_mid_run(hermes_home):
+    """Tasks run concurrently, and `settings` is refreshed on the orchestrator
+    and then read by every later step. On the shared instance a task starting
+    mid-run swapped the engine of the task already running."""
+    import asyncio
+    from hermes.engine_runner import RunResult
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(projects_path=str(hermes_home / "proj"),
+                        default_engine="claude")
+
+    started, release = asyncio.Event(), asyncio.Event()
+    async def planner(text, tools):
+        started.set()
+        await release.wait()
+        return json.dumps({"steps": [{"type": "code", "prompt": "make it"}]})
+
+    seen = []
+    async def fake_run_engine(engine, prompt, cwd, timeout_s, extra_env=None, **kw):
+        seen.append(engine); _worked(cwd)
+        return RunResult(True, "done", "", False, 0)
+
+    orch = Orchestrator(settings, store, planner,
+                        dict(run_engine=fake_run_engine, detect=lambda d: "unknown",
+                             build_apk=None, test_emulator=None, test_browser=None))
+    async def report(tid, msg, html=False): pass
+    store.create_task("t1", 5, "x")
+    running = asyncio.create_task(orch.run_task("t1", 5, "x", report))
+    await started.wait()
+    # Exactly what a second concurrent run_task did to the shared instance.
+    orch.settings = Settings(projects_path=str(hermes_home / "proj"),
+                             default_engine="antigravity")
+    release.set()
+    await running
+
+    assert seen and set(seen) == {"claude"}   # the engine loop may retry

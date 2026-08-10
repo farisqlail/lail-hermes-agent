@@ -9,13 +9,23 @@ class TestResult:
     screenshot_path: str | None
     detail: str
 
+# One emulator, one adb target. Two tasks running concurrently would otherwise
+# interleave install/launch/screencap on the same device and each would report
+# the other's screen. The lock is taken BEFORE the timeout starts on purpose: a
+# queued task must not burn its own budget waiting for the device, or one slow
+# emulator run would time out every task behind it before it ever got a turn.
+# ponytail: one global lock; key it per-AVD if a second device ever appears.
+_emulator_lock = asyncio.Lock()
+
+
 async def test_emulator(apk_path: str, avd: str, out_dir: Path,
                         timeout_s: int, adb, pkg: str) -> TestResult:
-    try:
-        return await asyncio.wait_for(
-            _emulator_flow(apk_path, avd, out_dir, adb, pkg), timeout=timeout_s)
-    except asyncio.TimeoutError:
-        return TestResult(False, None, f"emulator test timed out after {timeout_s}s")
+    async with _emulator_lock:
+        try:
+            return await asyncio.wait_for(
+                _emulator_flow(apk_path, avd, out_dir, adb, pkg), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            return TestResult(False, None, f"emulator test timed out after {timeout_s}s")
 
 async def _emulator_flow(apk_path: str, avd: str, out_dir: Path,
                          adb, pkg: str) -> TestResult:

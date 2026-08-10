@@ -1867,3 +1867,36 @@ async def test_chat_integrate_status_reports_a_missing_run(hermes_home):
     client = TestClient(create_app(store, chat=fake_chat))
     client.post("/api/tasks", json={"text": "status?"})
     assert "error" in seen["missing"]
+
+
+async def test_pending_actions_do_not_cross_sessions(hermes_home):
+    """With several chat sessions open, a parked write action belongs to the
+    thread that proposed it: it must not show on another session's card list,
+    and an id-less voice 'konfirmasi' there must not approve it."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    class FakeHub:
+        def __init__(self): self.calls = []
+        async def list_tools(self): return []
+        async def call(self, tool, args): self.calls.append(tool); return "ok"
+
+    hub = FakeHub()
+    app = create_app(store, hub=hub)
+    mine = app.state.pending.add("pc__write_file", {}, "sess-a")
+    client = TestClient(app)
+
+    assert client.get("/api/chat/pending?session_id=sess-b").json() == []
+    assert [a["id"] for a in client.get("/api/chat/pending?session_id=sess-a").json()] == [mine.id]
+
+    # Voice confirm in the other session: nothing of its own is pending.
+    r = client.post("/api/chat/pending/resolve", json={"approved": True, "session_id": "sess-b"})
+    assert r.json()["ok"] is False
+    # Nor by naming the id outright.
+    r = client.post("/api/chat/pending/resolve",
+                    json={"id": mine.id, "approved": True, "session_id": "sess-b"})
+    assert r.json()["ok"] is False
+    assert hub.calls == []
+
+    r = client.post("/api/chat/pending/resolve", json={"approved": True, "session_id": "sess-a"})
+    assert r.json()["ok"] is True and hub.calls == ["pc__write_file"]

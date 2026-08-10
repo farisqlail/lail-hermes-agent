@@ -153,6 +153,13 @@ class Bridge:
 
         if task_id is None:
             task_id = new_task_id()
+        # A Telegram task carries no session of its own, and a session-less task
+        # is drawn hanging off whichever conversation the web UI happens to have
+        # open — someone else's thread. One session per Telegram chat instead,
+        # created on first use and never renamed after (the operator may).
+        if session_id is None and chat_id > 0:
+            session_id = f"tg-{chat_id}"
+            self.store.ensure_session(session_id, f"Telegram {chat_id}")
         self.store.create_task(task_id, chat_id, text, session_id=session_id)
         if proj is not None:
             self.store.append_log(task_id, f"project: {proj}")

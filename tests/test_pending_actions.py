@@ -32,16 +32,13 @@ def test_pop_removes_and_returns():
     assert st.list() == []
 
 
-def test_pop_oldest_is_fifo():
+def test_list_scoped_to_one_conversation():
     st = PendingStore()
-    a = st.add("s__one", {}, "web")
-    st.add("s__two", {}, "web")
-    assert st.pop_oldest() is a
-    assert len(st.list()) == 1
-
-
-def test_pop_oldest_empty_is_none():
-    assert PendingStore().pop_oldest() is None
+    mine = st.add("s__one", {}, "sess-a")
+    st.add("s__two", {}, "sess-b")
+    assert [x.id for x in st.list("sess-a")] == [mine.id]
+    assert st.list("sess-none") == []
+    assert len(st.list()) == 2      # unscoped still sees everything
 
 
 def test_ids_are_unique():

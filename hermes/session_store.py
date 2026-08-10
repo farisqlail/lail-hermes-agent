@@ -157,6 +157,19 @@ class Store:
                       (session_id, title, time.time()))
         self.publish({"type": "session_created", "session_id": session_id, "title": title})
 
+    def ensure_session(self, session_id, title):
+        """Create the session only if it does not exist yet, and say whether it
+        did. Unlike create_session this never overwrites the title — a caller
+        that runs on every message (the Telegram bridge) must not rename a
+        conversation the operator has already renamed."""
+        with self._conn() as c:
+            cur = c.execute("INSERT OR IGNORE INTO sessions(session_id, title, created) VALUES(?,?,?)",
+                            (session_id, title, time.time()))
+            created = cur.rowcount > 0
+        if created:
+            self.publish({"type": "session_created", "session_id": session_id, "title": title})
+        return created
+
     def rename_session(self, session_id, title):
         with self._conn() as c:
             c.execute("UPDATE sessions SET title=? WHERE session_id=?", (title, session_id))

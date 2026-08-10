@@ -55,6 +55,10 @@ class ResolveBody(BaseModel):
     """
     id: str | None = None
     approved: bool
+    # Which conversation is confirming. Without it an id-less (voice) confirm
+    # resolves the oldest action across every open session, which is another
+    # session's write action.
+    session_id: str | None = None
 
 
 
@@ -867,19 +871,25 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         return {"id": pa.id, "approved": True, "resume": True, "result": text}
 
     @app.get("/api/chat/pending")
-    def get_chat_pending():
+    def get_chat_pending(session_id: str | None = None):
         """Write actions awaiting approval — rendered as cards and polled by the
-        voice loop so 'konfirmasi' knows whether anything is pending."""
+        voice loop so 'konfirmasi' knows whether anything is pending. Scoped to
+        one conversation: a card belongs on the thread that proposed it."""
         return [{"id": a.id, "tool": a.tool, "summary": a.summary(), "args": a.args}
-                for a in app.state.pending.list()]
+                for a in app.state.pending.list(session_id or CONV_WEB)]
 
     @app.post("/api/chat/pending/resolve")
     async def resolve_chat_pending(body: ResolveBody):
-        """Approve/decline a parked action. No `id` resolves the oldest — the
-        shape a voice 'konfirmasi' / 'batal' uses, since speech carries no id."""
+        """Approve/decline a parked action. No `id` resolves the oldest action of
+        THIS conversation — the shape a voice 'konfirmasi' / 'batal' uses, since
+        speech carries no id. An explicit id from another conversation is refused
+        rather than run: the confirm is the operator's authority over one thread."""
         pending = app.state.pending
-        items = pending.list()
+        sid = body.session_id or CONV_WEB
+        items = pending.list(sid)
         pa = pending.get(body.id) if body.id else (items[0] if items else None)
+        if pa is not None and pa.conv_id != sid:
+            pa = None
         if pa is None:
             return {"ok": False, "error": "tidak ada aksi tertunda"}
         out = await _resolve_pending(pa, body.approved)

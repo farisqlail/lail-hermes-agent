@@ -21,6 +21,7 @@ import { VoiceStateIndicator, deriveVoiceState } from '../components/VoiceStateI
 import { STOP_ACK } from '../commands';
 import { VoiceTagExtractor } from '../voicetag';
 import { WaveConstellationGraph } from '../components/WaveConstellationGraph';
+import { taskLinkTarget } from '../graph';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -423,7 +424,8 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
 
   const fetchPending = useCallback(async () => {
     try {
-      const res = await fetch('/api/chat/pending');
+      const url = sessionId ? `/api/chat/pending?session_id=${sessionId}` : '/api/chat/pending';
+      const res = await fetch(url);
       if (!res.ok) return;
       const list: PendingAction[] = await res.json();
       setPending(list);
@@ -431,7 +433,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
       // cannot arrive already dismissed.
       setDismissedPending((prev) => prev.filter((id) => list.some((p) => p.id === id)));
     } catch { /* transient; next poll retries */ }
-  }, []);
+  }, [sessionId]);
 
   // Poll parked write actions so cards appear and voice "konfirmasi" knows
   // whether anything is pending.
@@ -456,7 +458,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
       const res = await fetch('/api/chat/pending/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(id ? { id, approved } : { approved }),
+        body: JSON.stringify({ approved, ...(id ? { id } : {}), ...(sessionId ? { session_id: sessionId } : {}) }),
       });
       const data = res.ok ? await res.json() : null;
       if (data?.ok === false) toast('Tidak ada aksi tertunda', 'warn');
@@ -473,7 +475,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     // Outside the try: a resume failure is the stream's own to report, and must
     // not be swallowed as "Gagal memproses aksi".
     if (shouldResume) await submitTextRef.current('', { resume: true });
-  }, [fetchPending, fetchChatHistory, toast]);
+  }, [fetchPending, fetchChatHistory, toast, sessionId]);
 
   const handleConfirmTask = async (tid: string, approved: boolean) => {
     setConfirmingMap(prev => ({ ...prev, [tid]: true }));
@@ -821,9 +823,11 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
       links.push({ source: 'core', target: s.session_id });
     });
 
-    // Task nodes connected to active session
+    // Task nodes connected to the session that owns them — see taskLinkTarget
+    // for why an unknown session falls back to the core and not to the open one.
+    const known = new Set(sessions.map((s) => s.session_id));
     tasks.forEach((t) => {
-      const targetSessionId = (t as any).session_id || sessionId || 'core';
+      const targetSessionId = taskLinkTarget((t as any).session_id, known);
       const cached = nodesStateRef.current[t.task_id] || {
         x: (Math.random() - 0.5) * 320,
         y: (Math.random() - 0.5) * 320,

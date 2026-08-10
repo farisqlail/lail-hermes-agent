@@ -80,3 +80,25 @@ async def test_browser_timeout(tmp_path):
     res = await test_runner.test_browser("http://localhost:3000", tmp_path, 0.05,
                                          capture=hanging_capture)
     assert not res.ok and "timed out" in res.detail
+
+async def test_emulator_runs_are_serialized(tmp_path):
+    """One emulator, one adb target: two concurrent tasks must not interleave
+    install/launch/screencap, or each reports the other's screen."""
+    trace = []
+    class SlowAdb(FakeAdb):
+        def __init__(self, tag):
+            super().__init__(); self.tag = tag
+        async def install(self, apk):
+            trace.append(f"{self.tag}-enter")
+            await asyncio.sleep(0.01)
+            trace.append(f"{self.tag}-leave")
+            return (True, "")
+
+    await asyncio.gather(
+        test_runner.test_emulator("a.apk", "Pixel", tmp_path / "a", 60,
+                                  adb=SlowAdb("a"), pkg="com.a"),
+        test_runner.test_emulator("b.apk", "Pixel", tmp_path / "b", 60,
+                                  adb=SlowAdb("b"), pkg="com.b"))
+
+    assert trace in (["a-enter", "a-leave", "b-enter", "b-leave"],
+                     ["b-enter", "b-leave", "a-enter", "a-leave"])

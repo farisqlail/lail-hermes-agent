@@ -7,8 +7,9 @@ approval the server runs the tool for real; on decline it is dropped. Nothing in
 here runs the tool — that stays in web_ui with the hub — so this stays a plain,
 testable store.
 
-Single web conversation, single process: a dict guarded by the event loop is
-enough, no lock.
+Single process, but no longer a single conversation: the operator can hold
+several chat sessions at once, so every read is scoped by `conv_id`. A dict
+guarded by the event loop is still enough, no lock.
 """
 from __future__ import annotations
 import itertools
@@ -43,17 +44,22 @@ class PendingStore:
         self._items[pid] = pa
         return pa
 
-    def list(self) -> list[PendingAction]:
+    def list(self, conv_id: str | None = None) -> list[PendingAction]:
         """Oldest first, so voice resolution ('konfirmasi' with no id) acts on the
-        action the operator has been looking at longest — FIFO, not a surprise."""
-        return sorted(self._items.values(), key=lambda a: a.created)
+        action the operator has been looking at longest — FIFO, not a surprise.
+
+        Scoped to one conversation when `conv_id` is given, and it always should
+        be from a request path: with several sessions open, an unscoped list puts
+        another session's parked write action under this session's confirm button
+        — and an id-less voice "konfirmasi" would approve it.
+        """
+        items = self._items.values()
+        if conv_id is not None:
+            items = [a for a in items if a.conv_id == conv_id]
+        return sorted(items, key=lambda a: a.created)
 
     def get(self, pid: str) -> PendingAction | None:
         return self._items.get(pid)
 
     def pop(self, pid: str) -> PendingAction | None:
         return self._items.pop(pid, None)
-
-    def pop_oldest(self) -> PendingAction | None:
-        items = self.list()
-        return self._items.pop(items[0].id) if items else None

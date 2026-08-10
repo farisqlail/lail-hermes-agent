@@ -695,3 +695,22 @@ async def test_web_queued_task_still_parks_at_awaiting_confirm(hermes_home):
     tid = await b.handle_task(user_id=0, chat_id=0, text="build app",
                               trusted=True, force_confirm=True)
     assert store.get_task(tid)["status"] == "awaiting_confirm"
+
+async def test_telegram_task_gets_its_own_session(hermes_home):
+    """A session-less task is drawn hanging off whichever conversation the web
+    UI has open — someone else's thread. One session per Telegram chat, created
+    once and never renamed after."""
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    async def sender(chat, text, html=False): pass
+    class FakeOrch:
+        async def run_task(self, *a, **k): pass
+
+    b = Bridge(Settings(allowed_user_ids=[1]), store, FakeOrch(), sender)
+    tid = await b.handle_task(user_id=1, chat_id=77, text="build app")
+    assert store.get_task(tid)["session_id"] == "tg-77"
+    assert [s["session_id"] for s in store.list_sessions()] == ["tg-77"]
+
+    store.rename_session("tg-77", "Kerjaan HP")
+    await b.handle_task(user_id=1, chat_id=77, text="build again")
+    titles = [s["title"] for s in store.list_sessions()]
+    assert titles == ["Kerjaan HP"]
