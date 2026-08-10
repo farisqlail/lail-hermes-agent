@@ -71,21 +71,32 @@ CHAT_HISTORY_LIMIT = 20   # turns fed back to the model — caps prompt cost
 # never reaches the repository. An explicit sigil plus a code verb is explicit
 # intent, so the queueing is not left to a sampling outcome.
 #
-# The verb list is deliberately a plain heuristic in Indonesian and English:
-# the decision it makes is "queue a task", and a task still faces the bridge's
-# own risk gate before anything runs, so a false positive costs a card the
-# operator can cancel, never an unreviewed write.
-_CODE_INTENT = re.compile(
-    r"\b(tambah\w*|buat\w*|bikin\w*|ubah\w*|ganti\w*|perbaik\w*|betulkan|benerin|"
-    r"fix|refactor\w*|hapus\w*|implement\w*|terapkan|pasang|update|upgrade|"
-    r"optimas\w*|optimi\w*|migras\w*|integras\w*|rename|bug|error|debug\w*|"
-    r"test\w*|uji\w*|add|change|remove|delete|write|create|build|deploy)\b", re.I)
+# Which way the heuristic fails matters, and it used to fail the wrong way: an
+# allowlist of code verbs had to name every way an operator can phrase work, and
+# every verb it missed silently became chat. "@v3 masukkan nota_offline ke
+# template print receipt" queued nothing — so did "tampilkan", "sesuaikan",
+# "pindahkan", "atur", "aktifkan", "hilangkan". The operator saw a patch pasted
+# in the chat pane and a repository that never changed.
+#
+# So the polarity is inverted: an explicit sigil on a registered project IS the
+# intent, and only turns that read as discussion are held back. An unlisted verb
+# now queues a task — the safe direction, because a task still faces the
+# bridge's risk gate, so a false positive costs a card the operator can cancel,
+# never an unreviewed write.
+#
 # A question about a project is discussion, not work. Both anchors matter: the
 # trailing "?" catches "@proj kenapa build-nya error?" and the leading question
 # word catches the same sentence typed without punctuation.
 _QUESTION = re.compile(
     r"^\s*(apa\w*|kenapa|mengapa|gimana|bagaimana|berapa|kapan|siapa|mana|"
     r"why|what|how|when|where|which|who|is|are|does|do|can|should)\b", re.I)
+# Verbs that ask to be told something rather than to have something changed.
+# Anchored to the start: a leading verb sets what the whole turn is asking for,
+# while the same word mid-sentence ("tambah log biar gampang dibaca") does not.
+_DISCUSSION = re.compile(
+    r"^\s*(jelas\w*|terangkan|uraikan|ringkas\w*|rangkum\w*|analis\w*|"
+    r"bandingkan|review|telaah|periksa|cek|baca|lihat|"
+    r"explain|describe|summar\w*|compare|analyz\w*|analys\w*|show me)\b", re.I)
 
 
 def wants_code_task(text: str, settings) -> bool:
@@ -98,9 +109,11 @@ def wants_code_task(text: str, settings) -> bool:
     name, rest = parse_project_ref(text)
     if name is None or name not in settings.projects:
         return False
+    if not rest.strip():
+        return False               # the sigil alone asks for nothing
     if rest.rstrip().endswith("?") or _QUESTION.match(rest):
         return False
-    return bool(_CODE_INTENT.search(rest))
+    return not _DISCUSSION.match(rest)
 
 
 # What the model is told after the task was queued for it. It is a user turn,

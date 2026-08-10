@@ -739,6 +739,14 @@ class Orchestrator:
         t = step.get("type")
         if t == "code":
             engine = choose_engine(step, self.settings)
+            # Snapshot per step, not just per task: the step report has to be
+            # able to say what THIS step touched, and a task's later steps must
+            # not inherit credit for an earlier one's edits.
+            from . import git_status
+            try:
+                step_snapshot = await git_status.start_snapshot(proj)
+            except Exception:
+                step_snapshot = None
             base = (_compose_engine_prompt(text, proj, step.get("prompt", ""))
                     + _COMPLETION_CONTRACT)
             prompt = base
@@ -881,9 +889,18 @@ class Orchestrator:
                         "before this step and is still empty. If this task was "
                         "meant for an existing project, reference it as @name "
                         "(send /projects for the registered names).")
+            # What the engine SAYS it did reaches the operator as its own prose;
+            # this is the only part of the report git can vouch for. A step that
+            # claims edits and shows "0 files changed" is the tell that the work
+            # never landed — the failure mode that reads as "the agent lied".
+            try:
+                touched = await git_status.changed_file_count(proj, step_snapshot)
+            except Exception:
+                touched = None
+            files = "" if touched is None else f", {touched} file(s) changed"
             if _confirmed_done(res.final_text):
-                return (True, f"coded (confirmed done, {rounds} round(s))")
-            return (True, f"coded ({rounds} round(s), completion not "
+                return (True, f"coded (confirmed done, {rounds} round(s){files})")
+            return (True, f"coded ({rounds} round(s){files}, completion not "
                           f"confirmed — check the step transcript)")
         if t == "build":
             ptype = self.deps["detect"](proj)

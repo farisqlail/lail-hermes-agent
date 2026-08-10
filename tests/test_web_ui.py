@@ -574,8 +574,9 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
 
 
 def test_wants_code_task_separates_work_from_discussion(hermes_home):
-    """The routing predicate: an explicit sigil plus a code verb is work; a
-    question, an unregistered name, or plain prose is not."""
+    """The routing predicate: an explicit sigil on a registered project is work;
+    a question, a request to be told something, an unregistered name, or a bare
+    sigil is not."""
     from hermes.web_ui import wants_code_task
     s = config.Settings(projects={"myprofit": str(hermes_home)})
 
@@ -585,9 +586,28 @@ def test_wants_code_task_separates_work_from_discussion(hermes_home):
 
     assert not wants_code_task("@myprofit kenapa build-nya error", s)   # question word
     assert not wants_code_task("@myprofit bug-nya di mana?", s)          # trailing ?
-    assert not wants_code_task("@myprofit ringkas arsitekturnya", s)     # no code verb
+    assert not wants_code_task("@myprofit ringkas arsitekturnya", s)     # discussion
+    assert not wants_code_task("@myprofit jelaskan alur print", s)       # discussion
+    assert not wants_code_task("@myprofit   ", s)                        # sigil alone
     assert not wants_code_task("perbaiki bug login", s)                  # no sigil
     assert not wants_code_task("@sayur perbaiki bug login", s)           # not registered
+
+
+def test_wants_code_task_does_not_need_a_listed_verb(hermes_home):
+    """The reason the predicate was inverted: an allowlist of code verbs had to
+    name every phrasing, and each one it missed answered in the chat pane
+    instead of touching the repository. These all queued nothing before."""
+    from hermes.web_ui import wants_code_task
+    s = config.Settings(projects={"v3": str(hermes_home)})
+
+    for text in ["@v3 masukkan nota_offline ke template print receipt",
+                 "@v3 tampilkan nota offline di struk",
+                 "@v3 sesuaikan label struk",
+                 "@v3 pindahkan tombol ke kanan",
+                 "@v3 atur ulang layout dashboard",
+                 "@v3 aktifkan mode offline",
+                 "@v3 hilangkan padding di kartu"]:
+        assert wants_code_task(text, s), text
 
 
 async def test_code_request_queues_a_task_even_if_the_model_never_calls_the_tool(hermes_home):

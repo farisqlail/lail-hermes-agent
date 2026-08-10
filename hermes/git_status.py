@@ -108,6 +108,7 @@ async def start_snapshot(path: Path) -> tuple[str, frozenset[str]] | None:
 
 
 _SUMMARY_MAX_FILES = 20
+_SUMMARY_MAX_COMMITS = 5
 
 # Column budget: a phone renders roughly 40 monospace chars before wrapping,
 # and a wrapped row destroys the alignment of the whole block.
@@ -115,13 +116,14 @@ _SUMMARY_HEADERS = ["St", "File", "+", "-"]
 _SUMMARY_WIDTHS = [2, 22, 5, 5]
 
 
-async def summarize_since(path: Path, snapshot: tuple[str, frozenset[str]] | None
-                          ) -> str | None:
-    """A short, human-readable list of files changed since `snapshot`.
+async def _changed_files(path: Path, snapshot: tuple[str, frozenset[str]] | None
+                         ) -> list[tuple[str, str, int, int]] | None:
+    """(status, path, added, deleted) for every file changed since `snapshot`.
 
-    None when there is nothing to say — no snapshot, git gone, or a genuinely
-    empty change set. Never raises: a summary is a courtesy at task end, never
-    allowed to fail the (already successful) task.
+    None means the question is unanswerable here — no snapshot, no git, not a
+    work tree. That is distinct from an empty list, which means the tree is
+    genuinely untouched; callers that report "nothing changed" must not confuse
+    the two.
     """
     if snapshot is None:
         return None
@@ -140,26 +142,73 @@ async def summarize_since(path: Path, snapshot: tuple[str, frozenset[str]] | Non
 
     # numstat: "added\tdeleted\tpath"; a binary file reports "-\t-".
     files: list[tuple[str, str, int, int]] = []
-    total_add = total_del = 0
     for line in nums[1].decode(errors="replace").splitlines():
         parts = line.split("\t")
         if len(parts) < 3:
             continue
         a, d, p = parts[0], parts[1], parts[-1]
-        add = 0 if a == "-" else int(a)
-        dele = 0 if d == "-" else int(d)
-        total_add += add
-        total_del += dele
-        files.append((status.get(p, "M"), p, add, dele))
+        files.append((status.get(p, "M"), p,
+                      0 if a == "-" else int(a), 0 if d == "-" else int(d)))
 
     # New files the task created that were not already sitting untracked.
     for p in sorted(set(await _untracked(path)) - start_untracked):
         files.append(("A", p, 0, 0))
 
+    files.sort(key=lambda f: f[1])
+    return files
+
+
+async def changed_file_count(path: Path,
+                             snapshot: tuple[str, frozenset[str]] | None
+                             ) -> int | None:
+    """How many files changed since `snapshot`; None when git cannot say.
+
+    Lets a caller state what a step actually touched instead of repeating what
+    the engine claims it touched — the two are not the same, and only this one
+    is checkable.
+    """
+    files = await _changed_files(path, snapshot)
+    return None if files is None else len(files)
+
+
+async def _landing_place(path: Path, base: str) -> list[str]:
+    """Which branch the work is on, and any commits made since `base`.
+
+    Without this the summary lists files an operator then cannot find: an engine
+    that commits its work — or that starts a branch — leaves a clean tree on
+    whatever branch the operator happens to have checked out, and the honest
+    file list reads as a lie.
+    """
+    out: list[str] = []
+    branch = await _run_git(["rev-parse", "--abbrev-ref", "HEAD"], path)
+    if branch is not None and branch[0] == 0:
+        name = branch[1].decode(errors="replace").strip()
+        if name and name != "HEAD":
+            out.append(f"Branch: {name}")
+    log = await _run_git(["log", "--oneline", "--no-decorate", f"{base}..HEAD"], path)
+    if log is not None and log[0] == 0:
+        commits = [ln for ln in log[1].decode(errors="replace").splitlines() if ln.strip()]
+        if commits:
+            out.append(f"Commit baru ({len(commits)}):")
+            out += [f"  {c}" for c in commits[:_SUMMARY_MAX_COMMITS]]
+            if len(commits) > _SUMMARY_MAX_COMMITS:
+                out.append(f"  …dan {len(commits) - _SUMMARY_MAX_COMMITS} commit lainnya")
+    return out
+
+
+async def summarize_since(path: Path, snapshot: tuple[str, frozenset[str]] | None
+                          ) -> str | None:
+    """A short, human-readable list of files changed since `snapshot`.
+
+    None when there is nothing to say — no snapshot, git gone, or a genuinely
+    empty change set. Never raises: a summary is a courtesy at task end, never
+    allowed to fail the (already successful) task.
+    """
+    files = await _changed_files(path, snapshot)
     if not files:
         return None
-
-    files.sort(key=lambda f: f[1])
+    total_add = sum(f[2] for f in files)
+    total_del = sum(f[3] for f in files)
     shown = files[:_SUMMARY_MAX_FILES]
     rows = [[code, p, f"+{add}", f"-{dele}"] for code, p, add, dele in shown]
     table = tg_format.table(_SUMMARY_HEADERS, rows, _SUMMARY_WIDTHS)
@@ -167,4 +216,6 @@ async def summarize_since(path: Path, snapshot: tuple[str, frozenset[str]] | Non
     if len(files) > _SUMMARY_MAX_FILES:
         out.append(f"…dan {len(files) - _SUMMARY_MAX_FILES} file lainnya")
     out.append(f"Total: +{total_add} -{total_del}")
+    # Where it landed, not just what changed: see _landing_place.
+    out += await _landing_place(path, snapshot[0]) if snapshot else []
     return "\n".join(out)

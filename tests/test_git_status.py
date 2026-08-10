@@ -1,5 +1,6 @@
 import asyncio
-from hermes.git_status import git_dirty, start_snapshot, summarize_since
+from hermes.git_status import (
+    changed_file_count, git_dirty, start_snapshot, summarize_since)
 
 
 async def _git(cwd, *args):
@@ -150,3 +151,56 @@ async def test_summary_none_for_non_repo(tmp_path):
     snap = await start_snapshot(plain)
     assert snap is None
     assert await summarize_since(plain, None) is None
+
+
+# --- where the work landed -------------------------------------------------
+
+async def test_summary_names_the_branch_the_work_is_on(tmp_path):
+    """An operator who looks at the branch they had checked out sees nothing,
+    and reads the file list as a lie. Name the branch the engine used."""
+    repo = await _repo(tmp_path / "branch")
+    snap = await start_snapshot(repo)
+    await _git(repo, "checkout", "-q", "-b", "dev-fix")
+    (repo / "a.txt").write_text("one\ntwo\n")
+    s = await summarize_since(repo, snap)
+    assert s is not None
+    assert "Branch: dev-fix" in s
+
+
+async def test_summary_lists_commits_the_engine_made(tmp_path):
+    """An engine that commits leaves a clean tree — the changes are real but
+    invisible to `git status`, which is exactly how "code tidak ada" happens."""
+    repo = await _repo(tmp_path / "committed")
+    snap = await start_snapshot(repo)
+    (repo / "a.txt").write_text("one\ntwo\n")
+    await _git(repo, "commit", "-qam", "feat: add offlineNota printing")
+    s = await summarize_since(repo, snap)
+    assert s is not None
+    assert "M  a.txt" in s                      # still listed after committing
+    assert "Commit baru (1):" in s
+    assert "feat: add offlineNota printing" in s
+
+
+async def test_no_landing_lines_when_nothing_was_committed(tmp_path):
+    repo = await _repo(tmp_path / "uncommitted")
+    snap = await start_snapshot(repo)
+    (repo / "a.txt").write_text("one\ntwo\n")
+    s = await summarize_since(repo, snap)
+    assert s is not None
+    assert "Commit baru" not in s
+
+
+# --- changed_file_count ----------------------------------------------------
+
+async def test_changed_file_count_separates_zero_from_unknowable(tmp_path):
+    """0 means "the engine touched nothing" and must be reportable; None means
+    git cannot say. A caller that conflates them cannot flag an empty step."""
+    repo = await _repo(tmp_path / "count")
+    snap = await start_snapshot(repo)
+    assert await changed_file_count(repo, snap) == 0
+    (repo / "a.txt").write_text("one\ntwo\n")
+    (repo / "created.txt").write_text("new\n")
+    assert await changed_file_count(repo, snap) == 2
+
+    plain = tmp_path / "plain-count"; plain.mkdir()
+    assert await changed_file_count(plain, None) is None
