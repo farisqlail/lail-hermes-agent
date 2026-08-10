@@ -398,6 +398,19 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   const [streamContent, setStreamContent] = useState('');
   const [streamUsage, setStreamUsage] = useState<{ total: number } | null>(null);
   const [confirmingMap, setConfirmingMap] = useState<Record<string, boolean>>({});
+  // Which conversation the in-flight stream belongs to. This component survives
+  // a session switch (only the prop changes), so without it the live readout and
+  // the finished reply both followed the operator into whatever session they
+  // opened next — an answer to a question that thread never asked.
+  const [streamSession, setStreamSession] = useState<string | undefined>(undefined);
+  // The session as of *now*, readable from inside a stream closure that captured
+  // the session it started in.
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  // The stream is still running in the background when it belongs elsewhere; it
+  // is only drawn on its own thread. Its reply is stored server-side either way,
+  // so switching back re-reads it from the history.
+  const showStream = streaming && streamSession === sessionId;
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const chatThreadRef = useRef<HTMLDivElement | null>(null);
@@ -505,7 +518,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, streamContent, streaming, scrollToBottom]);
+  }, [messages, streamContent, showStream, scrollToBottom]);
 
   /** Stage image files chosen, pasted or dropped. Non-images are ignored
    *  rather than refused loudly: a paste often carries several flavours of the
@@ -562,8 +575,14 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     const imageIds = await uploadAttached();
     setAttached([]);
 
+    // Captured once: every later update belongs to THIS conversation, whatever
+    // the operator has open by the time the stream ends.
+    const turnSession = sessionId;
+    const isStillOpen = () => sessionIdRef.current === turnSession;
+
     setInputText('');
     setStreaming(true);
+    setStreamSession(turnSession);
     setStreamContent('');
     setStreamUsage(null);
 
@@ -600,7 +619,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, session_id: sessionId, images: imageIds, resume }),
+        body: JSON.stringify({ text, session_id: turnSession, images: imageIds, resume }),
         signal: controller.signal,
       });
 
@@ -671,7 +690,9 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
         content: accumulatedText || '(tidak ada balasan)',
         usage: accumulatedUsage || undefined,
       };
-      setMessages((prev) => [...prev, assistantMsg]);
+      // Only onto the thread that asked. The operator may have moved on; the
+      // reply is already stored, so their old thread shows it on the way back.
+      if (isStillOpen()) setMessages((prev) => [...prev, assistantMsg]);
       // The resume turn is silent by design, so the one thing the operator gets
       // is this: the confirmed action is done and the agent has moved on.
       if (resume) toast('Aksi selesai, agent melanjutkan', 'ok');
@@ -706,11 +727,11 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
           content: accumulatedText || '(dihentikan oleh operator)',
           usage: { total: 0 },
         };
-        setMessages((prev) => [...prev, assistantMsg]);
+        if (isStillOpen()) setMessages((prev) => [...prev, assistantMsg]);
         toast('Aliran chat dihentikan', 'warn');
       } else {
         toast(errorMessage(err, 'Gagal mengirim pesan'), 'err');
-        setMessages((prev) => [
+        if (isStillOpen()) setMessages((prev) => [
           ...prev,
           { role: 'assistant', content: `**Error:** ${errorMessage(err, 'Koneksi gagal.')}` },
         ]);
@@ -1292,7 +1313,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
           <div className="chat-preview-container" ref={chatThreadRef}>
             {loadingHistory ? (
               <div style={{ color: 'var(--text-faint)', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>RETRIEVING READOUTS...</div>
-            ) : lastMessages.length === 0 && !streaming ? (
+            ) : lastMessages.length === 0 && !showStream ? (
               <div style={{ color: 'var(--text-faint)', fontSize: '11px', fontStyle: 'italic', margin: 'auto' }}>Logs sequence ready. Input command.</div>
             ) : (
               <>
@@ -1335,8 +1356,8 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
                   </div>
                 ))}
 
-                {/* Streaming in preview */}
-                {streaming && (
+                {/* Streaming in preview — only on the thread that asked */}
+                {showStream && (
                   <div className="chat-preview-card">
                     <div className="chat-preview-header" style={{ animation: 'cyber-blink 1s infinite' }}>
                       INCOMING STREAM READOUT...
