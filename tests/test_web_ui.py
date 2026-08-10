@@ -547,12 +547,18 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
     r = client.post("/api/tasks", json={"text": "cek proyek lalu jalankan test"})
     assert r.status_code == 200
 
-    assert out["tool_names"] == ["list_projects", "recent_tasks",
-                                 "get_task_detail", "failure_report",
-                                 "start_task", "calendar_events", "open_app",
-                                 "integrate_mcp", "integrate_status",
-                                 "integrate_secret", "generate_image",
-                                 "youtube_clip", "viral_clip", "viral_clips"]
+    expected = ["list_projects", "recent_tasks", "get_task_detail",
+                "failure_report", "start_task", "calendar_events", "open_app",
+                "integrate_mcp", "integrate_status", "integrate_secret",
+                "generate_image"]
+    # The clip tools are offered only when the optional `media` extra is
+    # installed (see the yt_dlp gate in _tools_for_turn) — a tool that can only
+    # fail is worse than an absent one. Asserting them unconditionally made this
+    # test fail on every checkout without that extra, which is most of them.
+    import importlib.util
+    if importlib.util.find_spec("yt_dlp") is not None:
+        expected += ["youtube_clip", "viral_clip", "viral_clips"]
+    assert out["tool_names"] == expected
     assert out["projects"] == [{"name": "myprofit", "path": str(proj_dir), "exists": True}]
     assert any(t["task_id"] == "seed1" for t in out["recent"])
     assert out["detail"]["status"] == "done"
