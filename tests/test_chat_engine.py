@@ -157,3 +157,30 @@ async def test_run_resume_turn_uses_the_nudge_and_does_not_store_a_user_turn(her
     assert seen == [RESUME_NUDGE]
     msgs = store.get_messages("tg-5")
     assert [m["role"] for m in msgs] == ["assistant"]  # no user turn recorded
+
+
+async def test_generate_image_sends_file_to_telegram(hermes_home, monkeypatch):
+    store = _store(hermes_home)
+    sent_files = []
+
+    class FakeBridge:
+        async def send_file(self, chat_id, kind, path):
+            sent_files.append((chat_id, kind, str(path)))
+
+    engine = ChatEngine(store, bridge=FakeBridge())
+    fake_png = hermes_home / "fake.png"
+    fake_png.write_bytes(b"PNG")
+
+    import hermes.imagegen
+    monkeypatch.setattr(hermes.imagegen, "generate", lambda prompt, **kw: {"status": "generated", "path": str(fake_png)})
+
+    from hermes import config
+    config.save_settings(config.Settings(image_model="flux", nvidia_base_url="http://x"))
+    config.save_secrets(config.Secrets(nvidia_api_key="nvapi-test"))
+
+    dispatch = engine.make_dispatch("tg-10", chat_id=10)
+    res = await dispatch("generate_image", {"prompt": "kucing lucu"})
+    assert "generated" in res
+    assert len(sent_files) == 1
+    assert sent_files[0] == (10, "screenshot", str(fake_png))
+

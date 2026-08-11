@@ -348,6 +348,11 @@ class ChatEngine:
                     if res.get("status") == "generated":
                         from urllib.parse import quote
                         url = f"/api/artifacts/view?path={quote(res['path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["path"])
+                            except Exception as e:
+                                print(f"Could not send generated image to Telegram: {e}")
                         return json.dumps(
                             {"status": "generated", "url": url,
                              "markdown": f"![gambar]({url})"}, ensure_ascii=False)
@@ -361,6 +366,11 @@ class ChatEngine:
                     if res.get("status") == "clipped":
                         from urllib.parse import quote
                         url = f"/api/artifacts/view?path={quote(res['path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "document", res["path"])
+                            except Exception as e:
+                                print(f"Could not send clip to Telegram: {e}")
                         return json.dumps(
                             {"status": "clipped", "url": url, "seconds": res.get("seconds"),
                              "markdown": f"![clip]({url})"}, ensure_ascii=False)
@@ -377,6 +387,11 @@ class ChatEngine:
                     if res.get("status") == "clipped":
                         from urllib.parse import quote
                         url = f"/api/artifacts/view?path={quote(res['path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "document", res["path"])
+                            except Exception as e:
+                                print(f"Could not send clip to Telegram: {e}")
                         return json.dumps(
                             {"status": "clipped", "url": url,
                              "start": res.get("start"), "end": res.get("end"),
@@ -405,6 +420,11 @@ class ChatEngine:
                         cands = []
                         for c in res["candidates"]:
                             u = f"/api/artifacts/view?path={quote(c['path'])}"
+                            if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                                try:
+                                    await self.bridge.send_file(chat_id, "document", c["path"])
+                                except Exception as e:
+                                    print(f"Could not send candidate clip to Telegram: {e}")
                             cands.append({"title": c["title"], "start": c["start"],
                                           "end": c["end"],
                                           "markdown": f"### {c['title']}\n![clip]({u})"})
@@ -412,6 +432,7 @@ class ChatEngine:
                                            "video_title": res["video_title"],
                                            "candidates": cands}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
+
                 if name == "start_task":
                     if started:
                         return json.dumps(
