@@ -12,3 +12,6 @@ tests/fake_engine.py
 /hermes/static/
 # Page dumps the Playwright MCP server writes into the working directory.
 /.playwright-mcp/
+
+# webpack build cache — machine-local, can exceed GitHub 100MB limit
+web/.next/cache/
