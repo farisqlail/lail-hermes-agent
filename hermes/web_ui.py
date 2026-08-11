@@ -6,7 +6,9 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
 from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth, imagegen, ytclip
+from .chat_engine import ChatEngine, wants_code_task, CHAT_TOOLS, AUTO_TASK_NOTE, IMAGE_MARKER, CHAT_HISTORY_LIMIT, RESUME_NUDGE, START_TASK_DECISION_TIMEOUT_S
 from .pending_actions import PendingStore
+
 from .project_resolve import parse_project_ref
 from .session_store import Store
 from .telegram_bridge import new_task_id
@@ -66,219 +68,7 @@ class ResolveBody(BaseModel):
 # so a fixed id is enough; a per-browser session id is only needed once the
 # dashboard is multi-user.
 CONV_WEB = "web"
-CHAT_HISTORY_LIMIT = 20   # turns fed back to the model — caps prompt cost
 
-# Code work aimed at a registered @project is routed into start_task by THIS
-# code, not by the model's judgement. The system prompt has told the model to
-# call the tool since the chat-auto-run change, and it still answered plenty of
-# "@proj perbaiki X" turns with a patch pasted in the chat pane — a patch that
-# never reaches the repository. An explicit sigil plus a code verb is explicit
-# intent, so the queueing is not left to a sampling outcome.
-#
-# Which way the heuristic fails matters, and it used to fail the wrong way: an
-# allowlist of code verbs had to name every way an operator can phrase work, and
-# every verb it missed silently became chat. "@v3 masukkan nota_offline ke
-# template print receipt" queued nothing — so did "tampilkan", "sesuaikan",
-# "pindahkan", "atur", "aktifkan", "hilangkan". The operator saw a patch pasted
-# in the chat pane and a repository that never changed.
-#
-# So the polarity is inverted: an explicit sigil on a registered project IS the
-# intent, and only turns that read as discussion are held back. An unlisted verb
-# now queues a task — the safe direction, because a task still faces the
-# bridge's risk gate, so a false positive costs a card the operator can cancel,
-# never an unreviewed write.
-#
-# A question about a project is discussion, not work. Both anchors matter: the
-# trailing "?" catches "@proj kenapa build-nya error?" and the leading question
-# word catches the same sentence typed without punctuation.
-_QUESTION = re.compile(
-    r"^\s*(apa\w*|kenapa|mengapa|gimana|bagaimana|berapa|kapan|siapa|mana|"
-    r"why|what|how|when|where|which|who|is|are|does|do|can|should)\b", re.I)
-# Verbs that ask to be told something rather than to have something changed.
-# Anchored to the start: a leading verb sets what the whole turn is asking for,
-# while the same word mid-sentence ("tambah log biar gampang dibaca") does not.
-_DISCUSSION = re.compile(
-    r"^\s*(jelas\w*|terangkan|uraikan|ringkas\w*|rangkum\w*|analis\w*|"
-    r"bandingkan|review|telaah|periksa|cek|baca|lihat|"
-    r"explain|describe|summar\w*|compare|analyz\w*|analys\w*|show me)\b", re.I)
-
-
-def wants_code_task(text: str, settings) -> bool:
-    """True when this chat turn is code work on a registered project.
-
-    Unregistered names are left alone on purpose: start_task would only reject
-    them, and the model's own answer (which lists the registered names) is the
-    more useful reply.
-    """
-    name, rest = parse_project_ref(text)
-    if name is None or name not in settings.projects:
-        return False
-    if not rest.strip():
-        return False               # the sigil alone asks for nothing
-    if rest.rstrip().endswith("?") or _QUESTION.match(rest):
-        return False
-    return not _DISCUSSION.match(rest)
-
-
-# What the model is told after the task was queued for it. It is a user turn,
-# not a system one, because it has to be the last message in the prompt.
-AUTO_TASK_NOTE = (
-    "[SISTEM] Permintaan ini menyebut proyek terdaftar dan menyangkut kode, "
-    "jadi `start_task` SUDAH dijalankan otomatis untuk teks itu apa adanya. "
-    "Hasil alat: {result}\n"
-    "Laporkan `status`, `reasons`, dan Task ID di atas apa adanya — `running` "
-    "berarti task baru mulai, bukan selesai. JANGAN memanggil `start_task` "
-    "lagi untuk permintaan ini dan JANGAN menulis patch/diff di chat: yang "
-    "mengerjakan kodenya adalah task itu."
-)
-
-# How long the start_task tool waits for handle_task to settle its gate before
-# answering the model. The slow part is one `git status` subprocess, so this is
-# generous; the task itself keeps running in the background either way.
-START_TASK_DECISION_TIMEOUT_S = 5.0
-
-# Tools the conversational agent may call. A curated, safe set — read-only
-# system queries plus start_task, which only ever QUEUES a task held for the
-# operator's one-tap confirm (bridge.handle_task force_confirm). Deliberately
-# not the MCP hub: that exposes ask_user, which would deadlock a chat turn.
-CHAT_TOOLS = [
-    {"type": "function", "function": {
-        "name": "list_projects",
-        "description": "Daftar proyek terdaftar beserta path dan apakah foldernya ada di disk.",
-        "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {
-        "name": "recent_tasks",
-        "description": "Beberapa task orkestrasi terakhir beserta status dan teksnya.",
-        "parameters": {"type": "object", "properties": {
-            "limit": {"type": "integer", "description": "jumlah maksimal, default 5"}}}}},
-    {"type": "function", "function": {
-        "name": "get_task_detail",
-        "description": "Status dan potongan log terakhir sebuah task, berdasarkan task_id.",
-        "parameters": {"type": "object", "properties": {
-            "task_id": {"type": "string"}}, "required": ["task_id"]}}},
-    {"type": "function", "function": {
-        "name": "failure_report",
-        "description": ("Ringkasan kegagalan task terakhir, dikelompokkan menurut jenisnya "
-                        "(lingkungan / struktural / sesaat / kode) beserta yang berulang. "
-                        "Pakai ini bila ditanya kenapa task sering gagal atau apa yang "
-                        "perlu diperbaiki — jangan menebak dari ingatan."),
-        "parameters": {"type": "object", "properties": {
-            "limit": {"type": "integer", "description": "berapa task terakhir diperiksa, default 50"}}}}},
-    {"type": "function", "function": {
-        "name": "start_task",
-        "description": ("Antre lalu jalankan task orkestrasi. Bila permintaan menyebut "
-                        "@nama-proyek, repositorinya bersih, dan pekerjaannya tidak "
-                        "berisiko (push/deploy/hapus), task LANGSUNG berjalan; selain "
-                        "itu task ditahan sampai operator menekan Run. Hasil pemanggilan "
-                        "berisi status sebenarnya beserta alasannya — pakai itu, jangan "
-                        "menebak."),
-        "parameters": {"type": "object", "properties": {
-            "description": {"type": "string",
-                            "description": "instruksi task, mis. '@myprofit jalankan pengujian'"}},
-            "required": ["description"]}}},
-    {"type": "function", "function": {
-        "name": "calendar_events",
-        "description": ("Acara Google Calendar yang akan datang, dibaca dari alamat "
-                        "iCal rahasia di setelan. Read-only — tidak bisa membuat, "
-                        "mengubah, atau menghapus acara. Pakai ini bila ditanya "
-                        "jadwal, rapat, atau agenda; jangan menebak dari ingatan."),
-        "parameters": {"type": "object", "properties": {
-            "days": {"type": "integer",
-                     "description": "rentang hari ke depan, default 7, maksimal 60"}}}}},
-    {"type": "function", "function": {
-        "name": "open_app",
-        "description": ("Buka aplikasi desktop yang dikenal (mis. paint, notepad, calculator, "
-                        "explorer, wordpad) ATAU sebuah URL http/https, langsung di komputer "
-                        "pengguna. Langsung DIBUKA tanpa konfirmasi operator — bukan aksi "
-                        "tertahan. Setelah status 'opened', katakan sudah dibuka. Hanya app "
-                        "dalam daftar aman yang bisa; lainnya balas 'unknown_app'."),
-        "parameters": {"type": "object", "properties": {
-            "target": {"type": "string",
-                       "description": "nama app (mis. 'paint') atau URL (mis. 'https://calendar.google.com')"}},
-            "required": ["target"]}}},
-    {"type": "function", "function": {
-        "name": "integrate_mcp",
-        "description": ("Pasang server MCP baru dari satu link (URL server remote, "
-                        "link GitHub/npm, atau nama paket npm). Berjalan di latar: "
-                        "kembalikan run_id lalu pantau dengan integrate_status. "
-                        "Bila prosesnya minta kredensial, jawab dengan integrate_secret."),
-        "parameters": {"type": "object", "properties": {
-            "link": {"type": "string", "description": "link atau nama paket"}},
-            "required": ["link"]}}},
-    {"type": "function", "function": {
-        "name": "integrate_status",
-        "description": "Keadaan dan riwayat sebuah integrasi MCP yang sedang berjalan.",
-        "parameters": {"type": "object", "properties": {
-            "run_id": {"type": "string"}}, "required": ["run_id"]}}},
-    {"type": "function", "function": {
-        "name": "integrate_secret",
-        "description": ("Isi kredensial yang diminta sebuah integrasi yang sedang "
-                        "menunggu (lihat pending_secret dari integrate_status)."),
-        "parameters": {"type": "object", "properties": {
-            "run_id": {"type": "string"}, "value": {"type": "string"}},
-            "required": ["run_id", "value"]}}},
-    {"type": "function", "function": {
-        "name": "generate_image",
-        "description": ("Buat/generate gambar dari deskripsi teks dan tampilkan ke "
-                        "pengguna. Pakai ini bila pengguna minta dibuatkan gambar, "
-                        "ilustrasi, logo, ikon, atau foto. Hasilnya berisi field "
-                        "`markdown` — sertakan APA ADANYA di jawabanmu agar gambarnya "
-                        "muncul. Jangan mengarang bahwa gambar sudah dibuat tanpa "
-                        "memanggil alat ini."),
-        "parameters": {"type": "object", "properties": {
-            "prompt": {"type": "string",
-                       "description": "deskripsi gambar dalam bahasa apa pun, sedetail mungkin"}},
-            "required": ["prompt"]}}},
-    {"type": "function", "function": {
-        "name": "youtube_clip",
-        "description": ("Potong sebuah klip dari video YouTube (atau URL video lain) "
-                        "pada rentang waktu tertentu, lalu tampilkan ke pengguna. "
-                        "Pakai bila pengguna minta dibuatkan klip/potongan/cuplikan "
-                        "video dari sebuah tautan. Hasilnya berisi field `markdown` — "
-                        "sertakan APA ADANYA di jawabanmu agar videonya muncul."),
-        "parameters": {"type": "object", "properties": {
-            "url": {"type": "string", "description": "URL video, mis. https://youtube.com/watch?v=..."},
-            "start": {"type": "string", "description": "waktu mulai, detik atau MM:SS / HH:MM:SS"},
-            "end": {"type": "string", "description": "waktu selesai, detik atau MM:SS / HH:MM:SS"},
-            "vertical": {"type": "string", "enum": ["blur", "crop", "none"],
-                         "description": "format 9:16 untuk Shorts/TikTok: 'blur' (utuh+background blur, DEFAULT), 'crop' (potong tengah), 'none' (rasio asli)."}},
-            "required": ["url", "start", "end"]}}},
-    {"type": "function", "function": {
-        "name": "viral_clip",
-        "description": ("Analisa sebuah video YouTube dan otomatis potong bagian yang "
-                        "PALING BERPOTENSI VIRAL — memakai data 'most replayed' "
-                        "(bagian yang paling banyak diputar ulang penonton) dari "
-                        "YouTube. Pakai bila pengguna minta 'carikan bagian viral', "
-                        "'potong yang menarik', atau memberi URL tanpa waktu mulai/"
-                        "selesai. Durasi maksimal default 60 detik (1 menit). Hasilnya "
-                        "berisi `markdown` (sertakan APA ADANYA agar video tampil), "
-                        "serta `start`/`end`/`reason`."),
-        "parameters": {"type": "object", "properties": {
-            "url": {"type": "string", "description": "URL video YouTube"},
-            "max_seconds": {"type": "integer",
-                            "description": "durasi maks klip dalam detik, default 60 (maks 60)"},
-            "vertical": {"type": "string", "enum": ["blur", "crop", "none"],
-                         "description": "format 9:16 Shorts/TikTok, default 'blur' (utuh+background blur). 'crop' potong tengah, 'none' rasio asli."}},
-            "required": ["url"]}}},
-    {"type": "function", "function": {
-        "name": "viral_clips",
-        "description": ("Hasilkan BEBERAPA (default 3) kandidat klip viral dari satu "
-                        "video YouTube sekaligus: tiap kandidat adalah bagian yang "
-                        "paling banyak diputar ulang, LENGKAP dengan judul viral yang "
-                        "dibuatkan otomatis. Pakai bila pengguna minta 'beberapa "
-                        "kandidat', 'top 3', atau pilihan klip. Hasil berisi daftar "
-                        "`candidates`, tiap item punya `title`, `start`, `end`, dan "
-                        "`markdown` — tampilkan SETIAP `markdown` apa adanya agar "
-                        "semua videonya muncul."),
-        "parameters": {"type": "object", "properties": {
-            "url": {"type": "string", "description": "URL video YouTube"},
-            "count": {"type": "integer", "description": "jumlah kandidat, default 3 (maks 3)"},
-            "max_seconds": {"type": "integer",
-                            "description": "durasi maks tiap klip, default 60 (maks 60)"},
-            "vertical": {"type": "string", "enum": ["blur", "crop", "none"],
-                         "description": "format 9:16 Shorts/TikTok, default 'blur'. 'crop' potong tengah, 'none' rasio asli."}},
-            "required": ["url"]}}},
-]
 
 def _bg_crash_cb(store: Store, task_id: str):
     """Done-callback for the web UI's fire-and-forget bridge tasks.
@@ -401,7 +191,8 @@ def load_index_html() -> str:
         "</body></html>"
     )
 
-def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan=None, hub=None, facts=None) -> FastAPI:
+def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
+               lifespan=None, hub=None, facts=None, engine=None) -> FastAPI:
     # lifespan carries the ask MCP server's session manager when main.py mounts
     # it here: a mounted sub-app's own lifespan is ignored by Starlette, so the
     # manager has to be started by the parent or the /ask-mcp endpoint is dead.
@@ -413,9 +204,11 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     # alone). Discovery is cached: list_tools opens transports, too costly per turn.
     app.state.hub = hub
     app.state._mcp_tools_cache = None
+    app.state.engine = engine if engine is not None else ChatEngine(
+        store, bridge=bridge, hub=hub, facts=facts)
     # Write actions the chat agent proposed, awaiting operator approval (button
     # or voice). Executed only from the resolve endpoint, never in the tool loop.
-    app.state.pending = PendingStore()
+    app.state.pending = app.state.engine.pending
 
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR), check_dir=False), name="static")
     app.mount("/_next", StaticFiles(directory=str(STATIC_DIR / "_next"), check_dir=False), name="next_static")
@@ -439,471 +232,74 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     app.state.integrate_runs = {}
     app.state.pending_auth = mcp_oauth.PendingAuth()
 
-    def brain_context() -> dict:
-        """The situational preamble as a system message.
+    INTEGRATE_TOOLS = [
+        {"type": "function", "function": {
+            "name": "integrate_mcp",
+            "description": ("Pasang server MCP baru dari satu link (URL server remote, "
+                            "link GitHub/npm, atau nama paket npm). Berjalan di latar: "
+                            "kembalikan run_id lalu pantau dengan integrate_status. "
+                            "Bila prosesnya minta kredensial, jawab dengan integrate_secret."),
+            "parameters": {"type": "object", "properties": {
+                "link": {"type": "string", "description": "link atau nama paket"}},
+                "required": ["link"]}}},
+        {"type": "function", "function": {
+            "name": "integrate_status",
+            "description": "Keadaan dan riwayat sebuah integrasi MCP yang sedang berjalan.",
+            "parameters": {"type": "object", "properties": {
+                "run_id": {"type": "string"}}, "required": ["run_id"]}}},
+        {"type": "function", "function": {
+            "name": "integrate_secret",
+            "description": ("Isi kredensial yang diminta sebuah integrasi yang sedang "
+                            "menunggu (lihat pending_secret dari integrate_status)."),
+            "parameters": {"type": "object", "properties": {
+                "run_id": {"type": "string"}, "value": {"type": "string"}},
+                "required": ["run_id", "value"]}}},
+    ]
 
-        Prepended to the history for every chat turn, which is why it is built
-        per turn rather than cached: the clock moves, tasks finish, and a stale
-        "sedang berjalan" is worse than no context at all.
-        """
-        s = config.load_settings()
-        return {"role": "system",
-                "content": brain.context_block(store.list_facts(),
-                                               store.list_tasks(limit=20),
-                                               list(s.projects))}
+    async def _integrate_extra(images=None) -> dict:
+        """The three integrate_* tool handlers, as ChatEngine.wrap_dispatch's
+        `extra` map. `_start_integrate`/`app.state.integrate_runs` are the
+        same closures the /api/mcp/integrate/* endpoints already use below —
+        one registry either surface reads."""
+        async def do_integrate_mcp(args):
+            link = str(args.get("link") or "").strip()
+            if not link:
+                return json.dumps({"error": "link kosong"}, ensure_ascii=False)
+            run_id = _start_integrate(link)
+            return json.dumps(
+                {"run_id": run_id, "state": "running",
+                 "note": ("Integrasi berjalan di latar. Pantau dengan "
+                          "integrate_status; jangan mengaku sudah selesai "
+                          "sebelum state-nya 'done'.")},
+                ensure_ascii=False)
 
-    def history_with_context(sid: str, images: list[Path] | None = None) -> list[dict]:
-        """The turn as the model sees it, newest message last.
+        async def do_integrate_status(args):
+            run = app.state.integrate_runs.get(str(args.get("run_id") or ""))
+            if run is None:
+                return json.dumps({"error": "run tidak ditemukan"}, ensure_ascii=False)
+            return json.dumps(
+                {"state": run.state, "pending_secret": run.pending_secret,
+                 "login_url": run.login_url, "server": run.server,
+                 "events": run.events[-12:]}, ensure_ascii=False)
 
-        With images, the final user message becomes a multimodal content list.
-        Only that message: earlier turns keep the `[gambar dilampirkan]` marker
-        stored in their text, so a conversation about one photo does not pay
-        for that photo on every subsequent turn.
-        """
-        history = [brain_context(), *store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)]
-        if images and history[-1]["role"] == "user":
-            # The marker is for the turns that come after, which will see it in
-            # place of the picture. On this turn the picture is right there, so
-            # telling the model an image is attached is noise.
-            said = history[-1]["content"].replace(IMAGE_MARKER, "")
-            history[-1] = {"role": "user",
-                           "content": uploads.as_content_parts(said, images)}
-        return history
+        async def do_integrate_secret(args):
+            run = app.state.integrate_runs.get(str(args.get("run_id") or ""))
+            if run is None:
+                return json.dumps({"error": "run tidak ditemukan"}, ensure_ascii=False)
+            ok = run.answer_secret(str(args.get("value") or ""))
+            return json.dumps({"ok": ok}, ensure_ascii=False)
 
-    async def history_for_turn(sid: str, text: str, images: list[Path] | None,
-                               dispatch) -> tuple[list[dict], str | None]:
-        """The prompt for one chat turn, plus the id of any task queued for it.
+        return {"integrate_mcp": do_integrate_mcp,
+                "integrate_status": do_integrate_status,
+                "integrate_secret": do_integrate_secret}
 
-        See wants_code_task: when the turn is code work on a registered project
-        the task is started here, before the model speaks, and the model is left
-        to report it. `dispatch` must be the same callable handed to the model,
-        so its start_task memo covers both callers.
-        """
-        history = history_with_context(sid, images)
-        if not (text and wants_code_task(text, config.load_settings())):
-            return history, None
-        result = await dispatch("start_task", {"description": text})
-        try:
-            task_id = json.loads(result).get("task_id")
-        except ValueError:
-            task_id = None
-        return ([*history, {"role": "user",
-                            "content": AUTO_TASK_NOTE.format(result=result)}],
-                task_id)
-
-    def task_card_suffix(reply: str, task_id: str | None) -> str:
-        """The line that makes the queued task's Run/Cancel card appear, or "".
-
-        The card is drawn by the client for every task id it finds in the
-        assistant's text (findTaskIds in Dashboard.tsx). Leaving that to the
-        model's prose is how a held task ends up with no way to run it: the
-        model wrote "Task @v3 ditahan", no id, so the operator got a paragraph
-        about pressing Run and no button to press. The id is ours, not the
-        model's, so it is appended when the model left it out.
-
-        A suffix rather than a rewritten reply, so the streaming path can send
-        exactly these bytes as one more delta.
-        """
-        if not task_id or task_id in reply:
-            return ""
-        return f"\n\nTask `{task_id}`"
-
-    def take_images(sid: str, names: list[str]) -> list[Path]:
-        """Resolve upload names to files. Unknown names are dropped, not an
-        error: a re-sent or already-discarded image should cost the operator a
-        plain text answer, not a failed turn."""
-        found = [uploads.resolve(paths.uploads_dir(), sid, n) for n in names or []]
-        return [p for p in found if p is not None]
-
-    IMAGE_MARKER = "\n\n[gambar dilampirkan]"
-
-    async def learn_from_turn(user_text: str, reply: str) -> None:
-        """Store whatever durable facts this turn revealed.
-
-        Fire-and-forget: the operator's reply is already on screen by the time
-        this runs, and a failed extraction must not delay or break a turn that
-        otherwise succeeded.
-        """
-        extract = getattr(app.state, "facts", None)
-        if extract is None or not reply.strip():
-            return
-        # Skip the model call on turns that plainly carry nothing durable
-        # (greetings, one-word acks): extraction runs every turn, so this is a
-        # free token/latency saving with no risk of dropping a real fact.
-        if not brain.worth_extracting(user_text):
-            return
-        try:
-            for f in await extract(user_text, reply):
-                store.set_fact(f["key"], f["value"])
-        except Exception as e:
-            safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
-            print(f"Could not learn from turn: {safe}")
-
-    def attach_images_to_task(desc: str, images: list[Path]) -> str:
-        """Copy chat-uploaded images into the task's project dir, and point the
-        description at them.
-
-        Without this, an image is only ever seen once by the chat model's own
-        reply (`uploads.discard` removes it right after) — a code task queued
-        from the same turn reaches an engine with no image on disk and no path
-        in the prompt, so it burns its rounds on nothing to slice/crop/read.
-        Copying happens before the task's step snapshot is taken (start_task
-        is called synchronously below), so these files read as pre-existing,
-        not as the engine's own work.
-        """
-        if not images:
-            return desc
-        name, _ = parse_project_ref(desc)
-        proj = name and config.load_settings().projects.get(name)
-        if not proj or not Path(proj).is_dir():
-            return desc          # no resolvable project — nothing to copy into
-        import shutil
-        dest_dir = Path(proj) / ".hermes-uploads"
-        dest_dir.mkdir(exist_ok=True)
-        saved = []
-        for img in images:
-            dest = dest_dir / img.name
-            try:
-                shutil.copy2(img, dest)
-            except OSError:
-                continue
-            saved.append(f".hermes-uploads/{img.name}")
-        if not saved:
-            return desc
-        return desc + "\n\n[Gambar terlampir di: " + ", ".join(saved) + "]"
-
-    def make_chat_dispatch(session_id: str, images: list[Path] | None = None):
-        # One dispatch per turn, so this holds the turn's start_task outcome. The
-        # auto-route below queues the task before the model speaks; without a
-        # memo the model would obey its instructions, call start_task itself, and
-        # the same work would run twice against the same repository.
-        started: dict = {}
-
-        async def chat_dispatch(name: str, args: dict) -> str:
-            """Execute one chat tool call and return a JSON string for the model.
-
-            Every tool is read-only except start_task, which only queues a task
-            held for the operator's one-tap confirm — the LLM never runs work or
-            mutates a repo directly. Errors are returned as data, never raised, so
-            one bad call cannot abort the whole chat turn.
-            """
-            try:
-                if name == "list_projects":
-                    s = config.load_settings()
-                    return json.dumps(
-                        [{"name": n, "path": p, "exists": Path(p).exists()}
-                         for n, p in s.projects.items()], ensure_ascii=False)
-                if name == "recent_tasks":
-                    limit = int(args.get("limit") or 5)
-                    rows = [t for t in store.list_tasks() if t.get("chat_id", 0) >= 0][:limit]
-                    return json.dumps(
-                        [{"task_id": t["task_id"], "status": t["status"], "text": t["text"]}
-                         for t in rows], ensure_ascii=False)
-                if name == "get_task_detail":
-                    tid = str(args.get("task_id") or "")
-                    t = store.get_task(tid)
-                    if not t:
-                        return json.dumps({"error": "task tidak ditemukan"}, ensure_ascii=False)
-                    return json.dumps(
-                        {"task_id": tid, "status": t["status"], "text": t["text"],
-                         "logs": store.get_logs(tid)[-8:]}, ensure_ascii=False)
-                if name == "failure_report":
-                    limit = int(args.get("limit") or 50)
-                    rows = [t for t in store.list_tasks(limit=limit)
-                            if t.get("chat_id", 0) >= 0]
-                    summary = postmortem.summarize(rows, store.get_logs)
-                    return json.dumps({**summary,
-                                       "report": postmortem.render(summary)},
-                                      ensure_ascii=False)
-                if name == "generate_image":
-                    s = config.load_settings()
-                    if not s.image_model:
-                        return json.dumps({"error": "image model tidak dikonfigurasi"},
-                                          ensure_ascii=False)
-                    prompt = str(args.get("prompt") or "").strip()
-                    if not prompt:
-                        return json.dumps({"error": "prompt kosong"}, ensure_ascii=False)
-                    sec = config.load_secrets()
-                    # Blocking HTTP + file write -> off the event loop.
-                    res = await asyncio.to_thread(
-                        imagegen.generate, prompt,
-                        base_url=s.nvidia_base_url, key=sec.nvidia_api_key,
-                        model=s.image_model,
-                        out_dir=paths.artifacts_dir() / "generated")
-                    if res.get("status") == "generated":
-                        from urllib.parse import quote
-                        url = f"/api/artifacts/view?path={quote(res['path'])}"
-                        return json.dumps(
-                            {"status": "generated", "url": url,
-                             "markdown": f"![gambar]({url})"}, ensure_ascii=False)
-                    return json.dumps(res, ensure_ascii=False)
-                if name == "youtube_clip":
-                    res = await asyncio.to_thread(
-                        ytclip.clip, str(args.get("url") or ""),
-                        start=args.get("start"), end=args.get("end"),
-                        vertical=str(args.get("vertical") or "blur"),
-                        out_dir=paths.artifacts_dir() / "clips")
-                    if res.get("status") == "clipped":
-                        from urllib.parse import quote
-                        url = f"/api/artifacts/view?path={quote(res['path'])}"
-                        return json.dumps(
-                            {"status": "clipped", "url": url, "seconds": res.get("seconds"),
-                             "markdown": f"![clip]({url})"}, ensure_ascii=False)
-                    return json.dumps(res, ensure_ascii=False)
-                if name == "viral_clip":
-                    try:
-                        mx = min(float(args.get("max_seconds") or 60), 60.0)
-                    except (TypeError, ValueError):
-                        mx = 60.0
-                    res = await asyncio.to_thread(
-                        ytclip.viral_clip, str(args.get("url") or ""),
-                        max_seconds=mx, vertical=str(args.get("vertical") or "blur"),
-                        out_dir=paths.artifacts_dir() / "clips")
-                    if res.get("status") == "clipped":
-                        from urllib.parse import quote
-                        url = f"/api/artifacts/view?path={quote(res['path'])}"
-                        return json.dumps(
-                            {"status": "clipped", "url": url,
-                             "start": res.get("start"), "end": res.get("end"),
-                             "reason": res.get("reason"), "title": res.get("title"),
-                             "markdown": f"![clip]({url})"}, ensure_ascii=False)
-                    return json.dumps(res, ensure_ascii=False)
-                if name == "viral_clips":
-                    s = config.load_settings()
-                    sec = config.load_secrets()
-                    try:
-                        mx = min(float(args.get("max_seconds") or 60), 60.0)
-                    except (TypeError, ValueError):
-                        mx = 60.0
-                    try:
-                        n = min(int(args.get("count") or 3), 3)
-                    except (TypeError, ValueError):
-                        n = 3
-                    res = await asyncio.to_thread(
-                        ytclip.viral_candidates, str(args.get("url") or ""),
-                        n=n, max_seconds=mx, out_dir=paths.artifacts_dir() / "clips",
-                        vertical=str(args.get("vertical") or "blur"),
-                        base_url=s.nvidia_base_url, key=sec.nvidia_api_key,
-                        model=(s.chat_model or s.model))
-                    if res.get("status") == "ok":
-                        from urllib.parse import quote
-                        cands = []
-                        for c in res["candidates"]:
-                            u = f"/api/artifacts/view?path={quote(c['path'])}"
-                            cands.append({"title": c["title"], "start": c["start"],
-                                          "end": c["end"],
-                                          "markdown": f"### {c['title']}\n![clip]({u})"})
-                        return json.dumps({"status": "ok",
-                                           "video_title": res["video_title"],
-                                           "candidates": cands}, ensure_ascii=False)
-                    return json.dumps(res, ensure_ascii=False)
-                if name == "start_task":
-                    if started:
-                        return json.dumps(
-                            {**started,
-                             "note": ("task untuk giliran ini sudah diantre — "
-                                      "ini hasil yang sama, bukan task baru")},
-                            ensure_ascii=False)
-                    bridge = getattr(app.state, "bridge", None)
-                    if not bridge:
-                        return json.dumps({"error": "bridge tidak tersedia — tidak bisa antre task"},
-                                          ensure_ascii=False)
-                    desc = str(args.get("description") or "").strip()
-                    if not desc:
-                        return json.dumps({"error": "deskripsi task kosong"}, ensure_ascii=False)
-                    desc = attach_images_to_task(desc, images or [])
-                    new_id = new_task_id()
-                    import inspect
-                    sig = inspect.signature(bridge.handle_task)
-                    def accepts(param: str) -> bool:
-                        return param in sig.parameters or any(
-                            p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
-                    # The gate settles long before the task does, but handle_task
-                    # only returns when the whole task is over. A future filled by
-                    # its callback is the only way to answer the model with what
-                    # actually happened instead of a guess.
-                    settled = asyncio.get_running_loop().create_future()
-                    def on_decision(status: str, reasons: list):
-                        if not settled.done():
-                            settled.set_result({"status": status, "reasons": reasons})
-                    kwargs = {}
-                    if accepts("session_id"):
-                        kwargs["session_id"] = session_id
-                    if accepts("on_decision"):
-                        kwargs["on_decision"] = on_decision
-                    t = asyncio.create_task(bridge.handle_task(
-                        user_id=0, chat_id=0, text=desc, task_id=new_id,
-                        trusted=True, force_confirm=True, **kwargs))
-                    t.add_done_callback(_bg_crash_cb(store, new_id))
-                    try:
-                        outcome = await asyncio.wait_for(
-                            settled, START_TASK_DECISION_TIMEOUT_S)
-                    except asyncio.TimeoutError:
-                        outcome = {"status": "queued", "reasons": [],
-                                   "note": "gate belum memutuskan; lihat kartu task"}
-                    started.update({"task_id": new_id, **outcome})
-                    return json.dumps({"task_id": new_id, **outcome},
-                                      ensure_ascii=False)
-                if name == "calendar_events":
-                    url = config.load_settings().calendar_ics_url
-                    if not url:
-                        return json.dumps(
-                            {"error": ("alamat iCal kalender belum diisi — set "
-                                       "calendar_ics_url di setelan (Google Calendar "
-                                       "-> Setelan kalender -> Integrasikan kalender "
-                                       "-> Alamat rahasia dalam format iCal)")},
-                            ensure_ascii=False)
-                    # Clamped, not validated: a model that asks for a year of
-                    # events gets a month, rather than an error it must retry.
-                    days = max(1, min(60, int(args.get("days") or 7)))
-                    events = await ics.upcoming(url, days)
-                    return json.dumps({"days": days, "events": events},
-                                      ensure_ascii=False)
-                if name == "open_app":
-                    # Ungated on purpose: a known app / URL the user just asked
-                    # for opens straight away, no operator confirm. Safety is the
-                    # fixed allow-list in launcher.KNOWN_APPS, not this gate.
-                    return json.dumps(launcher.open_app(str(args.get("target") or "")),
-                                      ensure_ascii=False)
-                if name == "integrate_mcp":
-                    link = str(args.get("link") or "").strip()
-                    if not link:
-                        return json.dumps({"error": "link kosong"}, ensure_ascii=False)
-                    run_id = _start_integrate(link)
-                    return json.dumps(
-                        {"run_id": run_id, "state": "running",
-                         "note": ("Integrasi berjalan di latar. Pantau dengan "
-                                  "integrate_status; jangan mengaku sudah selesai "
-                                  "sebelum state-nya 'done'.")},
-                        ensure_ascii=False)
-                if name == "integrate_status":
-                    run = app.state.integrate_runs.get(str(args.get("run_id") or ""))
-                    if run is None:
-                        return json.dumps({"error": "run tidak ditemukan"},
-                                          ensure_ascii=False)
-                    return json.dumps(
-                        {"state": run.state, "pending_secret": run.pending_secret,
-                         "login_url": run.login_url, "server": run.server,
-                         "events": run.events[-12:]}, ensure_ascii=False)
-                if name == "integrate_secret":
-                    run = app.state.integrate_runs.get(str(args.get("run_id") or ""))
-                    if run is None:
-                        return json.dumps({"error": "run tidak ditemukan"},
-                                          ensure_ascii=False)
-                    ok = run.answer_secret(str(args.get("value") or ""))
-                    return json.dumps({"ok": ok}, ensure_ascii=False)
-                # MCP integration tools (file / browser / gmail / calendar). Reads
-                # run straight through; a write/send/delete is gated — returned to
-                # the model as "needs confirmation" and NOT executed, so the chat
-                # agent can never silently mutate data. The operator runs a gated
-                # action deliberately (Telegram /task, or a later confirm card).
-                hub = getattr(app.state, "hub", None)
-                if hub is not None and mcp_risk.is_mcp_name(name):
-                    # confirm_risky=False means the operator waived the gate for
-                    # every surface, chat included — run straight through. When
-                    # True, a write/send/delete is parked for approval.
-                    if config.load_settings().confirm_risky and mcp_risk.is_risky_tool(name):
-                        # Park it for the operator to approve (button or voice),
-                        # do NOT execute here. The model is told it is pending so
-                        # it never claims the action was done.
-                        pa = app.state.pending.add(name, args, session_id)
-                        return json.dumps({
-                            "status": "pending_confirmation",
-                            "pending_id": pa.id,
-                            "tool": name, "args": args,
-                            "note": ("Aksi menulis/mengirim/mengubah data ini TERTAHAN, "
-                                     "menunggu persetujuan operator (tombol atau ucapkan "
-                                     "'konfirmasi' / 'batal'). BELUM dijalankan — jangan "
-                                     "mengaku sudah melakukannya."),
-                        }, ensure_ascii=False)
-                    result = await hub.call(name, args)
-                    return result if isinstance(result, str) \
-                        else json.dumps(result, ensure_ascii=False)
-                return json.dumps({"error": f"tool tak dikenal: {name}"}, ensure_ascii=False)
-            except Exception as e:  # a tool failure is data for the model, not a 500
-                safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
-                return json.dumps({"error": f"tool gagal: {safe}"}, ensure_ascii=False)
-        return chat_dispatch
-
-    from .mcp_hub import to_openai_tools
-
-    async def _chat_tools():
-        """CHAT_TOOLS plus whatever the MCP hub exposes, discovered once and
-        cached. On any discovery failure the chat still works on CHAT_TOOLS.
-
-        Only a NON-EMPTY discovery is cached. A stdio server is a subprocess
-        that has to be spawned (`npx` fetching a package on a cold cache is
-        seconds, sometimes past the timeout), and hub.list_tools swallows the
-        per-server failure and returns []. Caching that made one slow first
-        turn disable every integration for the life of the process — the agent
-        then answers "akses disk tidak ada di sesi ini" forever, with the
-        servers sitting right there in the settings.
-        """
-        base = list(CHAT_TOOLS)
-        # No image model configured -> don't offer a tool that can only fail.
-        if not config.load_settings().image_model:
-            base = [t for t in base if t["function"]["name"] != "generate_image"]
-        # yt-dlp not installed (the optional `media` extra) -> hide the clip tools.
-        import importlib.util
-        if importlib.util.find_spec("yt_dlp") is None:
-            base = [t for t in base
-                    if t["function"]["name"] not in
-                    ("youtube_clip", "viral_clip", "viral_clips")]
-        hub = getattr(app.state, "hub", None)
-        if hub is None:
-            return base
-        cache = app.state._mcp_tools_cache
-        if not cache:
-            try:
-                cache = await hub.list_tools()
-            except Exception as e:
-                safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
-                print(f"MCP tool discovery failed, retrying next turn: {safe}")
-                cache = []
-            if cache:
-                app.state._mcp_tools_cache = cache
-        return base + to_openai_tools(cache)
-
-    async def _resolve_pending(pa, approved: bool) -> dict:
-        """Run or drop one parked write action, and record the outcome in the
-        conversation so the thread (and the next model turn) stays truthful.
-
-        Approving is the middle of a plan, not the end of one: the model's turn
-        ended when the action was parked, so every approved outcome — worked,
-        errored, or came back empty — carries `resume: True` and the caller
-        drives one more model turn. Without that the tool ran, its result sat in
-        the thread as dead text, and the agent simply stopped.
-        """
-        app.state.pending.pop(pa.id)
-        if not approved:
-            store.add_message(pa.conv_id, "assistant",
-                              f"❌ Aksi dibatalkan: {pa.summary()}.")
-            return {"id": pa.id, "approved": False, "tool": pa.tool}
-        hub = getattr(app.state, "hub", None)
-        if hub is None:
-            store.add_message(pa.conv_id, "assistant",
-                              f"⚠️ Tidak bisa menjalankan {pa.summary()}: MCP tidak tersedia.")
-            return {"id": pa.id, "approved": True, "resume": True,
-                    "error": "hub tidak tersedia"}
-        try:
-            result = await hub.call(pa.tool, pa.args)
-        except Exception as e:
-            safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
-            store.add_message(pa.conv_id, "assistant",
-                              f"⚠️ Gagal menjalankan {pa.summary()}: {safe}")
-            return {"id": pa.id, "approved": True, "resume": True, "error": safe}
-        text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
-        # A call that returned without raising still may not have done anything.
-        # Saying "selesai" over an error payload or an empty result is the lie
-        # that made a dead confirm look like a completed one.
-        reason = mcp_hub.failure_reason(text)
-        if reason:
-            store.add_message(pa.conv_id, "assistant",
-                              f"⚠️ {pa.summary()} tidak berhasil: {reason}")
-            return {"id": pa.id, "approved": True, "resume": True, "error": reason}
-        store.add_message(pa.conv_id, "assistant",
-                          f"✅ {pa.summary()} selesai.\n\n{text[:800]}")
-        return {"id": pa.id, "approved": True, "resume": True, "result": text}
+    async def _chat_tools() -> list[dict]:
+        engine = app.state.engine
+        tools = await engine.chat_tools()
+        idx = next((i for i, t in enumerate(tools) if t["function"]["name"] == "open_app"), -1)
+        if idx != -1:
+            return tools[:idx + 1] + INTEGRATE_TOOLS + tools[idx + 1:]
+        return tools + INTEGRATE_TOOLS
 
     @app.get("/api/chat/pending")
     def get_chat_pending(session_id: str | None = None):
@@ -927,7 +323,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             pa = None
         if pa is None:
             return {"ok": False, "error": "tidak ada aksi tertunda"}
-        out = await _resolve_pending(pa, body.approved)
+        out = await app.state.engine.resolve_pending(pa, body.approved)
         return {"ok": True, **out}
 
     @app.get("/", response_class=HTMLResponse)
@@ -1115,7 +511,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             # Record the user's turn first, so the history handed to the model
             # includes the message it is replying to. The marker is what later
             # turns will see in place of the picture.
-            images = take_images(sid, body.images)
+            engine = app.state.engine
+            images = engine.take_images(sid, body.images)
             store.add_message(sid, "user", text + (IMAGE_MARKER if images else ""))
             chat = getattr(app.state, "chat", None)
             auto_id = None
@@ -1130,8 +527,9 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                 )
             else:
                 try:
-                    dispatch = make_chat_dispatch(sid, images)
-                    turn, auto_id = await history_for_turn(sid, text, images, dispatch)
+                    dispatch = engine.wrap_dispatch(engine.make_dispatch(sid, images),
+                                                    await _integrate_extra())
+                    turn, auto_id = await engine.history_for_turn(sid, text, images, dispatch)
                     reply = await chat(turn, tools=await _chat_tools(),
                                        dispatch=dispatch)
                 except Exception as e:
@@ -1143,12 +541,12 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             # The tag is a transport detail between the model and the speech
             # path. Storing it would feed it back as context next turn.
             clean, _ = voice.strip_voice_tag(reply)
-            clean += task_card_suffix(clean, auto_id)
+            clean += engine.task_card_suffix(clean, auto_id)
             store.add_message(sid, "assistant", clean)
             store.set_task_status(task_id, "done")
             store.append_log(task_id, f"answer: {clean}")
             uploads.discard(images)      # looked at, answered, gone
-            await learn_from_turn(text, clean)
+            await engine.learn_from_turn(text, clean)
             return {"task_id": task_id, "status": "done"}
 
     @app.post("/api/tasks/{task_id}/confirm")
@@ -1244,7 +642,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
         # a coherent thread on the next load.
         text = body.text.strip()
         sid = body.session_id or CONV_WEB
-        images = take_images(sid, body.images)
+        engine = app.state.engine
+        images = engine.take_images(sid, body.images)
         # A resume turn has no operator message behind it — the trigger was the
         # confirm button — so nothing is recorded as a user turn and the thread
         # shows only the outcome plus the agent picking the work back up.
@@ -1274,8 +673,9 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                        "`/help` untuk bantuan.")
                 yield sse({"delta": acc})
             else:
-                dispatch = make_chat_dispatch(sid, images)
-                history, auto_id = await history_for_turn(sid, text, images, dispatch)
+                dispatch = engine.wrap_dispatch(engine.make_dispatch(sid, images),
+                                                await _integrate_extra())
+                history, auto_id = await engine.history_for_turn(sid, text, images, dispatch)
                 if body.resume:
                     # Ephemeral, not stored: it steers this one turn and would be
                     # noise in the thread. Also guarantees the prompt ends on a
@@ -1304,7 +704,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             # The id has to reach the live stream too, not just the stored
             # message: the pane renders the card off the streaming text and only
             # re-reads the thread on the next load.
-            suffix = task_card_suffix(clean, auto_id)
+            suffix = engine.task_card_suffix(clean, auto_id)
             if suffix:
                 yield sse({"delta": suffix})
                 clean += suffix
@@ -1316,7 +716,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             # as a pause with the reply already fully written. A resume turn has
             # no operator utterance to learn from, so it is skipped.
             if not body.resume:
-                await learn_from_turn(text, clean)
+                await engine.learn_from_turn(text, clean)
 
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache",
