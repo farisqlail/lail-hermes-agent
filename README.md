@@ -3,8 +3,10 @@
 A Windows-local, **Telegram-driven** orchestrator. Send a task in Telegram — Hermes plans it with
 an LLM, hands the coding to your CLI agents (**Claude Code** / **Antigravity**), builds Android
 APKs, tests in a browser or Android emulator, and reports back. Everything is configured from a
-local web UI, and you can also **talk to it**: voice in via local Whisper (STT), voice out via
-edge-tts.
+local web UI, and you can also **talk to it** (voice in via local Whisper STT, voice out via
+edge-tts) and **show it things** — a live webcam view with GPU object detection that will
+explain whatever you hold up when you speak. It can also act **on its own**: an optional
+proactive loop pushes a daily brief, watches a folder, and retries transient failures.
 
 **Orchestrator, not a coder.** Hermes plans and drives; `claude -p` and `agy -p` write the code.
 
@@ -41,13 +43,14 @@ edge-tts.
 
 ```mermaid
 flowchart TD
-    TG(["📱 Telegram<br/><sub>/task ...</sub>"])
-    OP(["👤 Operator<br/><sub>web UI · voice</sub>"])
+    TG(["📱 Telegram<br/><sub>/task · chat · voice · images</sub>"])
+    OP(["👤 Operator<br/><sub>web UI · voice · camera</sub>"])
     GW["🌐 LLM endpoint<br/><sub>NVIDIA NIM · or local 9router :20128</sub>"]
 
     subgraph HERMES["🏛️ LAIL HERMES"]
         direction TB
         OR["🧠 orchestrator<br/><sub>plan · drive · classify failures</sub>"]
+        PRO["🔄 proactive loop<br/><sub>daily brief · folder watcher · auto-retry</sub>"]
         HUB["🔌 mcp_hub<br/><sub>MCP tools · stdio / SSE</sub>"]
 
         subgraph EXEC["execution"]
@@ -67,16 +70,21 @@ flowchart TD
         OR --> EXEC
         OR <-.->|"tool calls"| HUB
         OR --> DB
+        PRO -->|"queue task (via Bridge gate)"| OR
         UI --- DB
         UI --- VOICE
     end
 
     TRAY["🛰️ tray helper<br/><sub>wake word (openWakeWord) · always-on mic</sub>"]
+    CAM["📷 camera vision<br/><sub>coco-ssd on GPU · WebGPU/WebGL<br/>live boxes · auto-explain what you hold</sub>"]
 
-    TG -->|"/task · whitelist · confirm gate"| OR
-    OR -.->|"status · APK · screenshots"| TG
+    TG -->|"/task · chat · whitelist · confirm gate"| OR
+    OR -.->|"status · APK · screenshots · images"| TG
+    PRO -.->|"daily brief · alerts"| TG
     OR <-.->|"OpenAI API · base_url"| GW
-    OP <-->|"chat · voice"| UI
+    OP <-->|"chat · voice · camera"| UI
+    OP --- CAM
+    CAM -.->|"frame + detected labels"| UI
     TRAY <-.->|"wake event · state poll"| UI
 
     classDef ext fill:#229ED9,stroke:#1a7fb0,color:#fff
@@ -85,12 +93,16 @@ flowchart TD
     classDef op fill:#e06666,stroke:#a61c1c,color:#fff
     classDef gw fill:#8a63d2,stroke:#5f3dc4,color:#fff
     classDef tray fill:#2f2f3a,stroke:#12b5cb,color:#fff
+    classDef proc fill:#e8a33d,stroke:#b5791f,color:#fff
+    classDef cam fill:#3d9970,stroke:#2a6b4f,color:#fff
     class TG ext
     class OR brain
     class DB store
     class OP op
     class GW gw
     class TRAY tray
+    class PRO proc
+    class CAM cam
 ```
 
 ## Features
@@ -152,9 +164,9 @@ flowchart TD
   Projects Registry panel (add/edit/delete with an OK/Missing badge per path), and a live task
   dashboard.
 - **Voice input & conversation (VAD + STT + TTS)** — Speak naturally with the assistant using a local Voice Activity Detection (VAD) loop and edge-tts feedback:
-  - **Siklus Suara (VAD)**: RMS-based VAD detects speech-start and speech-end locally, dynamically adapting to the room's noise floor. Ducking raises the threshold when the assistant is speaking to prevent self-interruption.
+  - **Siklus Suara (VAD)**: RMS-based VAD detects speech-start and speech-end locally, dynamically adapting to the room's noise floor. Ducking raises the threshold when the assistant is speaking to prevent self-interruption. The RMS sampler runs inside an **AudioWorklet** on the real-time audio thread, so hands-free keeps listening even when the dashboard tab is in the *background* — a plain `setInterval` is throttled to ~1 Hz once a tab is hidden, which used to make the mic go deaf the moment you switched tabs.
   - **Auto-send everywhere**: A finished transcript submits itself in every mode — push-to-talk and hands-free alike; if a reply is still streaming, the text is parked in the input rather than dropped. Hold `Ctrl+Space` for push-to-talk, or toggle hands-free to submit on silence.
-  - **Configurable STT model (latency vs accuracy)**: the Whisper model size is a setting (`tiny`/`base`/`small`/`medium`) — `base` by default, the biggest lever on how long after you stop talking the assistant can start replying. A `hotwords` bias keeps proper nouns like "Jarvis" accurate even at `base`.
+  - **Configurable STT model (latency vs accuracy)**: the Whisper model size is a setting (`tiny`/`base`/`small`/`medium`) — `base` by default, the biggest lever on how long after you stop talking the assistant can start replying; bump it to `small`/`medium` for a large accuracy gain on non-English audio. A `hotwords` bias built from the **agent name plus every registered project** keeps proper nouns (`Jarvis`, `Sayur`, `sayurPos`) from decoding phonetically, and `condition_on_previous_text` is off so a mis-decode early in a clip cannot drag the rest into whisper's short-audio repetition loop.
   - **Multilingual TTS**: `*MultilingualNeural` edge-tts voices (Andrew/Ava/Brian/Emma, the default) pronounce mixed Bahasa + English natively per phrase; single-locale `id-ID` voices remain for pure-Bahasa output.
   - **Low Latency Smart path**: When Smart TTS mode is on, the model opens its stream with `<voice>One spoken sentence</voice>`. The client extracts this tag mid-stream and synthesises it immediately while the rest of the reply continues streaming.
   - **Per-sentence Verbatim path**: Streams verbatim sentence-by-sentence as the text arrives, utilizing a local sentence splitter.
@@ -163,7 +175,7 @@ flowchart TD
   - **Voice-state indicator**: a header pill shows the assistant's state at a glance — idle / listen / think / speak — mirrored by the tray icon's colour.
   - **Direct AEC Check**: Warns the operator if the browser's echo cancellation is missing so they can use a headset to prevent self-interruption.
   - **Prerequisites**: `pip install -e .[voice]`. Audio transcription runs locally via faster-whisper (int8, CPU).
-- **Wake word & Windows tray (`python -m hermes.tray`)** — an optional native helper keeps the microphone alive with the browser closed. It runs a local wake word via openWakeWord and shows a system-tray icon whose colour tracks the voice state. The spoken phrase follows the agent's name: `"auto"` turns **Jarvis** into the bundled `hey_jarvis`; any other name (e.g. **Ev**) needs a trained `hey_<name>.onnx` in `%HERMES_HOME%\wakewords`. On wake it starts a hands-free capture, opening the dashboard first if no tab is open. `pip install -e .[desktop]` (openwakeword, sounddevice, pystray, Pillow); launch alongside Hermes via `deploy\tray.bat`.
+- **Wake word & Windows tray (`python -m hermes.tray`)** — an optional native helper keeps the microphone alive with the browser closed. It runs a local wake word via openWakeWord and shows a system-tray icon whose colour tracks the voice state. The spoken phrase follows the agent's name: `"auto"` turns **Jarvis** into the bundled `hey_jarvis`; any other name (e.g. **Ev**) needs a trained `hey_<name>.onnx` in `%HERMES_HOME%\wakewords`. On wake it starts a hands-free capture, opening the dashboard first if no tab is open. `pip install -e .[desktop]` (openwakeword, sounddevice, pystray, Pillow). `start.bat` launches it automatically once — before the restart loop, so a crash-restart never spawns a second tray — but only when the mic is meant to stay live with the browser closed (`voice_handsfree` or `wakeword_enabled`); otherwise no tray.
 - **Pluggable LLM endpoint** — the planner/chat/voice-summary calls go to any OpenAI-compatible `base_url`. Point it at a local **9Router** gateway (`http://127.0.0.1:20128/v1`, launched from `start.bat`) to route through its token and 100+ models, or at NVIDIA NIM / DeepSeek directly. The coding engines (`claude`/`agy` CLIs) are separate and unaffected.
 - **MCP bridge** exposing MCP tools to both the planner and the web-chat/voice agent as OpenAI
   function calls (stdio + HTTP/SSE, lazily connected, every remote call time-bounded). Add
@@ -173,6 +185,20 @@ flowchart TD
   connected — configured is not the same as connected, and an agent that quietly lost its tools
   answers "akses disk tidak ada di sesi ini" while the servers sit enabled in the settings. See
   [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
+- **Live camera object detection (GPU)** — open the webcam from the dashboard and a
+  TensorFlow.js **coco-ssd** model (`lite_mobilenet_v2`, ~80 everyday classes) draws labelled
+  boxes over the preview in real time, running on the GPU: **WebGPU** where the browser has it,
+  else **WebGL**. `tf` and the model are dynamically imported the first time the camera opens,
+  so app startup and the first-load bundle pay nothing for it. The box geometry that maps a
+  detection onto the `object-fit: cover` preview is a pure function, unit-tested in
+  `web/src/detect-box.ts`. (The model weights download from Google storage on first open —
+  first use needs a connection; a fully offline install can bundle them locally instead.)
+- **"Auto-jelaskan" — explain what you're holding** — a toggle on the camera overlay. While it
+  is on and the camera is open, every spoken turn snaps the current frame and sends it — with
+  the detected labels as a hint — to the vision agent, so it describes whatever you hold up as
+  you talk. The frame is captured through a ref handle the instant speech ends (a prop callback
+  cannot) and uploaded directly, with no snap-then-send state race. The still frame still goes
+  to the full vision model; the on-device detector is only the live overlay and the hint.
 - **Images in chat** — attach a picture with the clip button, a paste, or a file pick, and the
   agent looks at it and answers. The file rides only the turn it was sent with: it is deleted
   as soon as the reply exists, and later turns see a `[gambar dilampirkan]` marker instead, so
@@ -208,6 +234,16 @@ flowchart TD
 - **Startup recovery** — on start, tasks stranded in `running`/`queued`/`awaiting_confirm` are
   retired to `interrupted` and each affected chat gets one digest telling them what died and
   what to resubmit.
+- **Proactive / self-initiated work (`hermes/proactive.py`)** — the one non-reactive path: a
+  single background loop, started once at boot, that wakes on an interval and decides whether to
+  act on its own. Three jobs, each gated in Settings and **off by default** (an agent that does
+  things unprompted is opt-in): a **daily brief** pushes today's calendar plus the recent
+  failure summary at a set local time; a **folder watcher** queues a task when a new settled
+  file lands in a watched directory; **auto-retry** re-submits a task that failed for a
+  *transient* reason (a busy endpoint an in-task retry could not outlast), once. State persists
+  and is *primed to now* on first run, so a restart never re-fires today's brief, re-scans the
+  backlog, or re-retries an old failure; queued work still goes through the same confirmation
+  gate a human task does.
 - **Self-healing launcher** — `start.bat` auto-restarts Hermes 5s after any crash/exit, and launches the local 9Router gateway (port 20128) once in the background if it is installed.
 
 ## Working on an existing project
@@ -248,7 +284,7 @@ below). Neither has a required location; put them wherever suits the machine.
 
 ```
 %HERMES_HOME%\           # data root — you choose where
-├─ config\               # config.yaml, .env (secrets), mcp.json
+├─ config\               # config.yaml, .env (secrets), mcp.json, proactive_state.json
 ├─ projects\             # per-task workspaces
 ├─ artifacts\            # apk, screenshots, logs (removed with their task)
 ├─ uploads\              # files handed to a conversation (removed with it)
