@@ -1140,13 +1140,53 @@ async def run():
                 t = asyncio.create_task(_run_chat_turn(u, c, text))
                 t.add_done_callback(crash_reporter(c))
 
+            async def on_pending(update: Update, ctx):
+                q = update.callback_query
+                parsed = pending_ui.parse_callback(q.data)
+                if parsed is None:
+                    await q.answer()
+                    return
+                from .telegram_bridge import is_allowed
+                if not is_allowed(q.from_user.id, bridge.get_settings()):
+                    await q.answer()
+                    return
+                pid, approved = parsed
+                pa = engine.pending.get(pid)
+                if pa is None:
+                    await q.answer("Aksi sudah diproses atau kedaluwarsa.")
+                    return
+                await q.answer("Diproses...")
+                try:
+                    await app.bot.edit_message_reply_markup(
+                        chat_id=q.message.chat_id,
+                        message_id=q.message.message_id,
+                        reply_markup=None)
+                except Exception:
+                    pass
+                c = q.message.chat_id
+                u = q.from_user.id
+
+                async def _do_resolve():
+                    out = await engine.resolve_pending(pa, approved)
+                    if not out.get("resume"):
+                        return
+                    res = await engine.run_resume_turn(
+                        pa.conv_id, chat=chat, chat_id=c, user_id=u)
+                    await sender(c, res["reply"])
+                    await _push_pending(c, res["pending"])
+
+                t = asyncio.create_task(_do_resolve())
+                t.add_done_callback(crash_reporter(c))
+
             app.add_handler(CommandHandler("task", on_task))
             app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^confirm:"))
             app.add_handler(CallbackQueryHandler(on_ask, pattern=r"^ask:"))
+            app.add_handler(CallbackQueryHandler(on_pending, pattern=r"^pend:"))
             app.add_handler(CommandHandler("start", on_start))
             app.add_handler(CommandHandler("help", on_help))
             app.add_handler(CommandHandler("projects", on_projects))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_chat))
+
             print("Telegram bot initialized successfully.")
         except Exception as e:
             # _console_safe: a bare {e} could raise UnicodeEncodeError on a
