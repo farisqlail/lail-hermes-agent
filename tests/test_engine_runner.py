@@ -43,6 +43,13 @@ def test_argv_appends_model_and_effort_for_claude():
 def test_argv_empty_tuning_adds_nothing():
     assert engine_runner._argv("claude", "x") == engine_runner.COMMANDS["claude"]("x")
 
+def test_argv_antigravity_skips_permission_prompts():
+    """Headless agy cannot answer a tool permission prompt, so every
+    command-running tool call is auto-denied without this flag — the step
+    then burns all its rounds probing for its own cwd and never touches a
+    file. claude already carries the equivalent flag; agy needs its own."""
+    assert "--dangerously-skip-permissions" in engine_runner.COMMANDS["antigravity"]("x")
+
 def test_argv_antigravity_gets_model_but_never_effort():
     """agy takes --model but has no --effort flag; an unknown flag would
     crash the engine on every step, so effort is dropped for agy. agy model

@@ -1569,6 +1569,45 @@ def test_an_uploaded_image_reaches_the_model_and_is_then_deleted(hermes_home):
     assert "[gambar dilampirkan]" in stored_msgs[0]
 
 
+async def test_image_task_copies_the_picture_into_the_project(hermes_home):
+    """A code task auto-routed from an image-bearing turn must hand the engine
+    a real file, not just prose about a picture that was already deleted
+    (uploads.discard runs right after the chat turn). Reproduces the
+    "slice this image" report: 3 rounds, 0 files changed, because the engine
+    had nothing on disk to work from."""
+    import json as _json
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    proj_dir = hermes_home / "myprofit"; proj_dir.mkdir()
+    config.save_settings(config.Settings(projects={"myprofit": str(proj_dir)}))
+
+    class CapturingBridge:
+        def __init__(self):
+            self.confirm_reasons = {}
+            self.texts = []
+        async def handle_task(self, user_id, chat_id, text, task_id=None,
+                              trusted=False, force_confirm=False, on_decision=None):
+            self.texts.append(text)
+            store.create_task(task_id, chat_id, text)
+            store.set_task_status(task_id, "running")
+            if on_decision:
+                on_decision("running", [])
+    bridge = CapturingBridge()
+
+    async def fake_chat(history, tools=None, dispatch=None):
+        return "ok"
+
+    client = TestClient(create_app(store, bridge=bridge, chat=fake_chat))
+    up = client.post("/api/uploads", content=PNG_BYTES).json()
+    client.post("/api/tasks", json={
+        "text": "@myprofit potong gambar ini jadi 3 bagian", "images": [up["id"]]})
+
+    copied = list((proj_dir / ".hermes-uploads").glob("*.png"))
+    assert len(copied) == 1
+    assert copied[0].read_bytes() == PNG_BYTES
+    assert bridge.texts and ".hermes-uploads/" in bridge.texts[0]
+
+
 def test_a_turn_without_images_is_unchanged(hermes_home):
     """The multimodal shape must not leak into ordinary turns — plenty of
     models accept only a plain string."""

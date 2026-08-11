@@ -6,14 +6,15 @@ from typing import Callable, Literal
 from .engine_result import EngineOutcome, parse_claude_json
 
 # each entry maps a prompt to an argv list; overridable in tests
-# claude runs non-interactively (-p): it cannot prompt for tool permissions, so
-# without --dangerously-skip-permissions every file edit is denied and the model
-# churns until timeout. Safe here: engines run inside an isolated project dir
-# and risky tasks are gated behind Telegram confirmation.
+# Both CLIs run non-interactively (-p): neither can prompt for tool
+# permissions, so without --dangerously-skip-permissions every command/file
+# edit is auto-denied and the model churns until timeout — agy's own stderr
+# names this exact flag as the fix. Safe here: engines run inside an isolated
+# project dir and risky tasks are gated behind Telegram confirmation.
 COMMANDS: dict[str, Callable[[str], list[str]]] = {
     "claude": lambda p: ["claude", "-p", "--dangerously-skip-permissions",
                          "--output-format", "json"],
-    "antigravity": lambda p: ["agy", "-p", p],
+    "antigravity": lambda p: ["agy", "-p", p, "--dangerously-skip-permissions"],
 }
 # engines that read the prompt from stdin instead of argv: sidesteps cmd.exe
 # quoting of newlines/quotes and the 8191-char command-line limit on Windows

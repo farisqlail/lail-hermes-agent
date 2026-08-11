@@ -539,7 +539,40 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
             safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
             print(f"Could not learn from turn: {safe}")
 
-    def make_chat_dispatch(session_id: str):
+    def attach_images_to_task(desc: str, images: list[Path]) -> str:
+        """Copy chat-uploaded images into the task's project dir, and point the
+        description at them.
+
+        Without this, an image is only ever seen once by the chat model's own
+        reply (`uploads.discard` removes it right after) — a code task queued
+        from the same turn reaches an engine with no image on disk and no path
+        in the prompt, so it burns its rounds on nothing to slice/crop/read.
+        Copying happens before the task's step snapshot is taken (start_task
+        is called synchronously below), so these files read as pre-existing,
+        not as the engine's own work.
+        """
+        if not images:
+            return desc
+        name, _ = parse_project_ref(desc)
+        proj = name and config.load_settings().projects.get(name)
+        if not proj or not Path(proj).is_dir():
+            return desc          # no resolvable project — nothing to copy into
+        import shutil
+        dest_dir = Path(proj) / ".hermes-uploads"
+        dest_dir.mkdir(exist_ok=True)
+        saved = []
+        for img in images:
+            dest = dest_dir / img.name
+            try:
+                shutil.copy2(img, dest)
+            except OSError:
+                continue
+            saved.append(f".hermes-uploads/{img.name}")
+        if not saved:
+            return desc
+        return desc + "\n\n[Gambar terlampir di: " + ", ".join(saved) + "]"
+
+    def make_chat_dispatch(session_id: str, images: list[Path] | None = None):
         # One dispatch per turn, so this holds the turn's start_task outcome. The
         # auto-route below queues the task before the model speaks; without a
         # memo the model would obey its instructions, call start_task itself, and
@@ -678,6 +711,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                     desc = str(args.get("description") or "").strip()
                     if not desc:
                         return json.dumps({"error": "deskripsi task kosong"}, ensure_ascii=False)
+                    desc = attach_images_to_task(desc, images or [])
                     new_id = new_task_id()
                     import inspect
                     sig = inspect.signature(bridge.handle_task)
@@ -1096,7 +1130,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                 )
             else:
                 try:
-                    dispatch = make_chat_dispatch(sid)
+                    dispatch = make_chat_dispatch(sid, images)
                     turn, auto_id = await history_for_turn(sid, text, images, dispatch)
                     reply = await chat(turn, tools=await _chat_tools(),
                                        dispatch=dispatch)
@@ -1240,7 +1274,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
                        "`/help` untuk bantuan.")
                 yield sse({"delta": acc})
             else:
-                dispatch = make_chat_dispatch(sid)
+                dispatch = make_chat_dispatch(sid, images)
                 history, auto_id = await history_for_turn(sid, text, images, dispatch)
                 if body.resume:
                     # Ephemeral, not stored: it steers this one turn and would be
