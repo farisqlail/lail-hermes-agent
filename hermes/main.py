@@ -1286,6 +1286,20 @@ async def run():
 
     engine = ChatEngine(store, bridge=bridge, hub=hub, facts=facts)
 
+    # The one self-initiated thread in the process: a daily brief, a folder
+    # watcher, and transient auto-retry, all off unless enabled in Settings. It
+    # pushes through the same Bridge as a human task, so its work still passes
+    # the risk gate. Fire-and-forget with a crash reporter — its own loop
+    # already swallows per-tick errors, so this only catches a fault in the loop
+    # scaffolding itself.
+    from . import ics, proactive
+    proactive_task = asyncio.create_task(
+        proactive.run_loop(store=store, bridge=bridge, ics_upcoming=ics.upcoming))
+    proactive_task.add_done_callback(
+        lambda t: t.exception() and print(
+            f"[proactive] loop exited: {_console_safe(t.exception())}")
+        if not t.cancelled() else None)
+
     # streamable_http_app() creates the session manager; the parent lifespan
     # runs it, because Starlette ignores a mounted sub-app's own lifespan.
     ask_asgi = ask_mcp.streamable_http_app()

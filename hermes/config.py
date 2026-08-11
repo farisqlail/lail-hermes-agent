@@ -166,6 +166,30 @@ class Settings(BaseModel):
     voice_silence_ms: int = 800
     voice_sensitivity: Literal["low", "medium", "high"] = "medium"
 
+    # Proactive / self-initiated work (hermes/proactive.py). Master switch off
+    # by default: an agent that acts without an incoming message is opt-in. Each
+    # of the three jobs is gated on its own, and all push to `proactive_chat_id`
+    # — the operator's Telegram chat id (same value as their allowed user id for
+    # a private chat). 0 means no chat: queued tasks still run and show in the
+    # web UI, but the daily brief has nowhere to go and is skipped.
+    proactive_enabled: bool = False
+    proactive_chat_id: int = 0
+    # Daily brief: today's calendar (reuses calendar_ics_url) plus the recent
+    # failure summary, pushed once a day at this local HH:MM.
+    proactive_daily_enabled: bool = False
+    proactive_daily_time: str = "08:00"
+    # Watcher: when a new settled file lands in this folder, queue a task about
+    # it. proactive_watch_prompt is the task template ("" uses a default);
+    # the file path is appended to whichever is used.
+    proactive_watch_enabled: bool = False
+    proactive_watch_dir: str = ""
+    proactive_watch_prompt: str = ""
+    # Auto-retry: re-submit a task that failed for a transient reason (busy
+    # endpoint), once per task. proactive_retry_max caps how many fire per tick
+    # so a burst of failures cannot stampede the engine.
+    proactive_retry_enabled: bool = False
+    proactive_retry_max: int = 3
+
     # Wake word, run by the native tray helper so the mic stays live with the
     # browser closed. Off by default: an always-listening microphone is opt-in.
     # "auto" derives the phrase from `agent_name` ("Jarvis" -> "Hey Jarvis",
@@ -263,6 +287,17 @@ class Settings(BaseModel):
         # enough that a second genuine call a couple seconds later still lands.
         if not 0 <= v <= 10000:
             raise ValueError("wake word cooldown must be between 0 and 10000 ms")
+        return v
+
+    @field_validator("proactive_daily_time")
+    @classmethod
+    def _proactive_daily_time_shape(cls, v: str) -> str:
+        # "HH:MM", 24-hour. proactive._parse_hhmm tolerates junk at runtime, but
+        # rejecting it here tells the operator at save time, not at 8am when the
+        # brief silently fires at the fallback hour instead.
+        if v and not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", v):
+            raise ValueError(
+                "proactive daily time must be 24-hour HH:MM, e.g. '08:00'")
         return v
 
     @field_validator("calendar_ics_url")
