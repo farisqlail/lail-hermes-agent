@@ -1,4 +1,3 @@
-import esbuild from 'esbuild';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -6,49 +5,32 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const isWatch = process.argv.includes('--watch');
+function copyDirRecursive(srcDir, destDir) {
+  if (!fs.existsSync(srcDir)) return;
+  fs.mkdirSync(destDir, { recursive: true });
 
-const buildOptions = {
-  entryPoints: [path.join(__dirname, 'src/main.tsx')],
-  bundle: true,
-  minify: !isWatch,
-  sourcemap: true,
-  target: 'es2022',
-  outdir: path.join(__dirname, '../hermes/static'),
-  entryNames: 'app',
-  logLevel: 'info',
-};
+  const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(srcDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
 
-function copyIndexHtml() {
-  const src = path.join(__dirname, 'index.html');
-  const dest = path.join(__dirname, '../hermes/static/index.html');
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.copyFileSync(src, dest);
-  console.log(`[build] Copied index.html to ${dest}`);
+    if (entry.isDirectory()) {
+      copyDirRecursive(srcPath, destPath);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
 }
 
 async function run() {
-  copyIndexHtml();
-  if (isWatch) {
-    console.log('[build] Starting esbuild watch mode...');
-    const ctx = await esbuild.context({
-      ...buildOptions,
-      plugins: [{
-        name: 'on-rebuild',
-        setup(build) {
-          build.onEnd(result => {
-            if (result.errors.length === 0) {
-              copyIndexHtml();
-            }
-          });
-        }
-      }]
-    });
-    await ctx.watch();
+  const outDir = path.join(__dirname, 'out');
+  const hermesStaticDir = path.join(__dirname, '../hermes/static');
+
+  if (fs.existsSync(outDir)) {
+    copyDirRecursive(outDir, hermesStaticDir);
+    console.log(`[build] Successfully synced Next.js export from ${outDir} to ${hermesStaticDir}`);
   } else {
-    await esbuild.build(buildOptions);
-    copyIndexHtml();
-    console.log('[build] Build completed successfully.');
+    console.warn(`[build] Warning: ${outDir} does not exist yet.`);
   }
 }
 

@@ -418,6 +418,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None, lifespan
     app.state.pending = PendingStore()
 
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR), check_dir=False), name="static")
+    app.mount("/_next", StaticFiles(directory=str(STATIC_DIR / "_next"), check_dir=False), name="next_static")
 
     # Voice output has no dependency on store/bridge/ask_registry, so it lives
     # in its own module instead of this factory's closure.

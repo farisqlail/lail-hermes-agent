@@ -7,6 +7,9 @@ export interface RouteState {
 }
 
 export function getHashRoute(): RouteState {
+  if (typeof window === 'undefined') {
+    return { path: '/' };
+  }
   const hash = window.location.hash || '#/';
   
   // Legacy settings redirect

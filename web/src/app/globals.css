@@ -1,0 +1,37 @@
+@import '../styles/tokens.css';
+@import '../styles/base.css';
+@import '../styles/layout.css';
+@import '../components/Button.css';
+@import '../components/CameraCapture.css';
+@import '../components/Field.css';
+@import '../components/Modal.css';
+@import '../components/Toast.css';
+@import '../components/Toggle.css';
+@import '../components/VoiceStateIndicator.css';
+
+/* Additional Next.js App Router Global Adjustments */
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--surface-0);
+  color: var(--text);
+  font-family: var(--font-main);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Glassmorphism scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--surface-0);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--r-sm);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
