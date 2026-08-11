@@ -35,15 +35,19 @@ TOOLS_CACHE_TTL_S = 30
 def to_openai_tools(discovered: list[dict]) -> list[dict]:
     tools = []
     for d in discovered:
+        server = d.get("server")
+        name = f'{server}__{d["name"]}' if server else d["name"]
+        params = d.get("input_schema") or d.get("inputSchema") or {"type": "object", "properties": {}}
         tools.append({
             "type": "function",
             "function": {
-                "name": f'{d["server"]}__{d["name"]}',
+                "name": name,
                 "description": d.get("description", ""),
-                "parameters": d.get("input_schema", {"type": "object", "properties": {}}),
+                "parameters": params,
             },
         })
     return tools
+
 
 class McpHub:
     def __init__(self, servers: list[McpServer],
