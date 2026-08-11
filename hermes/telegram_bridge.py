@@ -16,36 +16,26 @@ def help_text() -> str:
     # Plain text on purpose: sender() sends without parse_mode, so Markdown
     # markers would render literally.
     return (
-        "🤖 Lail Hermes — panduan perintah\n"
+        "🤖 Lail Hermes — panduan perintah & chat\n"
         "\n"
-        "Perintah:\n"
+        "Perintah & Chat:\n"
+        "Pesan teks bebas (tanpa /) akan dijawab oleh Asisten AI. Kamu bisa bertanya status task, riwayat kegagalan, membuat klip, atau mengirim gambar & pesan suara.\n"
         "/task <deskripsi> — buat tugas baru di workspace baru\n"
         "/task @nama <deskripsi> — jalankan tugas di project terdaftar\n"
         "/projects — daftar project yang terdaftar (untuk @nama)\n"
         "/help — tampilkan panduan ini\n"
         "\n"
         "Contoh:\n"
+        "apa saja task yang gagal belakangan ini?\n"
+        "@sayur perbaiki bug login di halaman kasir\n"
         "/task buat app counter Flutter, build APK, test di emulator\n"
-        "/task @sayur perbaiki bug login di halaman kasir\n"
         "\n"
-        "Cara kerja @nama:\n"
-        "Hanya @nama pertama yang dianggap project; harus terdaftar di "
-        "Projects Registry (web UI). @nama yang tidak terdaftar ditolak "
-        "sebelum tugas berjalan.\n"
+        "Aksi Berisiko & MCP:\n"
+        "Aksi MCP menulis/mengirim data (seperti email atau edit berkas) dan task berisiko akan memunculkan tombol konfirmasi langsung di chat Telegram ini.\n"
         "\n"
-        "Konfirmasi tugas berisiko:\n"
-        "Tugas yang push/hapus file/menyentuh path luar, atau menarget "
-        "project dengan perubahan uncommitted, menunggu tombol konfirmasi "
-        "dulu. Tombol lama mati setelah Lail Hermes restart — kirim ulang "
-        "tugasnya.\n"
-        "\n"
-        "Hasil:\n"
-        "Progres tiap langkah dikirim ke chat ini; APK dan screenshot "
-        "dikirim langsung sebagai file.\n"
-        "\n"
-        "Pengaturan (model, engine, project, timeout): web UI di "
-        "http://127.0.0.1:8799 (hanya dari PC yang menjalankan Lail Hermes)."
+        "Pengaturan: web UI di http://127.0.0.1:8799."
     )
+
 
 def projects_overview(settings: Settings) -> str:
     """What /projects answers: the registered names, flagged when the folder

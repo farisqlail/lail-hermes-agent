@@ -7,15 +7,9 @@ the agent as function calls. Add servers in the **MCP panel** at
 
 ## Two surfaces, one gate
 
-- **Telegram planner** (`/task ...`) — already calls MCP tools inside an engine
-  run. Adding a server is enough.
-- **Web chat / voice** — the conversational agent gets the same tools. **Reads
-  run immediately; writes/sends/deletes are gated**: the agent proposes the
-  action and reports it is waiting for confirmation, but does **not** execute it.
-  Run a gated (write) action deliberately via Telegram `/task`, or approve it
-  through the confirm flow. The read/write split is decided in
-  `hermes/mcp_risk.py` from the tool name (a verb heuristic; unknown verbs are
-  gated, never run).
+- **Telegram planner** (`/task ...`) — calls MCP tools inside an engine run.
+- **Telegram free-text chat & Web chat** — the conversational agent gets the same tools on both surfaces. **Reads run immediately; writes/sends/deletes are gated**: the agent proposes the action and parks it for confirmation, sending an inline approve/decline card to Telegram or drawing a card in the Web UI. Approving executes the action and resumes the agent's turn. The read/write split is decided in `hermes/mcp_risk.py` from the tool name (a verb heuristic; unknown verbs are gated, never run).
+
 
 Destructive-by-nature tools (send email, delete file, submit a form) are risky by
 this rule. Reads (list, search, read, screenshot) are not.
