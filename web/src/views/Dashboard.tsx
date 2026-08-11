@@ -6,7 +6,7 @@ import { errorMessage, api } from '../api/client';
 import { Markdown } from '../components/Markdown';
 import { Button } from '../components/Button';
 import { Modal } from '../components/Modal';
-import { CameraCapture } from '../components/CameraCapture';
+import { CameraCapture, CameraHandle } from '../components/CameraCapture';
 import { useToast } from '../components/Toast';
 import { useTasksContext } from '../api/events';
 import {
@@ -341,6 +341,16 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   // their mind.
   const [attached, setAttached] = useState<{ file: File; url: string }[]>([]);
   const [cameraOpen, setCameraOpen] = useState(false);
+  // "Auto-jelaskan": while on and the camera is open, every spoken turn grabs
+  // the current frame and asks the agent what is in view. Held in a ref too, so
+  // the voice-loop transcript handler reads the live value without being
+  // rebuilt (which would tear down the mic) on every toggle.
+  const [narrate, setNarrate] = useState(false);
+  const narrateRef = useRef(false);
+  narrateRef.current = narrate;
+  const cameraRef = useRef<CameraHandle>(null);
+  const cameraOpenRef = useRef(false);
+  cameraOpenRef.current = cameraOpen;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const holdingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -370,6 +380,13 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
       void resolvePending(undefined, cmd === 'confirm');
     },
     onTranscript: (text) => {
+      // Auto-jelaskan: the operator is holding something up and talking about
+      // it. Snap the frame and let the vision model answer over the picture,
+      // instead of sending the words alone.
+      if (narrateRef.current && cameraOpenRef.current) {
+        void narrateTurn(text);
+        return;
+      }
       if (streaming) {
         setInputText((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
         inputRef.current?.focus();
@@ -546,39 +563,69 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     });
   };
 
-  /** Upload the staged files, returning the names the server gave them.
+  /** Upload a list of image files, returning the names the server gave them.
    *  A file the server rejects is reported and skipped — the rest of the turn
    *  still goes, rather than failing on one bad picture. */
-  const uploadAttached = async (): Promise<string[]> => {
+  const uploadFiles = async (files: File[]): Promise<string[]> => {
     const ids: string[] = [];
-    for (const a of attached) {
+    for (const file of files) {
       try {
         const url = sessionId ? `/api/uploads?session_id=${sessionId}` : '/api/uploads';
-        const res = await fetch(url, { method: 'POST', body: a.file });
+        const res = await fetch(url, { method: 'POST', body: file });
         if (!res.ok) {
           const detail = await res.json().catch(() => ({}));
-          toast(detail.detail || `Gagal mengunggah ${a.file.name}`, 'err');
+          toast(detail.detail || `Gagal mengunggah ${file.name}`, 'err');
           continue;
         }
         ids.push((await res.json()).id);
       } catch {
-        toast(`Gagal mengunggah ${a.file.name}`, 'err');
+        toast(`Gagal mengunggah ${file.name}`, 'err');
       }
     }
     return ids;
   };
 
+  const uploadAttached = (): Promise<string[]> =>
+    uploadFiles(attached.map((a) => a.file));
+
+  /** The "explain what I'm holding" turn: grab the current camera frame plus the
+   *  detector's labels and send them with the operator's words, so the vision
+   *  model answers over the picture rather than the words alone. Sends the frame
+   *  directly (submitText's `images`) instead of staging it, so there is no
+   *  setState race between snapping and sending. */
+  const narrateTurn = async (spoken: string) => {
+    const cam = cameraRef.current;
+    const file = cam ? await cam.captureFrame() : null;
+    if (!file) {
+      void submitText(spoken);   // no frame yet — the words still deserve a turn
+      return;
+    }
+    const seen = cam!.detections().map((d) => d.class);
+    const uniq = [...new Set(seen)].slice(0, 6);
+    const base = spoken.trim() || 'Jelaskan objek yang saya pegang di kamera.';
+    const hint = uniq.length ? `\n\n(Objek terdeteksi kamera: ${uniq.join(', ')})` : '';
+    await submitText(base + hint, { images: [file] });
+  };
+
   /** `resume` is the continuation turn fired after an approved action ran: no
    *  operator typed it, so it carries no text and shows no user bubble — the
    *  agent simply picks the work back up where the confirmation interrupted it. */
-  const submitText = async (text: string, opts?: { resume?: boolean }) => {
+  const submitText = async (
+    text: string,
+    opts?: { resume?: boolean; images?: File[] },
+  ) => {
     const resume = opts?.resume === true;
-    if ((!text && attached.length === 0 && !resume) || streaming) return;
+    // Files passed for THIS turn (the auto-jelaskan frame), uploaded directly
+    // rather than through the `attached` state — no snap→send setState race.
+    const direct = opts?.images ?? [];
+    const hasImages = attached.length > 0 || direct.length > 0;
+    if ((!text && !hasImages && !resume) || streaming) return;
     // "buka kamera" typed (or auto-sent from a voice transcript) opens the
     // webcam locally instead of going to the chat model — the same whole-
     // utterance match the voice loop uses, so the two paths behave alike.
-    // Skipped when a picture is already staged: then the words are its caption.
-    if (attached.length === 0 && !resume && matchLocalCommand(text) === 'camera') {
+    // Skipped when a picture is already staged or sent: then the words are its
+    // caption.
+    if (!hasImages && !resume && matchLocalCommand(text) === 'camera') {
       setCameraOpen(true);
       toast(CAMERA_ACK, 'ok');
       setInputText('');
@@ -589,7 +636,8 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     // was asked on their behalf.
     if (!text && !resume) text = 'Tolong analisa gambar ini.';
     const staged = attached;
-    const imageIds = await uploadAttached();
+    const directUrls = direct.map((f) => URL.createObjectURL(f));
+    const imageIds = [...(await uploadAttached()), ...(await uploadFiles(direct))];
     setAttached([]);
 
     // Captured once: every later update belongs to THIS conversation, whatever
@@ -611,7 +659,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     if (!resume) {
       const userMsg: Message = {
         role: 'user', content: text,
-        images: staged.map((a) => a.url),
+        images: [...staged.map((a) => a.url), ...directUrls],
       };
       setMessages((prev) => [...prev, userMsg]);
     }
@@ -1103,9 +1151,20 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
 
         {/* Camera fills this HUD section while open, covering the graph */}
         <CameraCapture
+          ref={cameraRef}
           isOpen={cameraOpen}
           onClose={() => setCameraOpen(false)}
           onCapture={(file) => addFiles([file])}
+          narrate={narrate}
+          onToggleNarrate={(next) => {
+            setNarrate(next);
+            toast(
+              next
+                ? 'Auto-jelaskan aktif — bicara sambil menghadapkan objek ke kamera.'
+                : 'Auto-jelaskan nonaktif.',
+              'ok',
+            );
+          }}
         />
 
 
