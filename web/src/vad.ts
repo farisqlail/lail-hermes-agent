@@ -127,11 +127,50 @@ export class VadStateMachine {
   }
 }
 
+/** The RMS sampler, run inside an AudioWorklet. This is the whole reason
+ *  hands-free keeps working while the dashboard tab is in the background: a
+ *  `setInterval` is clamped to ~1 Hz (and far worse after a few minutes) once a
+ *  tab is hidden, so the old analyser-poll loop simply stopped sampling and the
+ *  mic went deaf. An AudioWorklet runs on the audio rendering thread, which is
+ *  real-time and unthrottled by tab visibility, so `process()` keeps firing at
+ *  full rate whatever tab has focus. It only computes RMS and posts it — every
+ *  decision still runs in VadStateMachine on the main thread, so the tested
+ *  logic is untouched. Kept as a source string and loaded from a Blob URL so no
+ *  bundler/asset-pipeline config is needed to ship a second entrypoint. */
+const VAD_WORKLET_SRC = `
+class VadRmsProcessor extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    this._frameSamples = options.processorOptions.frameSamples;
+    this._sumSq = 0;
+    this._count = 0;
+  }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) {
+      for (let i = 0; i < ch.length; i++) this._sumSq += ch[i] * ch[i];
+      this._count += ch.length;
+      if (this._count >= this._frameSamples) {
+        this.port.postMessage(Math.sqrt(this._sumSq / this._count));
+        this._sumSq = 0;
+        this._count = 0;
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('vad-rms', VadRmsProcessor);
+`;
+
 /** Drives a VadStateMachine from a live MediaStream. Not covered by the node
- *  tests — it is WebAudio plumbing with no decisions in it. */
+ *  tests — it is WebAudio plumbing with no decisions in it. Uses an AudioWorklet
+ *  so it keeps sampling in a backgrounded tab; falls back to a `setInterval`
+ *  analyser poll only when the worklet API is unavailable (which then behaves
+ *  exactly as before — fine while the tab is focused). */
 export class MicVad {
   private ctx: AudioContext | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
+  private node: AudioWorkletNode | null = null;
   private analyser: AnalyserNode | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private machine: VadStateMachine;
@@ -149,6 +188,13 @@ export class MicVad {
     this.machine = new VadStateMachine(cfg);
   }
 
+  /** Feed one RMS frame through the state machine and dispatch any event. */
+  private feed(rms: number): void {
+    const event = this.machine.push(rms, this.handlers.isDucked?.() ?? false);
+    if (event === 'speech-start') this.handlers.onSpeechStart();
+    if (event === 'speech-end') this.handlers.onSpeechEnd();
+  }
+
   async start(stream: MediaStream): Promise<void> {
     if (this.ctx) return;
     const Ctor = window.AudioContext
@@ -158,27 +204,57 @@ export class MicVad {
     // reads as silence and hands-free stops responding.
     if (this.ctx.state === 'suspended') await this.ctx.resume();
     this.source = this.ctx.createMediaStreamSource(stream);
+    this.machine.reset();
+
+    // frameMs of audio at this context's real sample rate, so the worklet posts
+    // at the same cadence the state machine's silence/start counters assume.
+    const frameSamples = Math.max(
+      1, Math.round((this.cfg.frameMs / 1000) * this.ctx.sampleRate));
+
+    if (this.ctx.audioWorklet) {
+      const url = URL.createObjectURL(
+        new Blob([VAD_WORKLET_SRC], { type: 'application/javascript' }));
+      try {
+        await this.ctx.audioWorklet.addModule(url);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      // start() may have been cancelled (tab navigated away) while addModule
+      // was in flight; stop() nulls ctx, so bail rather than resurrect it.
+      if (!this.ctx || !this.source) return;
+      this.node = new AudioWorkletNode(this.ctx, 'vad-rms', {
+        processorOptions: { frameSamples },
+      });
+      this.node.port.onmessage = (e) => this.feed(e.data as number);
+      this.source.connect(this.node);
+      // The worklet writes no output, so connecting it to the destination pulls
+      // the graph (guaranteeing process() runs) while emitting pure silence —
+      // no feedback from the microphone.
+      this.node.connect(this.ctx.destination);
+      return;
+    }
+
+    // Fallback: the old analyser poll. Throttled in a hidden tab, but correct
+    // while focused — only reached on a browser without AudioWorklet.
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 512;
     this.analyser.smoothingTimeConstant = 0;
     this.source.connect(this.analyser);
     this.buf = new Float32Array(this.analyser.fftSize);
-    this.machine.reset();
-
     this.timer = setInterval(() => {
       if (!this.analyser) return;
       this.analyser.getFloatTimeDomainData(this.buf as any);
-      const event = this.machine.push(rmsOf(this.buf), this.handlers.isDucked?.() ?? false);
-      if (event === 'speech-start') this.handlers.onSpeechStart();
-      if (event === 'speech-end') this.handlers.onSpeechEnd();
+      this.feed(rmsOf(this.buf));
     }, this.cfg.frameMs);
   }
 
   stop(): void {
     if (this.timer !== null) { clearInterval(this.timer); this.timer = null; }
+    if (this.node) { this.node.port.onmessage = null; this.node.disconnect(); }
     this.source?.disconnect();
     this.analyser?.disconnect();
     void this.ctx?.close().catch(() => {});
+    this.node = null;
     this.source = null;
     this.analyser = null;
     this.ctx = null;
