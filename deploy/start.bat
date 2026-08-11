@@ -15,6 +15,13 @@ REM restart loop, so a Hermes crash-restart never spawns a second gateway; it
 REM no-ops when a gateway is already listening on the port.
 where 9router >nul 2>nul && start "9Router" /min 9router -t -n --skip-update
 
+REM Native tray helper (voice state icon + always-on wake word), started once
+REM before the restart loop so a Hermes crash-restart never spawns a second
+REM tray. Gated on the voice settings: it only makes sense when the mic stays
+REM live with the browser closed -- hands-free or wake word. The python check
+REM exits 0 (launch) or 1 (skip); pythonw keeps the tray process windowless.
+.venv\Scripts\python.exe -c "from hermes import config; s=config.load_settings(); raise SystemExit(0 if (s.voice_handsfree or s.wakeword_enabled) else 1)" && start "Hermes Tray" /min .venv\Scripts\pythonw.exe -m hermes.tray
+
 :loop
 cls
 color 0B
