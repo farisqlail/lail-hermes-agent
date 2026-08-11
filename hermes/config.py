@@ -77,6 +77,9 @@ def _default_mcp_servers() -> list[McpServer]:
         McpServer(name="spotify", type="stdio", command="npx",
                   args=["-y", "spotify-mcp@latest"], enabled=False,
                   env={"SPOTIFY_CLIENT_ID": ""}),
+        McpServer(name="figma", type="stdio", command="npx",
+                  args=["-y", "figma-developer-mcp", "--stdio"], enabled=False,
+                  env={"FIGMA_API_KEY": ""}),
     ]
 
 class Settings(BaseModel):

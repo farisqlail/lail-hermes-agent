@@ -22,7 +22,7 @@ this rule. Reads (list, search, read, screenshot) are not.
 
 ## What ships by default
 
-A fresh install (no `config.yaml` yet) starts with seven servers, defined in
+A fresh install (no `config.yaml` yet) starts with eight servers, defined in
 `_default_mcp_servers` in `hermes/config.py`:
 
 | server | on | needs |
@@ -34,8 +34,9 @@ A fresh install (no `config.yaml` yet) starts with seven servers, defined in
 | `mail` | ⛔ | Gmail address + app password |
 | `web` | ⛔ | Tavily API key — usually unnecessary, see [Web search](#web-search) |
 | `spotify` | ⛔ | Spotify Client ID + a one-time `auth` run |
+| `figma` | ⛔ | Figma personal access token, see [Figma](#figma) |
 
-The three disabled ones are templates with empty credential slots, so a first
+The four disabled ones are templates with empty credential slots, so a first
 boot never fails on a missing key: fill them in the MCP panel and toggle them on.
 
 **Defaults only apply to a fresh install.** `load_settings` falls back to them
@@ -272,6 +273,23 @@ add `http://127.0.0.1:8888/callback` as a redirect URI **exactly**, then authori
 once — `$env:SPOTIFY_CLIENT_ID="..."; npx spotify-mcp@latest auth`. Tokens cache in
 `%USERPROFILE%\.spotify-mcp\tokens.json` and refresh themselves. No client secret:
 it uses PKCE.
+
+## Figma
+
+Read Figma files — nodes, styles, layout, images — through the community
+[Framelink](https://github.com/GLips/Figma-Context-MCP) server:
+
+```
+name:    figma
+type:    stdio
+command: npx
+args:    ["-y", "figma-developer-mcp", "--stdio"]
+env:     { "FIGMA_API_KEY": "figd_..." }
+```
+
+Token: Figma → avatar → **Settings → Security → Personal access tokens →
+Generate new token**, `File content: Read-only` scope is enough. Copy it once —
+it does not show again. All of its tools are reads, so they run ungated.
 
 ## Gmail (Legacy)
 
