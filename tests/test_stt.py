@@ -17,9 +17,10 @@ class FakeModel:
         self.calls = []
 
     def transcribe(self, audio, language=None, vad_filter=False,
-                   hotwords=None):
+                   hotwords=None, condition_on_previous_text=True):
         self.calls.append({"audio": audio, "language": language,
-                           "vad_filter": vad_filter, "hotwords": hotwords})
+                           "vad_filter": vad_filter, "hotwords": hotwords,
+                           "condition_on_previous_text": condition_on_previous_text})
         return (s for s in [FakeSegment(" Halo"), FakeSegment(" dunia.")]), None
 
 
@@ -63,6 +64,32 @@ def test_transcribe_biases_toward_hotwords(fake_model):
     # hotwords must reach the decoder or the bias does nothing.
     stt.transcribe(b"fake-webm-bytes")
     assert fake_model.calls[0]["hotwords"] == stt.HOTWORDS
+
+
+def test_transcribe_accepts_a_custom_hotwords_string(fake_model):
+    # The caller passes the agent name + project names; that must override the
+    # built-in default, not be appended to it silently.
+    stt.transcribe(b"fake-webm-bytes", hotwords="Jarvis sayur sayurPos")
+    assert fake_model.calls[0]["hotwords"] == "Jarvis sayur sayurPos"
+
+
+def test_transcribe_disables_cross_segment_conditioning(fake_model):
+    # Each recording is one isolated utterance; conditioning on previous text is
+    # what feeds whisper's short-audio repetition loop.
+    stt.transcribe(b"fake-webm-bytes")
+    assert fake_model.calls[0]["condition_on_previous_text"] is False
+
+
+def test_build_hotwords_dedups_and_drops_empties():
+    out = stt.build_hotwords(["Jarvis", "sayur", "", "sayur", "sayurPos"])
+    words = out.split()
+    assert words[0] == "Jarvis"                 # built-in leads
+    assert words.count("sayur") == 1            # deduped
+    assert "sayurPos" in words
+    assert "" not in words
+    # None / no extras still yields at least the built-in bias.
+    assert stt.build_hotwords() == stt.HOTWORDS
+    assert stt.build_hotwords([]) == stt.HOTWORDS
 
 
 def test_transcribe_empty_language_means_autodetect(fake_model):

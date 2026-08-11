@@ -1124,9 +1124,16 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         # Transcription is seconds of synchronous CPU work. Run straight from
         # this coroutine it would freeze the whole event loop -- including the
         # SSE feed the dashboard lives on and any chat stream in flight.
+        # Bias the decoder toward the names it will actually hear here: the
+        # agent's own name and every registered project. Without this "Sayur"
+        # and the like decode phonetically ("sa yur", "sahur") on the base/small
+        # model, which no amount of language setting fixes.
+        hotwords = stt.build_hotwords(
+            [settings.agent_name, *settings.projects.keys()])
         try:
             text = await asyncio.to_thread(
-                stt.transcribe, audio, settings.stt_language, settings.stt_model)
+                stt.transcribe, audio, settings.stt_language, settings.stt_model,
+                hotwords)
         except stt.SttUnavailable as e:
             raise HTTPException(status_code=503, detail=str(e))
         except ValueError as e:

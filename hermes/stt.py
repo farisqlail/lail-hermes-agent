@@ -86,13 +86,28 @@ def _reset_model_for_tests() -> None:
         _models.clear()
 
 
+def build_hotwords(extra: "list[str] | None" = None) -> str:
+    """The decoder bias string: the built-in HOTWORDS plus any caller-supplied
+    proper nouns (agent name, project names). Deduplicated, order preserved, so
+    the same name given twice does not dilute the bias. Empty terms are dropped —
+    an empty hotword biases nothing and only lengthens the string."""
+    seen: dict[str, None] = {}
+    for term in [HOTWORDS, *(extra or [])]:
+        for word in (term or "").split():
+            if word and word not in seen:
+                seen[word] = None
+    return " ".join(seen)
+
+
 def transcribe(audio: bytes, language: str = "id",
-               model_size: str | None = None) -> str:
+               model_size: str | None = None,
+               hotwords: str | None = None) -> str:
     """Blocking. Call it from a worker thread, never straight from an async
     endpoint. `audio` is whatever the browser's MediaRecorder produced —
     faster-whisper decodes it through av, so webm/opus needs no conversion
     and no ffmpeg binary. `model_size` picks the accuracy/latency trade; None
-    uses DEFAULT_MODEL_SIZE."""
+    uses DEFAULT_MODEL_SIZE. `hotwords` biases the decoder toward proper nouns;
+    None uses the built-in HOTWORDS."""
     if not audio:
         return ""
     if len(audio) > MAX_AUDIO_BYTES:
@@ -103,11 +118,16 @@ def transcribe(audio: bytes, language: str = "id",
     model = _load_model(model_size)
     # vad_filter drops silence before it reaches the model: shorter audio,
     # faster transcription, and no phantom words invented out of room tone.
+    # condition_on_previous_text=False: each recording is one isolated utterance,
+    # not a continuation, so carrying decoded text across segments only lets a
+    # mis-decode early in a clip drag the rest off — the classic whisper
+    # repetition/hallucination loop on short audio.
     segments, _info = model.transcribe(
         io.BytesIO(audio),
         language=language or None,
         vad_filter=True,
-        hotwords=HOTWORDS,
+        hotwords=hotwords if hotwords is not None else HOTWORDS,
+        condition_on_previous_text=False,
     )
     # transcribe() returns a generator — nothing runs until it is consumed.
     return "".join(segment.text for segment in segments).strip()

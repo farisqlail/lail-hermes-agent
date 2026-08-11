@@ -1234,7 +1234,10 @@ async def run():
                     text = await asyncio.to_thread(
                         stt.transcribe, bytes(data),
                         language=current_settings.stt_language,
-                        model_size=current_settings.stt_model_size)
+                        model_size=current_settings.stt_model,
+                        hotwords=stt.build_hotwords(
+                            [current_settings.agent_name,
+                             *current_settings.projects.keys()]))
                 except Exception as e:
                     await sender(c, f"Gagal mentranskripsi suara: {_console_safe(e)}")
                     return
