@@ -1178,6 +1178,34 @@ async def run():
                 t = asyncio.create_task(_do_resolve())
                 t.add_done_callback(crash_reporter(c))
 
+            async def on_photo(update: Update, ctx):
+                if not await check_auth_and_respond(update):
+                    return
+                c = update.effective_chat.id
+                u = update.effective_user.id
+                msg = update.message
+                if not msg:
+                    return
+                tg_file = None
+                if msg.photo:
+                    tg_file = await msg.photo[-1].get_file()
+                elif msg.document:
+                    tg_file = await msg.document.get_file()
+                if not tg_file:
+                    return
+                data = await tg_file.download_as_bytearray()
+                session_id = f"tg-{c}"
+                try:
+                    name, _ = uploads.save(paths.uploads_dir(), session_id, bytes(data))
+                except Exception as e:
+                    await sender(c, f"Gagal menyimpan gambar: {_console_safe(e)}")
+                    return
+                img_path = uploads.resolve(paths.uploads_dir(), session_id, name)
+                images = [img_path] if img_path else []
+                text = msg.caption or ""
+                t = asyncio.create_task(_run_chat_turn(u, c, text, images=images))
+                t.add_done_callback(crash_reporter(c))
+
             app.add_handler(CommandHandler("task", on_task))
             app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^confirm:"))
             app.add_handler(CallbackQueryHandler(on_ask, pattern=r"^ask:"))
@@ -1185,7 +1213,9 @@ async def run():
             app.add_handler(CommandHandler("start", on_start))
             app.add_handler(CommandHandler("help", on_help))
             app.add_handler(CommandHandler("projects", on_projects))
+            app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, on_photo))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_chat))
+
 
             print("Telegram bot initialized successfully.")
         except Exception as e:
