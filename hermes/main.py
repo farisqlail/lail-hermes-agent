@@ -11,6 +11,8 @@ from .mcp_hub import McpHub, RealMcpSession, to_openai_tools
 from .orchestrator import Orchestrator
 from .telegram_bridge import Bridge
 from .web_ui import create_app
+from .chat_engine import ChatEngine
+
 from . import build_runner, engine_runner, test_runner, project_detect
 from . import ask_server, ask_ui, tg_format
 from .ask import AskRegistry
@@ -1130,10 +1132,13 @@ async def run():
         ask_registry.on_ask = dummy_on_ask
         ask_registry.on_close = dummy_on_close
 
+    engine = ChatEngine(store, bridge=bridge, hub=hub, facts=facts)
+
     # streamable_http_app() creates the session manager; the parent lifespan
     # runs it, because Starlette ignores a mounted sub-app's own lifespan.
     ask_asgi = ask_mcp.streamable_http_app()
-    web = create_app(store, bridge=bridge, ask_registry=ask_registry, chat=chat, hub=hub, facts=facts, lifespan=lambda _app: ask_mcp.session_manager.run())
+    web = create_app(store, bridge=bridge, ask_registry=ask_registry, chat=chat, hub=hub, facts=facts, engine=engine, lifespan=lambda _app: ask_mcp.session_manager.run())
+
     web.mount(ask_server.MOUNT_PREFIX, ask_asgi)
     web.state.mcp_factory = real_mcp_session_factory
     web.state.propose_mcp_config = build_propose_mcp_config()
