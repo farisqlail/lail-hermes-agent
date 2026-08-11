@@ -1206,6 +1206,48 @@ async def run():
                 t = asyncio.create_task(_run_chat_turn(u, c, text, images=images))
                 t.add_done_callback(crash_reporter(c))
 
+            async def on_voice(update: Update, ctx):
+                if not await check_auth_and_respond(update):
+                    return
+                c = update.effective_chat.id
+                u = update.effective_user.id
+                msg = update.message
+                if not msg:
+                    return
+                current_settings = bridge.get_settings()
+                if not current_settings.stt_enabled:
+                    await sender(c, "Fitur suara (STT) tidak diaktifkan dalam setelan.")
+                    return
+                from . import stt
+                if not stt.available():
+                    await sender(c, "STT tidak tersedia: library `faster-whisper` belum terpasang.")
+                    return
+                tg_file = None
+                if msg.voice:
+                    tg_file = await msg.voice.get_file()
+                elif msg.audio:
+                    tg_file = await msg.audio.get_file()
+                if not tg_file:
+                    return
+                data = await tg_file.download_as_bytearray()
+                try:
+                    text = await asyncio.to_thread(
+                        stt.transcribe, bytes(data),
+                        language=current_settings.stt_language,
+                        model_size=current_settings.stt_model_size)
+                except Exception as e:
+                    await sender(c, f"Gagal mentranskripsi suara: {_console_safe(e)}")
+                    return
+                text = text.strip()
+                if not text:
+                    await sender(c, "(tidak ada ucapan yang terdeteksi)")
+                    return
+                if await on_ask_text(c, text):
+                    return
+                await sender(c, f"\U0001f399\ufe0f \"{text}\"")
+                t = asyncio.create_task(_run_chat_turn(u, c, text))
+                t.add_done_callback(crash_reporter(c))
+
             app.add_handler(CommandHandler("task", on_task))
             app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^confirm:"))
             app.add_handler(CallbackQueryHandler(on_ask, pattern=r"^ask:"))
@@ -1214,7 +1256,9 @@ async def run():
             app.add_handler(CommandHandler("help", on_help))
             app.add_handler(CommandHandler("projects", on_projects))
             app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, on_photo))
+            app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_chat))
+
 
 
             print("Telegram bot initialized successfully.")
