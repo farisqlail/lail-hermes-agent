@@ -45,3 +45,16 @@ def test_ids_are_unique():
     st = PendingStore()
     ids = {st.add("s__t", {}, "web").id for _ in range(5)}
     assert len(ids) == 5
+
+
+def test_add_carries_an_optional_chat_id():
+    st = PendingStore()
+    pa = st.add("gmail__send_email", {}, "tg-555", chat_id=555)
+    assert pa.chat_id == 555
+
+
+def test_chat_id_defaults_to_none():
+    st = PendingStore()
+    pa = st.add("gmail__send_email", {}, "web")
+    assert pa.chat_id is None
+

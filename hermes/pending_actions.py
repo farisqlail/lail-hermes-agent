@@ -23,6 +23,9 @@ class PendingAction:
     tool: str                       # full "server__tool" name for hub.call
     args: dict
     conv_id: str                    # where to report the outcome back
+    # The Telegram chat to push the approve/decline outcome to. None for the
+    # web UI, which has no push channel and polls /api/chat/pending instead.
+    chat_id: int | None = None
     created: float = field(default_factory=time.time)
 
     def summary(self) -> str:
@@ -38,11 +41,14 @@ class PendingStore:
         self._items: dict[str, PendingAction] = {}
         self._counter = itertools.count(1)
 
-    def add(self, tool: str, args: dict, conv_id: str) -> PendingAction:
+    def add(self, tool: str, args: dict, conv_id: str,
+            chat_id: int | None = None) -> PendingAction:
         pid = f"p{next(self._counter)}"
-        pa = PendingAction(id=pid, tool=tool, args=dict(args or {}), conv_id=conv_id)
+        pa = PendingAction(id=pid, tool=tool, args=dict(args or {}),
+                           conv_id=conv_id, chat_id=chat_id)
         self._items[pid] = pa
         return pa
+
 
     def list(self, conv_id: str | None = None) -> list[PendingAction]:
         """Oldest first, so voice resolution ('konfirmasi' with no id) acts on the
