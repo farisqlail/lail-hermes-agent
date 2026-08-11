@@ -306,6 +306,39 @@ async def test_existing_project_left_unchanged_still_succeeds(hermes_home):
     assert store.get_task("t1")["status"] == "done"
 
 
+async def test_existing_project_unconfirmed_and_untouched_fails_the_step(hermes_home):
+    """The unconfirmed-but-worked path (test_rounds_exhausted_without_sentinel_
+    still_succeeds_with_a_note) must not cover an engine that neither confirmed
+    completion nor changed anything in a real project — the exact shape of the
+    report is `coded (..., 0 file(s) changed, completion not confirmed)`,
+    which reads as success while nothing happened."""
+    import subprocess
+    from hermes.orchestrator import MAX_ENGINE_ROUNDS
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    existing = hermes_home / "myprofit"; existing.mkdir()
+    (existing / "marker.txt").write_text("pre-existing work")
+    subprocess.run(["git", "init", "-q"], cwd=existing, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t.com", "-c", "user.name=t",
+                    "commit", "--allow-empty", "-q", "-m", "init"],
+                   cwd=existing, check=True)
+    calls = []
+
+    async def engine(engine_name, prompt, cwd, timeout_s, **kw):
+        calls.append(1)
+        return RunResult(True, "did things, never said the magic word", "",
+                         False, 0)
+
+    orch = _orch(hermes_home, store, engine)
+    reports = []
+    async def report(tid, msg, html=False): reports.append(msg)
+    store.create_task("t1", 5, "x")
+    await orch.run_task("t1", 5, "x", report, proj=existing)
+
+    assert len(calls) == MAX_ENGINE_ROUNDS
+    assert store.get_task("t1")["status"] == "failed"
+    assert any("did not confirm completion" in m for m in reports)
+
+
 async def test_engine_that_empties_a_real_project_fails_the_step(hermes_home):
     """Found by mutation testing: an earlier version scoped the check to
     workspaces that started empty, which let an engine that deleted every file

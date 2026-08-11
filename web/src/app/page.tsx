@@ -2,13 +2,13 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useRoute } from '../router';
-import { ConfigGeneral } from '../pages/ConfigGeneral';
-import { ConfigSecrets } from '../pages/ConfigSecrets';
-import { ConfigMcp } from '../pages/ConfigMcp';
-import { ConfigProjects } from '../pages/ConfigProjects';
-import { ConfigVoice } from '../pages/ConfigVoice';
-import { Dashboard } from '../pages/Dashboard';
-import { TaskDetail } from '../pages/TaskDetail';
+import { ConfigGeneral } from '../views/ConfigGeneral';
+import { ConfigSecrets } from '../views/ConfigSecrets';
+import { ConfigMcp } from '../views/ConfigMcp';
+import { ConfigProjects } from '../views/ConfigProjects';
+import { ConfigVoice } from '../views/ConfigVoice';
+import { Dashboard } from '../views/Dashboard';
+import { TaskDetail } from '../views/TaskDetail';
 import { ToastProvider } from '../components/Toast';
 import { TasksProvider } from '../api/events';
 import { useSecrets } from '../hooks/useSecrets';

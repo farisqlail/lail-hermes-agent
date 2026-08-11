@@ -914,6 +914,10 @@ class Orchestrator:
             files = "" if touched is None else f", {touched} file(s) changed"
             if _confirmed_done(res.final_text):
                 return (True, f"coded (confirmed done, {rounds} round(s){files})")
+            if touched == 0:
+                return (False,
+                        f"engine did not confirm completion and changed no "
+                        f"files ({rounds} round(s)) — check the step transcript")
             return (True, f"coded ({rounds} round(s){files}, completion not "
                           f"confirmed — check the step transcript)")
         if t == "build":

@@ -5,10 +5,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "next build && node build.mjs --copy-out",
-    "dev": "next dev",
-    "next:build": "next build",
-    "typecheck": "tsc --noEmit",
+    "build": "node node_modules/next/dist/bin/next build && node build.mjs --copy-out",
+    "dev": "node node_modules/next/dist/bin/next dev",
+    "next:build": "node node_modules/next/dist/bin/next build",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
     "test": "npm run typecheck && node test.mjs"
   },
   "dependencies": {
