@@ -103,3 +103,22 @@ dashboard — that is the bug the move fixed.
 ## Results
 
 _(fill after the manual run)_
+
+## Telegram conversational parity (manual, needs a live bot token)
+
+1. Send a plain message with no `/` prefix and no registered project, e.g.
+   *"task apa saja yang baru selesai?"*. The bot must answer from
+   `recent_tasks`/`failure_report` — the same tools the web chat pane uses —
+   not the old static greeting.
+2. Send *"apa yang lagi jalan?"* while a task is running from the dashboard.
+   The answer must name the real task, proving `brain.context_block` reached
+   the Telegram turn.
+3. `/start` still answers with the fixed greeting + command list, not a model
+   call — confirms `/start` did not regress to the conversational path.
+4. Say something durable ("aku biasanya deploy hari Jumat") in Telegram, then
+   check `GET /api/facts` from the web UI — the fact must be there, proving
+   fact learning runs on the Telegram path too, into the same store the web
+   UI reads.
+5. Send *"@registered-project perbaiki bug login"* for a project registered
+   in the Projects Registry. A task must be queued (visible on the dashboard)
+   without an explicit `/task` — the same auto-routing the web chat pane has.

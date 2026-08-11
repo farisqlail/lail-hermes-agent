@@ -1088,24 +1088,62 @@ async def run():
                 await sender(update.effective_chat.id,
                              projects_overview(bridge.get_settings()))
 
-            async def on_chat(update: Update, ctx):
-                if not await check_auth_and_respond(update):
+            from . import pending_ui
+
+            async def _push_pending(chat_id: int, pending: list[dict]):
+                """Send an approve/decline card for each write action this
+                turn just parked. `pending` items come straight off
+                ChatEngine.run_turn's return value."""
+                for item in pending:
+                    pa = engine.pending.get(item["id"])
+                    if pa is None:      # resolved by the time we get here
+                        continue
+                    await _telegram_send_with_retry(lambda pa=pa: app.bot.send_message(
+                        chat_id=chat_id,
+                        text=_clip_for_telegram(pending_ui.pending_text(pa)),
+                        reply_markup=pending_ui.keyboard(pa)))
+
+            async def _run_chat_turn(user_id: int, chat_id: int, text: str,
+                                     images=None):
+                session_id = f"tg-{chat_id}"
+                store.ensure_session(session_id, f"Telegram {chat_id}")
+                try:
+                    out = await engine.run_turn(
+                        session_id, text, images=images, chat=chat,
+                        chat_id=chat_id, user_id=user_id)
+                except Exception as e:
+                    await sender(chat_id, f"(Maaf, chat gagal: {_console_safe(e)})")
                     return
-                c = update.effective_chat.id
-                # A free-text reply to an open question is the answer, not chat:
-                # consume it before falling through to the greeting.
-                if await on_ask_text(c, update.message.text or ""):
+                await sender(chat_id, out["reply"])
+                await _push_pending(chat_id, out["pending"])
+
+            async def on_start(update: Update, ctx):
+                if not await check_auth_and_respond(update):
                     return
                 from .telegram_bridge import help_text
                 current_settings = bridge.get_settings()
                 agent_name = current_settings.agent_name or "Lail Agent"
-                await sender(c, f"Halo! Saya {agent_name}, asisten orkestrasi Anda.\n\n"
-                                + help_text())
+                await sender(update.effective_chat.id,
+                             f"Halo! Saya {agent_name}, asisten orkestrasi Anda.\n\n"
+                             + help_text())
+
+            async def on_chat(update: Update, ctx):
+                if not await check_auth_and_respond(update):
+                    return
+                c = update.effective_chat.id
+                u = update.effective_user.id
+                text = update.message.text or ""
+                # A free-text reply to an open question is the answer, not chat:
+                # consume it before falling through to the conversational agent.
+                if await on_ask_text(c, text):
+                    return
+                t = asyncio.create_task(_run_chat_turn(u, c, text))
+                t.add_done_callback(crash_reporter(c))
 
             app.add_handler(CommandHandler("task", on_task))
             app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^confirm:"))
             app.add_handler(CallbackQueryHandler(on_ask, pattern=r"^ask:"))
-            app.add_handler(CommandHandler("start", on_chat))
+            app.add_handler(CommandHandler("start", on_start))
             app.add_handler(CommandHandler("help", on_help))
             app.add_handler(CommandHandler("projects", on_projects))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_chat))
