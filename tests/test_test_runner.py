@@ -102,3 +102,23 @@ async def test_emulator_runs_are_serialized(tmp_path):
 
     assert trace in (["a-enter", "a-leave", "b-enter", "b-leave"],
                      ["b-enter", "b-leave", "a-enter", "a-leave"])
+
+
+async def test_test_unit_ok(tmp_path):
+    async def fake_unit_run(proj, timeout):
+        return test_runner.TestResult(True, None, "PASS test/loyalty.test.js")
+
+    res = await test_runner.test_unit(tmp_path, 30, run=fake_unit_run)
+    assert res.ok
+    assert "PASS" in res.detail
+
+
+async def test_test_unit_timeout(tmp_path):
+    async def hanging_unit_run(proj, timeout):
+        await asyncio.sleep(30)
+        return test_runner.TestResult(True, None, "ok")
+
+    res = await test_runner.test_unit(tmp_path, 0.05, run=hanging_unit_run)
+    assert not res.ok
+    assert "timed out" in res.detail
+

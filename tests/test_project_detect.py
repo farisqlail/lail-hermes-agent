@@ -6,7 +6,9 @@ def test_flutter(tmp_path):
 
 def test_react_native(tmp_path):
     (tmp_path / "package.json").write_text("{}")
-    (tmp_path / "android").mkdir()
+    d = tmp_path / "android"
+    d.mkdir()
+    (d / "gradlew.bat").write_text("@echo off")
     assert detect(tmp_path) == "react_native"
 
 def test_native_android(tmp_path):
@@ -39,3 +41,12 @@ def test_app_id_manifest_fallback(tmp_path):
 
 def test_app_id_missing(tmp_path):
     assert detect_app_id(tmp_path) is None
+
+def test_expo_project(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "app.json").write_text('{"expo": {"android": {"package": "com.example.expo"}}}')
+    # Managed Expo project without android/gradlew wrapper is not an APK build target
+    assert detect(tmp_path) == "unknown"
+    assert detect_app_id(tmp_path) == "com.example.expo"
+
+

@@ -79,3 +79,47 @@ async def _playwright_capture(url: str, dest: str):
         await page.screenshot(path=dest)
         await b.close()
     return (True, "")
+
+
+async def test_unit(project_dir: Path, timeout_s: int, run=None) -> TestResult:
+    """Run unit/integration test suite (Jest / npm test / pytest) for a project."""
+    try:
+        if run is None:
+            run = _default_unit_run
+        return await asyncio.wait_for(run(project_dir, timeout_s), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        return TestResult(False, None, f"unit test timed out after {timeout_s}s")
+    except Exception as e:
+        return TestResult(False, None, f"unit test failed: {e}")
+
+
+async def _default_unit_run(project_dir: Path, timeout_s: int) -> TestResult:
+    import sys
+    is_win = sys.platform == "win32"
+    if (project_dir / "package.json").exists():
+        npm_cmd = "npm.cmd" if is_win else "npm"
+        argv = [npm_cmd, "test", "--", "--ci"]
+    elif (project_dir / "pyproject.toml").exists() or (project_dir / "pytest.ini").exists():
+        pytest_cmd = "pytest.exe" if is_win else "pytest"
+        argv = [pytest_cmd]
+    elif (project_dir / "pubspec.yaml").exists():
+        flutter_cmd = "flutter.bat" if is_win else "flutter"
+        argv = [flutter_cmd, "test"]
+    else:
+        return TestResult(False, None, "no recognized unit test configuration found")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv, cwd=str(project_dir),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        stdout_str = out.decode(errors="replace")
+        stderr_str = err.decode(errors="replace")
+        if proc.returncode == 0:
+            return TestResult(True, None, stdout_str[:1000] or "unit tests passed")
+        else:
+            detail = stderr_str[:500] or stdout_str[:500] or "unit tests failed"
+            return TestResult(False, None, detail)
+    except FileNotFoundError:
+        return TestResult(False, None, f"[WinError 2] The system cannot find the file specified: '{argv[0]}'")
+

@@ -33,7 +33,11 @@ class Adb:
 
     async def is_running(self):
         ok, out = await self._run([self.adb, "devices"])
-        return ok and "emulator-" in out
+        if not ok:
+            return False
+        lines = [l for l in out.splitlines() if l.strip() and not l.startswith("List of")]
+        return any(l.endswith("device") or "emulator-" in l for l in lines)
+
 
     async def start(self, avd):
         subprocess.Popen([self.emulator, "-avd", avd])
@@ -916,6 +920,7 @@ async def run():
         build_apk=build_runner.build_apk,
         detect=project_detect.detect,
         detect_app_id=project_detect.detect_app_id,
+        test_unit=lambda proj: test_runner.test_unit(proj, settings.timeout_test_s),
         test_emulator=lambda apk, out, pkg: test_runner.test_emulator(
             apk, settings.emulator_avd, out, settings.timeout_test_s, adb=adb, pkg=pkg),
         test_browser=lambda url, out: test_runner.test_browser(
@@ -923,6 +928,7 @@ async def run():
         ask_registry=ask_registry,
         ask_url=ask_url,
     )
+
     orch = Orchestrator(settings, store, planner, deps)
 
     bot_token = secrets.telegram_bot_token

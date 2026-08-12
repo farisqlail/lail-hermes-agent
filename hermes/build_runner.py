@@ -19,12 +19,24 @@ _SPECS = {
                 "app/build/outputs/apk/release/app-release.apk"),
 }
 
+# argv[0] values that are project-local wrapper scripts rather than tools
+# installed on PATH. Windows CreateProcess never searches the child's cwd for
+# the executable — only the parent process's own cwd and PATH — so a bare
+# "gradlew.bat" fails with [WinError 2] even though the file sits right there
+# in the build cwd. Resolving it to an absolute path sidesteps that search
+# entirely. "flutter" is a real PATH tool and is left alone.
+_LOCAL_WRAPPERS = {"gradlew.bat", "gradlew"}
+
 async def _default_run(argv, cwd, timeout):
-    proc = await asyncio.create_subprocess_exec(
-        *argv, cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    return (proc.returncode, out.decode(errors="replace"), err.decode(errors="replace"))
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv, cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return (proc.returncode, out.decode(errors="replace"), err.decode(errors="replace"))
+    except FileNotFoundError:
+        return (1, "", f"[WinError 2] The system cannot find the file specified: '{argv[0]}'")
+
 
 async def build_apk(project_dir: Path, ptype: str, timeout_s: int,
                     run=_default_run) -> BuildResult:
@@ -32,6 +44,13 @@ async def build_apk(project_dir: Path, ptype: str, timeout_s: int,
         return BuildResult(False, None, "", f"unsupported project type: {ptype}")
     argv, subdir, apk_rel = _SPECS[ptype]
     cwd = project_dir / subdir
+    if argv[0] in _LOCAL_WRAPPERS:
+        wrapper = cwd / argv[0]
+        if not wrapper.exists():
+            return BuildResult(False, None, "",
+                f"{argv[0]} not found in {cwd} — this project has no Gradle "
+                "wrapper checked in")
+        argv = [str(wrapper), *argv[1:]]
     rc, out, err = await run(argv, cwd, timeout_s)
     if rc != 0:
         return BuildResult(False, None, out, err)

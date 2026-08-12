@@ -937,7 +937,9 @@ class Orchestrator:
         if t == "test":
             mode = step.get("mode", self.settings.default_test_mode)
             out = Path(str(proj)) / "test-out"
-            if mode == "emulator" and self.deps.get("test_emulator"):
+            if mode in ("unit", "jest") and self.deps.get("test_unit"):
+                res = await self.deps["test_unit"](proj)
+            elif mode == "emulator" and self.deps.get("test_emulator"):
                 apks = [a["path"] for a in self.store.get_artifacts(task_id) if a["kind"] == "apk"]
                 if not apks:
                     return (False, "no apk artifact to test\n"
@@ -951,6 +953,7 @@ class Orchestrator:
                 res = await self.deps["test_browser"](step.get("url", "http://localhost:3000"), out)
             else:
                 return (True, "no test mode")
+
             if getattr(res, "screenshot_path", None):
                 self.store.add_artifact(task_id, "screenshot", res.screenshot_path)
                 await self._send_artifact(task_id, send_file, "screenshot",
