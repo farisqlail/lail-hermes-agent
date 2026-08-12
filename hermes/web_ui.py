@@ -356,7 +356,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             raise HTTPException(status_code=403, detail="Access denied")
         media_type = {
             ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-            ".gif": "image/gif", ".webp": "image/webp",
+            ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
             ".mp4": "video/mp4", ".webm": "video/webm",
         }.get(resolved.suffix.lower(), "application/octet-stream")
         return FileResponse(str(resolved), media_type=media_type)
