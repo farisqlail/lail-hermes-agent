@@ -41,7 +41,7 @@ _DISCUSSION = re.compile(
     r"explain|describe|summar\w*|compare|analyz\w*|analys\w*|show me)\b", re.I)
 
 
-def wants_code_task(text: str, settings) -> bool:
+def wants_code_task(text: str, settings, session_project: str | None = None) -> bool:
     """True when this chat turn is code work on a registered project.
 
     Unregistered names are left alone on purpose: start_task would only reject
@@ -49,6 +49,8 @@ def wants_code_task(text: str, settings) -> bool:
     more useful reply.
     """
     name, rest = parse_project_ref(text)
+    if name is None and session_project:
+        name = session_project
     if name is None or name not in settings.projects:
         return False
     if not rest.strip():
@@ -242,7 +244,9 @@ class ChatEngine:
     async def history_for_turn(self, sid: str, text: str, images: list[Path] | None,
                                dispatch) -> tuple[list[dict], str | None]:
         history = self.history_with_context(sid, images)
-        if not (text and wants_code_task(text, config.load_settings())):
+        sess = self.store.get_session(sid)
+        sproj = sess.get("project") if sess else None
+        if not (text and wants_code_task(text, config.load_settings(), session_project=sproj)):
             return history, None
         result = await dispatch("start_task", {"description": text})
         try:

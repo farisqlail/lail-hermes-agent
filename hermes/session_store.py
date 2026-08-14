@@ -150,30 +150,63 @@ class Store:
                 c.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
             except sqlite3.OperationalError:
                 pass
+            try:
+                c.execute("ALTER TABLE sessions ADD COLUMN project TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                c.execute("ALTER TABLE sessions ADD COLUMN engine TEXT")
+            except sqlite3.OperationalError:
+                pass
 
-    def create_session(self, session_id, title):
+    def create_session(self, session_id, title, project=None, engine=None):
         with self._conn() as c:
-            c.execute("INSERT OR REPLACE INTO sessions(session_id, title, created) VALUES(?,?,?)",
-                      (session_id, title, time.time()))
-        self.publish({"type": "session_created", "session_id": session_id, "title": title})
+            c.execute(
+                "INSERT INTO sessions(session_id, title, created, project, engine) "
+                "VALUES(?,?,?,?,?) "
+                "ON CONFLICT(session_id) DO UPDATE SET "
+                "title=excluded.title, project=COALESCE(excluded.project, sessions.project), "
+                "engine=COALESCE(excluded.engine, sessions.engine)",
+                (session_id, title, time.time(), project, engine))
+        self.publish({"type": "session_created", "session_id": session_id, "title": title, "project": project, "engine": engine})
 
-    def ensure_session(self, session_id, title):
+    def ensure_session(self, session_id, title, project=None, engine=None):
         """Create the session only if it does not exist yet, and say whether it
         did. Unlike create_session this never overwrites the title — a caller
         that runs on every message (the Telegram bridge) must not rename a
         conversation the operator has already renamed."""
         with self._conn() as c:
-            cur = c.execute("INSERT OR IGNORE INTO sessions(session_id, title, created) VALUES(?,?,?)",
-                            (session_id, title, time.time()))
+            cur = c.execute(
+                "INSERT OR IGNORE INTO sessions(session_id, title, created, project, engine) VALUES(?,?,?,?,?)",
+                (session_id, title, time.time(), project, engine))
             created = cur.rowcount > 0
         if created:
-            self.publish({"type": "session_created", "session_id": session_id, "title": title})
+            self.publish({"type": "session_created", "session_id": session_id, "title": title, "project": project, "engine": engine})
         return created
 
     def rename_session(self, session_id, title):
         with self._conn() as c:
             c.execute("UPDATE sessions SET title=? WHERE session_id=?", (title, session_id))
         self.publish({"type": "session_renamed", "session_id": session_id, "title": title})
+
+    def update_session_settings(self, session_id, project=None, engine=None, title=None):
+        with self._conn() as c:
+            row = c.execute("SELECT title, project, engine FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+            if not row:
+                return False
+            new_title = title if title is not None else row["title"]
+            new_project = project if project is not None else row["project"]
+            new_engine = engine if engine is not None else row["engine"]
+            c.execute(
+                "UPDATE sessions SET title=?, project=?, engine=? WHERE session_id=?",
+                (new_title, new_project, new_engine, session_id))
+        self.publish({"type": "session_updated", "session_id": session_id, "title": new_title, "project": new_project, "engine": new_engine})
+        return True
+
+    def get_session(self, session_id):
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+            return dict(r) if r else None
 
     def delete_session(self, session_id) -> list[str]:
         """Drop a conversation and everything it owns. Returns its task ids.

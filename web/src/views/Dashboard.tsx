@@ -234,7 +234,53 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   const sinkRef = useRef<HtmlAudioSink | null>(null);
   const queueRef = useRef<SpeechQueue | null>(null);
 
-  const [sessions, setSessions] = useState<{ session_id: string; title: string; created: number }[]>([]);
+  const [sessions, setSessions] = useState<{ session_id: string; title: string; created: number; project?: string; engine?: string }[]>([]);
+  const [projects, setProjects] = useState<string[]>([]);
+  const [plannerModel, setPlannerModel] = useState<string>('Gemini 3.6 Flash High');
+  const [selectedProject, setSelectedProject] = useState<string>('');
+  const [selectedEngine, setSelectedEngine] = useState<string>('auto');
+
+  const currentSession = useMemo(() => sessions.find((s) => s.session_id === sessionId), [sessions, sessionId]);
+
+  useEffect(() => {
+    if (currentSession) {
+      setSelectedProject(currentSession.project || '');
+      setSelectedEngine(currentSession.engine || 'auto');
+    } else {
+      setSelectedProject('');
+      setSelectedEngine('auto');
+    }
+  }, [currentSession]);
+
+  const handleProjectChange = async (proj: string) => {
+    setSelectedProject(proj);
+    const activeSid = sessionId || 'web';
+    try {
+      await fetch(`/api/sessions/${activeSid}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: proj }),
+      });
+      fetchSessions();
+    } catch (e) {
+      console.error('Gagal memperbarui proyek session:', e);
+    }
+  };
+
+  const handleEngineChange = async (eng: string) => {
+    setSelectedEngine(eng);
+    const activeSid = sessionId || 'web';
+    try {
+      await fetch(`/api/sessions/${activeSid}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ engine: eng }),
+      });
+      fetchSessions();
+    } catch (e) {
+      console.error('Gagal memperbarui engine session:', e);
+    }
+  };
 
   // ── Retrieve active sessions ──
   const fetchSessions = useCallback(async () => {
@@ -303,6 +349,12 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
         setAgentName(s.agent_name);
       }
       setSttEnabled(s.stt_enabled ?? false);
+      if (s.projects) {
+        setProjects(Object.keys(s.projects).sort());
+      }
+      if (s.model) {
+        setPlannerModel(s.model);
+      }
     }).catch(() => {});
 
     loadTtsSettings().then(s => {
@@ -684,7 +736,14 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, session_id: turnSession, images: imageIds, resume }),
+        body: JSON.stringify({
+          text,
+          session_id: turnSession,
+          images: imageIds,
+          resume,
+          project: selectedProject || undefined,
+          engine: selectedEngine !== 'auto' ? selectedEngine : undefined,
+        }),
         signal: controller.signal,
       });
 
@@ -1258,102 +1317,142 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
           </div>
         )}
 
-        {/* Bottom prompt input bar form */}
-        <form onSubmit={handleSend} className="ask-prompt-form">
-          <input
-            ref={inputRef}
-            type="text"
-            className="ask-input"
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            onPaste={(e) => addFiles(e.clipboardData.files)}
-            placeholder='Ask Hermes: "plan my day" or directive...'
-            disabled={streaming}
-          />
-          <div className="ask-actions">
-
-            {/* Attach an image for this turn */}
+        {/* Bottom prompt input card form (Antigravity Desktop Chat Style) */}
+        <form onSubmit={handleSend} className="ask-prompt-card">
+          <div className="ask-input-row">
             <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/gif,image/webp"
-              multiple
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                if (e.target.files) addFiles(e.target.files);
-                e.target.value = '';   // same file twice in a row still fires
-              }}
+              ref={inputRef}
+              type="text"
+              className="ask-input-textarea"
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              onPaste={(e) => addFiles(e.clipboardData.files)}
+              placeholder="Ask anything, @ to mention, / for actions"
+              disabled={streaming}
             />
-            <button
-              type="button"
-              className="ask-action-btn"
-              disabled={streaming}
-              title="Lampirkan gambar (bisa juga tempel dari clipboard)"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              📎
-            </button>
+          </div>
 
-            {/* Snap a photo from the webcam for this turn — recognised by the
-                same vision path as an attached picture */}
-            <button
-              type="button"
-              className="ask-action-btn"
-              disabled={streaming}
-              title="Ambil foto dari kamera"
-              onClick={() => setCameraOpen(true)}
-            >
-              📷
-            </button>
-
-            {/* Audio MUTE feedback */}
-            {speaking && (
+          <div className="ask-toolbar">
+            <div className="ask-toolbar-left">
+              {/* Attach button (+) */}
               <button
                 type="button"
-                className="ask-action-btn active"
-                onClick={shutUp}
-                title="Hentikan suara"
+                className="ask-pill-btn icon-only"
+                disabled={streaming}
+                title="Lampirkan gambar (bisa juga tempel dari clipboard)"
+                onClick={() => fileInputRef.current?.click()}
               >
-                🔇
+                +
               </button>
-            )}
 
-            {/* Mic push to talk toggling */}
-            <button
-              type="button"
-              className={`ask-action-btn ${micState === 'recording' ? 'active' : ''}`}
-              disabled={streaming || micState === 'working'}
-              title={
-                micState === 'listening' ? 'Mendengarkan — bicara saja'
-                : micState === 'recording' ? 'Merekam — klik untuk berhenti'
-                : micState === 'working' ? 'Mentranskripsi…'
-                : 'Klik untuk bicara'
-              }
-              onClick={() => {
-                holdingRef.current = false;
-                if (micState === 'recording') pushToTalkStop();
-                else pushToTalkStart();
-              }}
-              style={{
-                borderColor: micState === 'recording' ? 'var(--err)' : 'var(--border)',
-                color: micState === 'recording' ? 'var(--err)' : 'inherit'
-              }}
-            >
-              {micState === 'recording' ? '⏹'
-                : micState === 'working' ? '⏳'
-                : micState === 'listening' ? '👂'
-                : '🎤'}
-            </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                multiple
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  if (e.target.files) addFiles(e.target.files);
+                  e.target.value = '';
+                }}
+              />
 
-            {streaming ? (
-              <Button variant="danger" type="button" onClick={handleStop} style={{ height: '32px', padding: '0 12px', minHeight: '32px' }}>
-                STOP
-              </Button>
-            ) : (
-              <Button variant="primary" type="submit" disabled={!inputText.trim()} style={{ height: '32px', padding: '0 12px', minHeight: '32px' }}>
-                SEND
-              </Button>
-            )}
+              {/* Model / LLM selector pill */}
+              <div className="ask-select-pill-wrapper" title="Model Planner / LLM AI">
+                <span className="ask-pill-icon">✨</span>
+                <span className="ask-pill-label">{plannerModel}</span>
+              </div>
+
+              {/* Project selector dropdown pill */}
+              <div className="ask-select-pill-wrapper" title="Pilih Proyek untuk Session ini">
+                <span className="ask-pill-icon">💻</span>
+                <select
+                  className="ask-select-pill"
+                  value={selectedProject}
+                  onChange={(e) => handleProjectChange(e.target.value)}
+                  disabled={streaming}
+                >
+                  <option value="">Local / Workspace Global</option>
+                  {projects.map((p) => (
+                    <option key={p} value={p}>
+                      @{p}
+                    </option>
+                  ))}
+                </select>
+                <span className="ask-pill-arrow">▾</span>
+              </div>
+
+              {/* Coding Agent selector dropdown pill */}
+              <div className="ask-select-pill-wrapper agent-pill" title="Pilih Coding Agent untuk Session ini">
+                <select
+                  className="ask-select-pill"
+                  value={selectedEngine}
+                  onChange={(e) => handleEngineChange(e.target.value)}
+                  disabled={streaming}
+                >
+                  <option value="auto">⚡ Auto Engine</option>
+                  <option value="claude">🟧 Claude Code (!claude)</option>
+                  <option value="antigravity">🟩 Antigravity (!agy)</option>
+                </select>
+                <span className="ask-pill-arrow">▾</span>
+              </div>
+            </div>
+
+            <div className="ask-toolbar-right">
+              {/* Camera photo button */}
+              <button
+                type="button"
+                className="ask-pill-btn icon-only"
+                disabled={streaming}
+                title="Ambil foto dari kamera"
+                onClick={() => setCameraOpen(true)}
+              >
+                📷
+              </button>
+
+              {/* Audio mute button if speaking */}
+              {speaking && (
+                <button
+                  type="button"
+                  className="ask-pill-btn icon-only"
+                  onClick={shutUp}
+                  title="Hentikan suara"
+                >
+                  🔇
+                </button>
+              )}
+
+              {/* Mic push to talk button */}
+              <button
+                type="button"
+                className={`ask-pill-btn icon-only ${micState === 'recording' ? 'active-rec' : ''}`}
+                disabled={streaming || micState === 'working'}
+                title={
+                  micState === 'listening' ? 'Mendengarkan — bicara saja'
+                  : micState === 'recording' ? 'Merekam — klik untuk berhenti'
+                  : micState === 'working' ? 'Mentranskripsi…'
+                  : 'Klik untuk bicara'
+                }
+                onClick={() => {
+                  holdingRef.current = false;
+                  if (micState === 'recording') pushToTalkStop();
+                  else pushToTalkStart();
+                }}
+              >
+                {micState === 'recording' ? '⏹' : micState === 'working' ? '⏳' : micState === 'listening' ? '👂' : '🎤'}
+              </button>
+
+              {/* Submit / Stop button */}
+              {streaming ? (
+                <button type="button" className="ask-send-btn stop" onClick={handleStop} title="Hentikan">
+                  ⏹
+                </button>
+              ) : (
+                <button type="submit" className="ask-send-btn" disabled={!inputText.trim()} title="Kirim">
+                  ➔
+                </button>
+              )}
+            </div>
           </div>
         </form>
       </div>

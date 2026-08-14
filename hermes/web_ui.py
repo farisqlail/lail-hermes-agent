@@ -16,14 +16,10 @@ from .telegram_bridge import new_task_id
 class TaskSubmit(BaseModel):
     text: str
     session_id: str | None = None
-    # Names returned by POST /api/uploads, attached to THIS turn only. The
-    # files are deleted once the answer is produced, so they are never replayed
-    # into a later prompt — one look, one answer, gone.
     images: list[str] = []
-    # Continuation turn after an approved action ran: there is no operator
-    # message behind it, so `text` is empty and nothing is written to the
-    # thread as a user turn. See RESUME_NUDGE.
     resume: bool = False
+    project: str | None = None
+    engine: str | None = None
 
 class TaskConfirm(BaseModel):
     approved: bool
@@ -39,13 +35,13 @@ class IntegrateBody(BaseModel):
 class SecretBody(BaseModel):
     value: str
 
-# Request models must live at module scope: `from __future__ import annotations`
-# turns every annotation into a string, and FastAPI resolves those against the
-# endpoint's module globals only. A model declared inside create_app() is
-# invisible there, so the parameter degrades to a required query param and every
-# POST comes back 422.
 class SessionRename(BaseModel):
     title: str
+
+class SessionSettings(BaseModel):
+    title: str | None = None
+    project: str | None = None
+    engine: str | None = None
 
 class ResolveBody(BaseModel):
     """Approve or decline one parked write action.
@@ -477,6 +473,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             kwargs = {}
             if "session_id" in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
                 kwargs["session_id"] = sid
+            if body.engine:
+                kwargs["engine"] = body.engine
             t = asyncio.create_task(bridge.handle_task(
                 user_id=0, chat_id=0, text=prompt, task_id=task_id,
                 trusted=True, **kwargs))
@@ -489,9 +487,6 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             store.set_task_status(task_id, "done")
             store.append_log(task_id, "ask: Bantuan Penggunaan")
             store.append_log(task_id, f"answer: {answer}")
-            # Record in the thread too: /help and /projects are conversational
-            # Q&A, so they belong in the chat log the pane renders, unlike /task
-            # which is real work tracked in the task list.
             store.add_message(sid, "user", text)
             store.add_message(sid, "assistant", answer)
             return {"task_id": task_id, "status": "done"}
@@ -508,9 +503,6 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         else:
             store.create_task(task_id, -1, text, session_id=sid)
             store.append_log(task_id, "ask: Chat Conversation")
-            # Record the user's turn first, so the history handed to the model
-            # includes the message it is replying to. The marker is what later
-            # turns will see in place of the picture.
             engine = app.state.engine
             images = engine.take_images(sid, body.images)
             store.add_message(sid, "user", text + (IMAGE_MARKER if images else ""))
@@ -533,19 +525,14 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
                     reply = await chat(turn, tools=await _chat_tools(),
                                        dispatch=dispatch)
                 except Exception as e:
-                    # A NIM outage or missing key must not 500 the chat pane;
-                    # surface it as the assistant's turn so the thread stays
-                    # coherent and the operator sees the cause.
                     safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
                     reply = f"(Maaf, chat gagal: {safe})"
-            # The tag is a transport detail between the model and the speech
-            # path. Storing it would feed it back as context next turn.
             clean, _ = voice.strip_voice_tag(reply)
             clean += engine.task_card_suffix(clean, auto_id)
             store.add_message(sid, "assistant", clean)
             store.set_task_status(task_id, "done")
             store.append_log(task_id, f"answer: {clean}")
-            uploads.discard(images)      # looked at, answered, gone
+            uploads.discard(images)
             await engine.learn_from_turn(text, clean)
             return {"task_id": task_id, "status": "done"}
 
@@ -588,6 +575,13 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
     @app.post("/api/sessions/{session_id}/rename")
     def rename_session(session_id: str, body: SessionRename):
         store.rename_session(session_id, body.title)
+        return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/settings")
+    def update_session_settings(session_id: str, body: SessionSettings):
+        ok = store.update_session_settings(session_id, project=body.project, engine=body.engine, title=body.title)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Session not found")
         return {"ok": True}
 
     @app.delete("/api/sessions/{session_id}")
@@ -650,6 +644,10 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         if not body.resume:
             store.add_message(sid, "user", text + (IMAGE_MARKER if images else ""))
         chat = getattr(app.state, "chat", None)
+
+        # Auto update session project/engine if supplied
+        if (body.project is not None or body.engine is not None) and sid != CONV_WEB:
+            store.update_session_settings(sid, project=body.project, engine=body.engine)
 
         # Auto rename session if it was default name
         if sid != CONV_WEB and not body.resume:

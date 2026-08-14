@@ -393,9 +393,11 @@ def _why(res) -> str:
     return res.stderr[:200]
 
 
-def choose_engine(step: dict, settings: Settings) -> str:
+def choose_engine(step: dict, settings: Settings, task_engine: str | None = None) -> str:
     if step.get("engine") in ("claude", "antigravity"):
         return step["engine"]
+    if task_engine in ("claude", "antigravity"):
+        return task_engine
     if settings.default_engine in ("claude", "antigravity"):
         return settings.default_engine
     return "antigravity" if step.get("scope") == "large" else "claude"
@@ -417,7 +419,7 @@ class Orchestrator:
         return config.load_settings()
 
     async def run_task(self, task_id: str, chat_id: int, text: str, report,
-                       proj: Path | None = None, send_file=None) -> None:
+                       proj: Path | None = None, send_file=None, engine: str | None = None) -> None:
         from . import paths
         # Tasks run concurrently (the web UI backgrounds them with
         # asyncio.create_task), and `settings` is refreshed here and then read
@@ -429,7 +431,7 @@ class Orchestrator:
         if not self._task_local:
             mine = copy.copy(self)
             mine._task_local = True
-            return await mine.run_task(task_id, chat_id, text, report, proj, send_file)
+            return await mine.run_task(task_id, chat_id, text, report, proj, send_file, engine=engine)
         self.settings = self.get_settings()
         self.store.set_task_status(task_id, "running")
         # Captured before the workspace is created: afterwards the two cases are
@@ -491,7 +493,7 @@ class Orchestrator:
             self.store.set_step_status(sid, "running")
             await report(task_id, f"step {i} [{step.get('type')}] started...")
             ok, msg = await self._run_step_with_repair(
-                task_id, proj, step, i, text, send_file, chat_id, budget, report)
+                task_id, proj, step, i, text, send_file, chat_id, budget, report, engine=engine)
             self.store.set_step_status(sid, "done" if ok else "failed")
             self.store.append_log(task_id, f"step {i} [{step.get('type')}]: {msg}")
             await report(task_id, f"step {i} [{step.get('type')}]: {msg}")
@@ -602,7 +604,7 @@ class Orchestrator:
                      f"${sum(costs):.4f}")
 
     async def _attempt_step(self, task_id, proj, step, idx, text, send_file,
-                            chat_id, budget):
+                            chat_id, budget, engine: str | None = None):
         """One attempt at a step, with a crash turned into a failed result.
 
         The missing-binary failures surfaced here: engine_runner raises
@@ -612,13 +614,13 @@ class Orchestrator:
         """
         try:
             return await self._exec_step(task_id, proj, step, idx, text,
-                                         send_file, chat_id, budget)
+                                         send_file, chat_id, budget, engine=engine)
         except Exception as e:
             tip = failure.advice(str(e))
             return (False, f"step crashed: {e}" + (f"\n{tip}" if tip else ""))
 
     async def _run_step_with_repair(self, task_id, proj, step, idx, text,
-                                    send_file, chat_id, budget, report):
+                                    send_file, chat_id, budget, report, engine: str | None = None):
         """Run a step, and give a build or test that fails a chance to be fixed.
 
         Until now a build or test failed once and took the whole task with it —
@@ -645,7 +647,7 @@ class Orchestrator:
         last_signature = ""
         while True:
             ok, msg = await self._attempt_step(task_id, proj, step, idx, text,
-                                               send_file, chat_id, budget)
+                                               send_file, chat_id, budget, engine=engine)
             if ok:
                 return (True, msg)
             kind = failure.classify(msg)
@@ -686,7 +688,7 @@ class Orchestrator:
             self.store.set_step_status(rid, "running")
             fixed, fix_msg = await self._attempt_step(
                 task_id, proj, {"type": "code", "prompt": _repair_prompt(step, msg)},
-                idx, text, send_file, chat_id, budget)
+                idx, text, send_file, chat_id, budget, engine=engine)
             self.store.set_step_status(rid, "done" if fixed else "failed")
             self.store.append_log(task_id, f"step {idx} [repair]: {fix_msg}")
             await report(task_id, f"step {idx} [repair]: {fix_msg}")
@@ -745,14 +747,14 @@ class Orchestrator:
 
     async def _exec_step(self, task_id, proj: Path, step: dict, idx: int,
                          text: str = "", send_file=None, chat_id: int = 0,
-                         budget: "Budget | None" = None):
+                         budget: "Budget | None" = None, engine: str | None = None):
         # Default None so the many tests that call this directly keep their
         # narrow signature; an absent budget is an uncapped one, which is what
         # every caller got before the cap existed.
         budget = budget if budget is not None else Budget(0)
         t = step.get("type")
         if t == "code":
-            engine = choose_engine(step, self.settings)
+            engine = choose_engine(step, self.settings, task_engine=engine)
             # Snapshot per step, not just per task: the step report has to be
             # able to say what THIS step touched, and a task's later steps must
             # not inherit credit for an earlier one's edits.

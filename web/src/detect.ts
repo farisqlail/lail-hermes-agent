@@ -26,16 +26,22 @@ let _model: Promise<{ detect(input: unknown, max?: number): Promise<Detection[]>
 export function initBackend(): Promise<string> {
   if (!_backend) {
     _backend = (async () => {
-      const tf = await import('@tensorflow/tfjs');
       try {
-        await import('@tensorflow/tfjs-backend-webgpu');
-        await tf.setBackend('webgpu');
-        await tf.ready();
-        return 'webgpu';
-      } catch {
-        await tf.setBackend('webgl');
-        await tf.ready();
-        return tf.getBackend();
+        const tfPkg = '@tensorflow/tfjs';
+        const tf = await import(/* webpackIgnore: true */ tfPkg);
+        try {
+          const webgpuPkg = '@tensorflow/tfjs-backend-webgpu';
+          await import(/* webpackIgnore: true */ webgpuPkg);
+          await tf.setBackend('webgpu');
+          await tf.ready();
+          return 'webgpu';
+        } catch {
+          await tf.setBackend('webgl');
+          await tf.ready();
+          return tf.getBackend();
+        }
+      } catch (err) {
+        throw new Error('TensorFlow.js not available');
       }
     })();
   }
@@ -50,7 +56,8 @@ export function loadDetector() {
   if (!_model) {
     _model = (async () => {
       await initBackend();
-      const cocoSsd = await import('@tensorflow-models/coco-ssd');
+      const cocoPkg = '@tensorflow-models/coco-ssd';
+      const cocoSsd = await import(/* webpackIgnore: true */ cocoPkg);
       return cocoSsd.load({ base: 'lite_mobilenet_v2' }) as unknown as {
         detect(input: unknown, max?: number): Promise<Detection[]>;
       };
