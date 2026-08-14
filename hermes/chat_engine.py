@@ -118,6 +118,10 @@ _FIGMA_CHILD_LEAF_PROPS = {
     "width": {"type": "integer", "description": "lebar elemen dalam px (kosongkan untuk full-width otomatis, atau untuk pembagian rata di dalam ROW)"},
     "height": {"type": "integer", "description": "tinggi elemen dalam px"},
     "borderRadius": {"type": "integer", "description": "corner radius dalam px"},
+    "bold": {"type": "boolean", "description": "true untuk teks tebal (judul/label penting) pada TEXT/BUTTON, default false (Regular)"},
+    "borderColor": {"type": "string", "description": "warna hex garis pinggir (stroke). INPUT sudah otomatis dapat border abu muda meski field ini kosong; isi untuk tipe lain (BUTTON/RECTANGLE/AVATAR/HEADER_IMAGE/ROW) kalau di gambar terlihat ada garis pinggir"},
+    "borderWidth": {"type": "integer", "description": "ketebalan border dalam px, default 1"},
+    "shadow": {"type": "boolean", "description": "true kalau elemen di gambar terlihat 'mengambang' (drop shadow) — umum untuk card/button di atas latar polos"},
 }
 
 # Tools the conversational agent may call. A curated, safe set — read-only

@@ -48,19 +48,33 @@ async def _set_number(page, onboarding_key: str, value: float) -> None:
 
 
 async def _lock_fixed_size(page, width: float, height: float) -> None:
-    """Force a nested auto-layout frame's own sizing back to Fixed.
+    """Force an auto-layout frame's own sizing back to Fixed.
 
-    `Shift+A` resets BOTH axes of a nested frame to "Hug contents" — the
-    numeric field at `scrubbable-control-width/height` disappears entirely
-    (replaced by a "Horizontal/Vertical resizing" combobox showing "Hug").
-    Typing a value into THAT combobox switches the mode to Fixed and gives
-    the frame real dimensions again. Without this, a Hug frame shrinks to
+    `Shift+A` resets BOTH axes of a frame to "Hug contents" the moment it
+    has (or gains) at least one child — the numeric field at
+    `scrubbable-control-width/height` disappears entirely, replaced by a
+    "Horizontal/Vertical resizing" combobox showing "Hug". This applies to
+    the ROOT frame too, not just nested composites: an empty root shows
+    plain Width/Height fields, but once its first child lands, it can
+    silently collapse to hug that one child (e.g. 300x300 shrinking to
+    86x63) — every later top-level item then gets drawn relative to a
+    tiny, wrong-sized frame and ends up outside it entirely.
+
+    Typing a value into the "resizing" combobox switches the mode to Fixed
+    and restores real dimensions. Without this, a Hug frame shrinks to
     exactly its content's bounding box — leaving zero slack to click "past"
     existing children when appending a second, third, etc. (the click lands
-    ON the last child instead, nesting the next item inside it).
+    ON the last child instead, nesting the next item inside it, or in the
+    root's case, drawing the next item as a stray new top-level frame).
+
+    A frame that's already in Fixed/Dimensions mode has no such combobox at
+    all (`count() == 0`) — nothing to do there, so this is safe to call
+    unconditionally after every `_apply_auto_layout`.
     """
     for label, value in (("Horizontal resizing", width), ("Vertical resizing", height)):
         combo = page.get_by_role("combobox", name=label)
+        if await combo.count() == 0:
+            continue
         await combo.click(timeout=8000)
         await page.wait_for_timeout(100)
         await page.keyboard.press("Control+A")
@@ -154,9 +168,56 @@ async def _apply_auto_layout(
             await page.wait_for_timeout(150)
 
 
+async def _set_bold(page) -> None:
+    combo = page.get_by_role("combobox", name="Font style")
+    await combo.click()
+    await page.wait_for_timeout(300)
+    await page.get_by_role("option", name="Bold", exact=True).click()
+    await page.wait_for_timeout(200)
+    # Belt and suspenders: force the dropdown closed and focus off it. Left
+    # open (or focus stuck in it), the NEXT item's tool-shortcut keypresses
+    # ('t', 'f') can land in this combobox instead of the canvas, silently
+    # corrupting everything placed after a bold text item.
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(200)
+
+
+async def _set_stroke(page, hex_color: str, weight: float | None = None) -> None:
+    """Add (or update) a solid stroke on the currently-selected node.
+
+    The Stroke section's own "Color" combobox is a second match for the
+    same selector Fill uses — `.nth(1)` picks it, valid only right after
+    "Add stroke" has created that section (so Fill's row is always first).
+    """
+    add_stroke = page.get_by_role("button", name="Add stroke")
+    if await add_stroke.count() > 0:
+        await add_stroke.click()
+        await page.wait_for_timeout(300)
+    color_input = page.locator('input[aria-label="Color"]').nth(1)
+    await color_input.click(timeout=8000)
+    await page.keyboard.press("Control+A")
+    await color_input.type((hex_color or "000000").lstrip("#").upper())
+    await page.keyboard.press("Enter")
+    await page.wait_for_timeout(150)
+    if weight:
+        weight_field = page.get_by_role("textbox", name="Stroke weight")
+        await weight_field.click()
+        await page.keyboard.press("Control+A")
+        await weight_field.type(str(weight))
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(150)
+
+
+async def _add_shadow(page) -> None:
+    await page.get_by_role("button", name="Add effect").click()
+    await page.wait_for_timeout(300)
+    await page.get_by_text("Drop shadow", exact=True).click()
+    await page.wait_for_timeout(200)
+
+
 async def _add_text(
     page, cx: float, cy: float, content: str,
-    font_size: float | None = None, color: str | None = None,
+    font_size: float | None = None, color: str | None = None, bold: bool = False,
 ) -> None:
     await page.keyboard.press("t")
     await page.wait_for_timeout(150)
@@ -175,11 +236,15 @@ async def _add_text(
             await page.wait_for_timeout(150)
     if color:
         await _set_fill_hex(page, color)
+    if bold:
+        await _set_bold(page)
 
 
 async def _add_shape(
     page, tool_key: str, cx: float, cy: float, w: float, h: float,
     color: str | None = None, corner_radius: float | None = None,
+    border_color: str | None = None, border_width: float | None = None,
+    shadow: bool = False,
 ) -> None:
     await _draw(page, tool_key, cx, cy)
     await _set_number(page, "scrubbable-control-width", w)
@@ -188,6 +253,10 @@ async def _add_shape(
         await _set_number(page, "scrubbable-control-corner-radius", corner_radius)
     if color:
         await _set_fill_hex(page, color)
+    if border_color:
+        await _set_stroke(page, border_color, border_width)
+    if shadow:
+        await _add_shadow(page)
 
 
 async def _fetch_stock_photo(query: str, api_key: str, orientation: str = "landscape") -> bytes | None:
@@ -248,6 +317,8 @@ async def _add_composite(
     color: str, direction: str, gap: float, padding: float,
     fill_children: Callable[[float, float], Awaitable[None]],
     corner_radius: float | None = None,
+    border_color: str | None = None, border_width: float | None = None,
+    shadow: bool = False,
 ) -> None:
     """Create a nested auto-layout sub-frame (button/input/checkbox row) and
     fill it via `fill_children(inner_cx, inner_cy)`. Always sets a real fill
@@ -261,6 +332,10 @@ async def _add_composite(
     await _apply_auto_layout(page, direction, padding, padding, gap, centered=True)
     await _lock_fixed_size(page, w, h)
     await _set_fill_hex(page, color)
+    if border_color:
+        await _set_stroke(page, border_color, border_width)
+    if shadow:
+        await _add_shadow(page)
     inner_cx, inner_cy = await _zoom_to_selection(page)
     await fill_children(inner_cx, inner_cy)
 
@@ -306,6 +381,7 @@ async def _return_to_parent(page, parent_row_selector: str, direction: str = "VE
 async def _place_items(
     page, cx: float, cy: float, items: list[dict], content_w: float, parent_row_selector: str,
     parent_direction: str = "VERTICAL", unsplash_key: str | None = None,
+    parent_w: float | None = None, parent_h: float | None = None,
 ) -> tuple[float, float, int]:
     """Place a list of items into whatever frame is currently selected
     (`parent_row_selector` is that frame's own row, used to return to it
@@ -315,6 +391,14 @@ async def _place_items(
     the right axis). Used both for a root frame's direct children and —
     recursively, via the ROW type — for a horizontal row's own children, so
     a BUTTON can nest inside a ROW inside the root frame.
+
+    `parent_w`/`parent_h` are the parent's own intended fixed size (root's
+    `width`/`height`, or a ROW's own `row_w`/height) — re-asserted via
+    `_lock_fixed_size` after every child, because a parent frame can
+    silently flip to "Hug contents" mode the moment it gains its FIRST
+    child, not just once up front. Left uncorrected, it then shrinks to
+    that one child's bounding box and every later sibling gets drawn
+    relative to a tiny, wrong-sized frame — landing outside it entirely.
     """
     created = 0
     for item in items:
@@ -324,6 +408,7 @@ async def _place_items(
                 await _add_text(
                     page, cx, cy, item.get("content") or item.get("text") or "",
                     font_size=item.get("fontSize"), color=item.get("color"),
+                    bold=bool(item.get("bold")),
                 )
             elif itype in ("HEADER_IMAGE", "HEADER"):
                 await _add_shape(
@@ -331,6 +416,8 @@ async def _place_items(
                     item.get("width") or content_w, item.get("height") or 220,
                     color=item.get("color") or "#E2E8F0",
                     corner_radius=item.get("borderRadius"),
+                    border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
+                    shadow=bool(item.get("shadow")),
                 )
                 photo_query = item.get("photoQuery")
                 if photo_query and unsplash_key:
@@ -339,7 +426,11 @@ async def _place_items(
                         await _place_image_fill(page, cx, cy, photo)
             elif itype in ("AVATAR", "ELLIPSE", "CIRCLE"):
                 size = item.get("size") or item.get("width") or 56
-                await _add_shape(page, "o", cx, cy, size, size, color=item.get("color") or "#0070F3")
+                await _add_shape(
+                    page, "o", cx, cy, size, size, color=item.get("color") or "#0070F3",
+                    border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
+                    shadow=bool(item.get("shadow")),
+                )
                 photo_query = item.get("photoQuery")
                 if photo_query and unsplash_key:
                     photo = await _fetch_stock_photo(photo_query, unsplash_key, orientation="squarish")
@@ -355,6 +446,12 @@ async def _place_items(
                     page, cx, cy, item.get("width") or content_w, item.get("height") or 50,
                     color=item.get("backgroundColor") or "#F8FAFC",
                     corner_radius=item.get("borderRadius", 50),
+                    # Real inputs almost always have a visible border — default
+                    # to a light gray one rather than requiring the model to
+                    # ask for what every mockup already implies.
+                    border_color=item.get("borderColor") or "#E2E8F0",
+                    border_width=item.get("borderWidth"),
+                    shadow=bool(item.get("shadow")),
                     direction="HORIZONTAL", gap=8, padding=20, fill_children=_fill_input,
                 )
             elif itype == "BUTTON":
@@ -370,10 +467,13 @@ async def _place_items(
                     await _add_text(
                         page, icx, icy, _item.get("text") or _item.get("content") or "Create account",
                         font_size=_item.get("fontSize") or 16, color=_label_color,
+                        bold=bool(_item.get("bold")),
                     )
                 await _add_composite(
                     page, cx, cy, item.get("width") or content_w, item.get("height") or 50,
                     color=fill, corner_radius=item.get("borderRadius", 50),
+                    border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
+                    shadow=bool(item.get("shadow")),
                     direction="HORIZONTAL", gap=8, padding=16, fill_children=_fill_button,
                 )
             elif itype == "CHECKBOX":
@@ -394,6 +494,7 @@ async def _place_items(
                 row_gap = float(item.get("itemSpacing") or 12)
                 row_padding = float(item.get("padding") or 0)
                 row_w = item.get("width") or content_w
+                row_h = item.get("height") or 50
                 row_content_w = max(row_w - 2 * row_padding, 20)
                 # Children default to an equal share of the row's inner width
                 # so e.g. 3 buttons in a ROW sit side by side, evenly spaced —
@@ -406,12 +507,15 @@ async def _place_items(
                     await _place_items(
                         page, icx, icy, _items, _child_w, row_selector,
                         parent_direction="HORIZONTAL", unsplash_key=unsplash_key,
+                        parent_w=row_w, parent_h=row_h,
                     )
 
                 await _add_composite(
-                    page, cx, cy, row_w, item.get("height") or 50,
+                    page, cx, cy, row_w, row_h,
                     color=item.get("backgroundColor") or item.get("color") or "#FFFFFF",
                     corner_radius=item.get("borderRadius"),
+                    border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
+                    shadow=bool(item.get("shadow")),
                     direction="HORIZONTAL", gap=row_gap, padding=row_padding,
                     fill_children=_fill_row,
                 )
@@ -420,6 +524,8 @@ async def _place_items(
                     page, "r", cx, cy, item.get("width") or 100, item.get("height") or 40,
                     color=item.get("backgroundColor") or item.get("color") or item.get("fill"),
                     corner_radius=item.get("borderRadius"),
+                    border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
+                    shadow=bool(item.get("shadow")),
                 )
             created += 1
             # Refresh the click point for EVERY item, not just composites —
@@ -428,6 +534,13 @@ async def _place_items(
             # creating a separate node) once the container has real slack
             # instead of hugging exactly around a single child.
             cx, cy = await _return_to_parent(page, parent_row_selector, parent_direction)
+            if parent_w and parent_h:
+                await _lock_fixed_size(page, parent_w, parent_h)
+                cx, cy = await _zoom_to_selection(
+                    page,
+                    horizontal_bias=0.85 if parent_direction == "HORIZONTAL" else 0.5,
+                    vertical_bias=0.85 if parent_direction != "HORIZONTAL" else 0.5,
+                )
         except Exception:
             logger.exception("Failed to create Figma element via UI automation: %r", item)
     return cx, cy, created
@@ -481,6 +594,7 @@ async def _build_frame_via_ui(page, spec: dict[str, Any], unsplash_key: str | No
     cx, cy, created = await _place_items(
         page, cx, cy, children, content_w, root_row_selector,
         parent_direction=direction, unsplash_key=unsplash_key,
+        parent_w=width, parent_h=height,
     )
 
     await page.keyboard.press("Escape")
