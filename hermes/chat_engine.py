@@ -85,9 +85,9 @@ RESUME_NUDGE = (
     "dan apa yang kamu butuhkan dari operator."
 )
 
-# Leaf-level figma_web_design child item — reused as-is for a ROW's own
-# `children` (one level of nesting only: a ROW of ROWs is a schema-complexity
-# nobody's asked for, even though the backend's _place_items would honor it).
+# Leaf-level figma_web_design child item — the bottom of the nesting depth
+# built by _figma_child_item_schema below. No `type` enum entries for
+# ROW/STACK and no `children` field at this level.
 _FIGMA_CHILD_LEAF_PROPS = {
     "type": {"type": "string", "enum": [
         "TEXT", "HEADER_IMAGE", "AVATAR", "INPUT", "BUTTON",
@@ -123,6 +123,45 @@ _FIGMA_CHILD_LEAF_PROPS = {
     "borderWidth": {"type": "integer", "description": "ketebalan border dalam px, default 1"},
     "shadow": {"type": "boolean", "description": "true kalau elemen di gambar terlihat 'mengambang' (drop shadow) — umum untuk card/button di atas latar polos"},
 }
+
+
+def _figma_child_item_schema(container_depth: int) -> dict:
+    """Build a figma_web_design child-item schema, `container_depth` levels
+    of ROW/STACK nesting deep (0 = leaf items only, no ROW/STACK type, no
+    `children` field).
+
+    Function-calling JSON Schema has no true self-reference, so nesting is
+    capped by generating this many levels explicitly rather than recursing.
+    The backend's `_place_items` is already fully recursive and would honor
+    any depth — 2 levels here is a schema-complexity cap, not a backend
+    limit — chosen to cover realistic cases (e.g. a ROW of cards, each card
+    a STACK of icon+title+subtitle) without an unbounded schema.
+    """
+    if container_depth <= 0:
+        return {"type": "object", "properties": dict(_FIGMA_CHILD_LEAF_PROPS)}
+    type_with_containers = {**_FIGMA_CHILD_LEAF_PROPS["type"], "enum": [
+        *_FIGMA_CHILD_LEAF_PROPS["type"]["enum"], "ROW", "STACK",
+    ], "description": (
+        _FIGMA_CHILD_LEAF_PROPS["type"]["description"] +
+        " ROW=beberapa elemen SEJAJAR HORIZONTAL dalam satu baris (mis. "
+        "beberapa tombol aksi berdampingan) — isi lewat `children` di "
+        "bawah, BUKAN lewat `text`/`content`. STACK=beberapa elemen "
+        "bertumpuk VERTIKAL menyatu jadi satu grup (mis. icon+judul+"
+        "subjudul di dalam satu card) — isi lewat `children`; tiap anak "
+        "otomatis selebar STACK kecuali diisi `width` eksplisit."
+    )}
+    return {"type": "object", "properties": {
+        **_FIGMA_CHILD_LEAF_PROPS,
+        "type": type_with_containers,
+        "itemSpacing": {"type": "integer", "description": "jarak antar elemen di dalam ROW/STACK, dalam px, default 12"},
+        "padding": {"type": "integer", "description": "padding dalam ROW/STACK (dipakai kalau ROW/STACK juga berfungsi sebagai card berwarna, mis. baris transaksi), dalam px, default 0"},
+        "children": {
+            "type": "array",
+            "description": "Elemen di dalam ROW/STACK, urut sesuai arahnya (ROW=kiri ke kanan, STACK=atas ke bawah). Hanya dipakai bila type=ROW atau STACK.",
+            "items": _figma_child_item_schema(container_depth - 1),
+        },
+    }}
+
 
 # Tools the conversational agent may call. A curated, safe set — read-only
 # system queries plus start_task, which only ever QUEUES a task held for the
@@ -273,24 +312,7 @@ CHAT_TOOLS = [
                     "Elemen UI di dalam frame, URUT DARI ATAS KE BAWAH persis "
                     "seperti tersusun di gambar/permintaan pengguna."
                 ),
-                "items": {"type": "object", "properties": {
-                    **_FIGMA_CHILD_LEAF_PROPS,
-                    "type": {"type": "string", "enum": [
-                        *_FIGMA_CHILD_LEAF_PROPS["type"]["enum"], "ROW",
-                    ], "description": (
-                        _FIGMA_CHILD_LEAF_PROPS["type"]["description"] +
-                        " ROW=beberapa elemen SEJAJAR HORIZONTAL dalam satu baris "
-                        "(mis. 3 tombol aksi berdampingan) — isi lewat `children` "
-                        "di bawah, BUKAN lewat `text`/`content`."
-                    )},
-                    "itemSpacing": {"type": "integer", "description": "jarak antar elemen di dalam ROW, dalam px, default 12"},
-                    "padding": {"type": "integer", "description": "padding dalam ROW (dipakai kalau ROW juga berfungsi sebagai card berwarna, mis. baris transaksi), dalam px, default 0"},
-                    "children": {
-                        "type": "array",
-                        "description": "Elemen di dalam ROW, urut kiri ke kanan. Hanya dipakai bila type=ROW.",
-                        "items": {"type": "object", "properties": _FIGMA_CHILD_LEAF_PROPS},
-                    },
-                }}
+                "items": _figma_child_item_schema(2),
             }},
             "required": ["frame_name"]}}},
     {"type": "function", "function": {

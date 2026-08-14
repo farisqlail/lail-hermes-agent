@@ -184,3 +184,30 @@ async def test_generate_image_sends_file_to_telegram(hermes_home, monkeypatch):
     assert len(sent_files) == 1
     assert sent_files[0] == (10, "screenshot", str(fake_png))
 
+
+def _figma_children_schema():
+    tool = next(t for t in CHAT_TOOLS if t["function"]["name"] == "figma_web_design")
+    return tool["function"]["parameters"]["properties"]["children"]["items"]
+
+
+def test_figma_schema_offers_row_and_stack_containers():
+    level0 = _figma_children_schema()
+    type_enum = level0["properties"]["type"]["enum"]
+    assert "ROW" in type_enum
+    assert "STACK" in type_enum
+    assert "children" in level0["properties"]
+
+
+def test_figma_schema_caps_container_nesting_at_two_levels():
+    level0 = _figma_children_schema()
+    level1 = level0["properties"]["children"]["items"]
+    level2 = level1["properties"]["children"]["items"]
+
+    assert "ROW" in level1["properties"]["type"]["enum"]
+    assert "STACK" in level1["properties"]["type"]["enum"]
+
+    # Bottom level is leaf-only: no ROW/STACK, no further `children` field.
+    assert "ROW" not in level2["properties"]["type"]["enum"]
+    assert "STACK" not in level2["properties"]["type"]["enum"]
+    assert "children" not in level2["properties"]
+

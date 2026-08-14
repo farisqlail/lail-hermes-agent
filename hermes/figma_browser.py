@@ -386,14 +386,16 @@ async def _place_items(
     """Place a list of items into whatever frame is currently selected
     (`parent_row_selector` is that frame's own row, used to return to it
     between composites; `parent_direction` is that frame's OWN stacking
-    axis — VERTICAL for a root frame's direct children, HORIZONTAL for a
-    ROW's own children — so returning to it biases the click point along
-    the right axis). Used both for a root frame's direct children and —
-    recursively, via the ROW type — for a horizontal row's own children, so
-    a BUTTON can nest inside a ROW inside the root frame.
+    axis — VERTICAL for a root frame's direct children or a STACK's own
+    children, HORIZONTAL for a ROW's own children — so returning to it
+    biases the click point along the right axis). Used both for a root
+    frame's direct children and — recursively, via the ROW/STACK types —
+    for a box's own children, so a BUTTON can nest inside a ROW inside a
+    STACK inside the root frame, to whatever depth the caller's schema
+    allows.
 
     `parent_w`/`parent_h` are the parent's own intended fixed size (root's
-    `width`/`height`, or a ROW's own `row_w`/height) — re-asserted via
+    `width`/`height`, or a ROW/STACK's own `box_w`/`box_h`) — re-asserted via
     `_lock_fixed_size` after every child, because a parent frame can
     silently flip to "Hug contents" mode the moment it gains its FIRST
     child, not just once up front. Left uncorrected, it then shrinks to
@@ -488,36 +490,50 @@ async def _place_items(
                     color="#FFFFFF", direction="HORIZONTAL", gap=10, padding=0,
                     fill_children=_fill_checkbox,
                 )
-            elif itype == "ROW":
+            elif itype in ("ROW", "STACK"):
+                # ROW and STACK share one composite pattern — only the
+                # stacking axis and the child default-sizing rule differ.
+                # ROW's children sit side by side, so they default to an
+                # equal share of the box's inner WIDTH (e.g. 3 buttons
+                # evenly spaced). STACK's children sit one above another,
+                # so dividing height the same way would make no sense for
+                # mixed-height children (icon + title + subtitle) — each
+                # instead defaults to the box's full inner width and keeps
+                # its own type-specific natural height.
+                is_row = itype == "ROW"
+                box_direction = "HORIZONTAL" if is_row else "VERTICAL"
                 sub_items = item.get("children") or []
                 n = max(len(sub_items), 1)
-                row_gap = float(item.get("itemSpacing") or 12)
-                row_padding = float(item.get("padding") or 0)
-                row_w = item.get("width") or content_w
-                row_h = item.get("height") or 50
-                row_content_w = max(row_w - 2 * row_padding, 20)
-                # Children default to an equal share of the row's inner width
-                # so e.g. 3 buttons in a ROW sit side by side, evenly spaced —
-                # any child with an explicit width keeps it.
-                default_child_w = max((row_content_w - row_gap * (n - 1)) / n, 20)
+                box_gap = float(item.get("itemSpacing") or 12)
+                box_padding = float(item.get("padding") or 0)
+                box_w = item.get("width") or content_w
+                box_h = item.get("height") or (50 if is_row else 140)
+                box_content_w = max(box_w - 2 * box_padding, 20)
+                if is_row:
+                    default_child_w = max((box_content_w - box_gap * (n - 1)) / n, 20)
+                else:
+                    default_child_w = box_content_w
                 normalized = [{**c, "width": c.get("width") or default_child_w} for c in sub_items]
 
-                async def _fill_row(icx: float, icy: float, _items=normalized, _child_w=default_child_w) -> None:
-                    row_selector = await _current_row_selector(page)
+                async def _fill_box(
+                    icx: float, icy: float, _items=normalized, _child_w=default_child_w,
+                    _direction=box_direction, _w=box_w, _h=box_h,
+                ) -> None:
+                    box_selector = await _current_row_selector(page)
                     await _place_items(
-                        page, icx, icy, _items, _child_w, row_selector,
-                        parent_direction="HORIZONTAL", unsplash_key=unsplash_key,
-                        parent_w=row_w, parent_h=row_h,
+                        page, icx, icy, _items, _child_w, box_selector,
+                        parent_direction=_direction, unsplash_key=unsplash_key,
+                        parent_w=_w, parent_h=_h,
                     )
 
                 await _add_composite(
-                    page, cx, cy, row_w, row_h,
+                    page, cx, cy, box_w, box_h,
                     color=item.get("backgroundColor") or item.get("color") or "#FFFFFF",
                     corner_radius=item.get("borderRadius"),
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
                     shadow=bool(item.get("shadow")),
-                    direction="HORIZONTAL", gap=row_gap, padding=row_padding,
-                    fill_children=_fill_row,
+                    direction=box_direction, gap=box_gap, padding=box_padding,
+                    fill_children=_fill_box,
                 )
             else:
                 await _add_shape(
