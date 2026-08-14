@@ -32,9 +32,12 @@ def vault_dir() -> Path:
     # server reads. Separate from hermes.db, which stays the operational store.
     return home() / "vault"
 
+def figma_profile_dir() -> Path:
+    return home() / "figma_browser_profile"
+
 def ensure_dirs() -> None:
     for d in (config_dir(), projects_dir(), artifacts_dir(), uploads_dir(),
-              vault_dir()):
+              vault_dir(), figma_profile_dir()):
         d.mkdir(parents=True, exist_ok=True)
 
 def ensure_vault() -> None:

@@ -334,6 +334,7 @@ class Settings(BaseModel):
 class Secrets(BaseModel):
     nvidia_api_key: str = ""
     telegram_bot_token: str = ""
+    unsplash_access_key: str = ""
 
 def _settings_file():
     return paths.config_dir() / "config.yaml"  # stored as JSON for zero-dep parsing
@@ -356,6 +357,7 @@ def load_secrets() -> Secrets:
     return Secrets(
         nvidia_api_key=vals.get("NVIDIA_API_KEY", "") or "",
         telegram_bot_token=vals.get("TELEGRAM_BOT_TOKEN", "") or "",
+        unsplash_access_key=vals.get("UNSPLASH_ACCESS_KEY", "") or "",
     )
 
 def save_secrets(s: Secrets) -> None:
@@ -363,5 +365,6 @@ def save_secrets(s: Secrets) -> None:
     lines = [
         f"NVIDIA_API_KEY={s.nvidia_api_key}",
         f"TELEGRAM_BOT_TOKEN={s.telegram_bot_token}",
+        f"UNSPLASH_ACCESS_KEY={s.unsplash_access_key}",
     ]
     _env_file().write_text("\n".join(lines) + "\n", encoding="utf-8")

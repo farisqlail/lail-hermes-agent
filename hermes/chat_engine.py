@@ -16,7 +16,7 @@ import json
 import re
 from pathlib import Path
 
-from . import brain, config, ics, imagegen, launcher, mcp_hub, mcp_risk, paths, postmortem, uploads, ytclip
+from . import brain, config, figma_browser, ics, imagegen, launcher, mcp_hub, mcp_risk, paths, postmortem, uploads, ytclip
 from .pending_actions import PendingAction, PendingStore
 from .project_resolve import parse_project_ref
 from .telegram_bridge import new_task_id
@@ -84,6 +84,41 @@ RESUME_NUDGE = (
     "Kalau sudah dicoba ulang dan tetap gagal, sebutkan jelas apa yang gagal "
     "dan apa yang kamu butuhkan dari operator."
 )
+
+# Leaf-level figma_web_design child item — reused as-is for a ROW's own
+# `children` (one level of nesting only: a ROW of ROWs is a schema-complexity
+# nobody's asked for, even though the backend's _place_items would honor it).
+_FIGMA_CHILD_LEAF_PROPS = {
+    "type": {"type": "string", "enum": [
+        "TEXT", "HEADER_IMAGE", "AVATAR", "INPUT", "BUTTON",
+        "CHECKBOX", "FOOTER_LINK", "RECTANGLE",
+    ], "description": (
+        "TEXT=teks biasa (judul/label/paragraf). "
+        "HEADER_IMAGE=area gambar/banner besar di atas — isi `photoQuery` "
+        "dengan kata kunci foto (mis. 'golden retriever puppy') untuk foto "
+        "asli, atau biarkan kosong untuk kotak placeholder berwarna. "
+        "AVATAR=lingkaran foto profil/icon bulat — `photoQuery` juga "
+        "berlaku (mis. 'woman portrait'). "
+        "INPUT=kotak form dengan teks placeholder di dalamnya. "
+        "BUTTON=tombol berwarna dengan label teks di tengah. "
+        "CHECKBOX=kotak centang kecil + label di sampingnya. "
+        "FOOTER_LINK=teks link kecil biasanya di bawah (mis. "
+        "'Sudah punya akun? Masuk'). RECTANGLE=kotak/card polos "
+        "generik kalau tidak cocok tipe lain."
+    )},
+    "content": {"type": "string", "description": "isi teks untuk TEXT/FOOTER_LINK/CHECKBOX (label)"},
+    "photoQuery": {"type": "string", "description": "kata kunci pencarian foto asli (Unsplash) untuk HEADER_IMAGE/AVATAR, mis. 'golden retriever puppy'. Kosongkan untuk placeholder warna polos."},
+    "text": {"type": "string", "description": "label tombol untuk BUTTON (mis. 'Create account')"},
+    "placeholder": {"type": "string", "description": "teks placeholder untuk INPUT (mis. 'Your email')"},
+    "fontSize": {"type": "integer", "description": "ukuran font teks, dalam px"},
+    "color": {"type": "string", "description": "warna hex teks, atau warna isi (fill) untuk HEADER_IMAGE/AVATAR/BUTTON/RECTANGLE"},
+    "textColor": {"type": "string", "description": "warna hex label teks di dalam BUTTON, default putih"},
+    "backgroundColor": {"type": "string", "description": "warna hex latar/fill untuk INPUT atau BUTTON/RECTANGLE (alias dari `color`), default abu muda"},
+    "size": {"type": "integer", "description": "diameter AVATAR dalam px (lingkaran)"},
+    "width": {"type": "integer", "description": "lebar elemen dalam px (kosongkan untuk full-width otomatis, atau untuk pembagian rata di dalam ROW)"},
+    "height": {"type": "integer", "description": "tinggi elemen dalam px"},
+    "borderRadius": {"type": "integer", "description": "corner radius dalam px"},
+}
 
 # Tools the conversational agent may call. A curated, safe set — read-only
 # system queries plus start_task, which only ever QUEUES a task held for the
@@ -205,6 +240,62 @@ CHAT_TOOLS = [
             "vertical": {"type": "string", "enum": ["blur", "crop", "none"],
                          "description": "format 9:16 Shorts/TikTok, default 'blur'. 'crop' potong tengah, 'none' rasio asli."}},
             "required": ["url"]}}},
+    {"type": "function", "function": {
+        "name": "figma_web_design",
+        "description": ("Desain frame/UI baru langsung di Figma Web (browser) "
+                        "menggunakan automation UI asli (draw tools + panel Figma), "
+                        "bukan API/plugin. Menghasilkan frame, AutoLayout, warna, dan "
+                        "elemen UI, lalu mengembalikan screenshot preview-nya. Pakai "
+                        "ini bila pengguna minta didesainkan frame / UI di Figma Web. "
+                        "Jika pengguna melampirkan gambar (screenshot/mockup/referensi "
+                        "UI) di chat, JADI senior UI/UX: baca gambar itu langsung — "
+                        "tata letak, urutan elemen dari atas ke bawah, warna (hex "
+                        "sedekat mungkin), teks persis, ukuran relatif tiap elemen — "
+                        "lalu tuangkan sebagai `children` di bawah sedetail mungkin. "
+                        "Jangan menebak generik; reproduksi apa yang benar-benar "
+                        "terlihat di gambar."),
+        "parameters": {"type": "object", "properties": {
+            "file_url": {"type": "string", "description": "URL dokumen Figma Web (misal https://www.figma.com/design/xxx/yyy)"},
+            "frame_name": {"type": "string", "description": "nama frame UI, misal 'Login Screen'"},
+            "layout_mode": {"type": "string", "enum": ["VERTICAL", "HORIZONTAL", "NONE"], "description": "orientasi AutoLayout frame utama"},
+            "width": {"type": "integer", "description": "lebar frame dalam px, default 375"},
+            "height": {"type": "integer", "description": "tinggi frame dalam px, default 812"},
+            "background_color": {"type": "string", "description": "warna latar belakang hex, misal '#FFFFFF'"},
+            "padding": {"type": "integer", "description": "padding inner frame dalam px, default 24"},
+            "item_spacing": {"type": "integer", "description": "jarak antar elemen inner dalam px, default 16"},
+            "children": {
+                "type": "array",
+                "description": (
+                    "Elemen UI di dalam frame, URUT DARI ATAS KE BAWAH persis "
+                    "seperti tersusun di gambar/permintaan pengguna."
+                ),
+                "items": {"type": "object", "properties": {
+                    **_FIGMA_CHILD_LEAF_PROPS,
+                    "type": {"type": "string", "enum": [
+                        *_FIGMA_CHILD_LEAF_PROPS["type"]["enum"], "ROW",
+                    ], "description": (
+                        _FIGMA_CHILD_LEAF_PROPS["type"]["description"] +
+                        " ROW=beberapa elemen SEJAJAR HORIZONTAL dalam satu baris "
+                        "(mis. 3 tombol aksi berdampingan) — isi lewat `children` "
+                        "di bawah, BUKAN lewat `text`/`content`."
+                    )},
+                    "itemSpacing": {"type": "integer", "description": "jarak antar elemen di dalam ROW, dalam px, default 12"},
+                    "padding": {"type": "integer", "description": "padding dalam ROW (dipakai kalau ROW juga berfungsi sebagai card berwarna, mis. baris transaksi), dalam px, default 0"},
+                    "children": {
+                        "type": "array",
+                        "description": "Elemen di dalam ROW, urut kiri ke kanan. Hanya dipakai bila type=ROW.",
+                        "items": {"type": "object", "properties": _FIGMA_CHILD_LEAF_PROPS},
+                    },
+                }}
+            }},
+            "required": ["frame_name"]}}},
+    {"type": "function", "function": {
+        "name": "figma_login",
+        "description": ("Buka browser visual Chrome/Edge agar pengguna bisa login "
+                        "ke akun Figma secara manual. Browser akan tetap terbuka "
+                        "sampai pengguna selesai login (maksimal 5 menit) dan "
+                        "menyimpan sesinya secara permanen."),
+        "parameters": {"type": "object", "properties": {}}}},
 ]
 
 
@@ -435,6 +526,38 @@ class ChatEngine:
                         return json.dumps({"status": "ok",
                                            "video_title": res["video_title"],
                                            "candidates": cands}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_web_design":
+                    file_url = args.get("file_url")
+                    frame_name = str(args.get("frame_name") or "Hermes Frame")
+                    spec = {
+                        "name": frame_name,
+                        "layoutMode": args.get("layout_mode") or "VERTICAL",
+                        "width": int(args.get("width") or 375),
+                        "height": int(args.get("height") or 812),
+                        "backgroundColor": args.get("background_color") or "#0F172A",
+                        "padding": int(args.get("padding") or 24),
+                        "itemSpacing": int(args.get("item_spacing") or 16),
+                        "children": args.get("children") or []
+                    }
+                    res = await figma_browser.design_figma_frame_web(
+                        file_url=file_url, spec=spec, out_dir=paths.artifacts_dir() / "figma",
+                        unsplash_key=config.load_secrets().unsplash_access_key or None,
+                    )
+                    if res.get("ok") and res.get("screenshot_path"):
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
+                            except Exception as e:
+                                print(f"Could not send Figma screenshot to Telegram: {e}")
+                        return json.dumps({**res, "url": url, "markdown": f"![Figma Preview]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_login":
+                    res = await figma_browser.open_figma_login_session(timeout_s=300)
                     return json.dumps(res, ensure_ascii=False)
 
                 if name == "start_task":
