@@ -38,8 +38,19 @@ async def _canvas_center(page) -> tuple[float, float]:
     return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
 
 
-async def _set_number(page, onboarding_key: str, value: float) -> None:
-    loc = page.locator(f'[data-onboarding-key="{onboarding_key}"] input').first
+async def _set_number(page, onboarding_key: str, value: float, last: bool = False) -> None:
+    """`last=True`: some onboarding-keys are NOT unique to one control — e.g.
+    `scrubbable-control-opacity` matches the layer's own Appearance opacity,
+    its Fill's opacity, AND (once a shadow effect is added) the shadow's own
+    opacity, 3 elements sharing one key, `.first` always grabbing the
+    layer's — confirmed live: editing a shadow's opacity via `.first`
+    silently set the whole LAYER's opacity instead, making it nearly
+    invisible. `.last` is the shadow's own field, added latest to the DOM.
+    Every other onboarding-key used in this file is confirmed unique
+    (count()==1) even with an effect open — this only matters for opacity.
+    """
+    base = page.locator(f'[data-onboarding-key="{onboarding_key}"] input')
+    loc = base.last if last else base.first
     await loc.click(timeout=8000)
     await page.keyboard.press("Control+A")
     await loc.type(str(round(value)))
@@ -136,6 +147,39 @@ async def _zoom_to_selection(page, horizontal_bias: float = 0.5, vertical_bias: 
     a vertical stack needs the bias pushed toward the bottom (high
     `vertical_bias`), a horizontal one (e.g. a ROW) toward the right (high
     `horizontal_bias`).
+
+    This function's own opening claim is not quite true: "zoom to fit" does
+    NOT fill the canvas element edge-to-edge — it leaves a margin around the
+    fitted node, confirmed live: a 472px-tall STACK zoomed to only ~757 of
+    the viewport's 900px height, not 900. A bias too close to 1.0 can miss
+    that margin and land just past the node's real rendered edge — the
+    click then hits the raw page behind it instead of the frame, and Figma
+    creates the new element as a stray top-level object instead of nesting
+    it (with no error — this fails silently). Confirmed live: an 812-tall
+    ROOT frame (already filling most of the 900px viewport, so a small
+    margin either way) tolerated 0.85 fine, but a smaller nested STACK did
+    not; 0.7 was safe there.
+
+    But a HIGH bias is also a hard *lower* bound, for the opposite reason:
+    it needs to land past whatever's already been placed, and a fixed
+    fraction can't track that — a STACK accumulating children fills a
+    growing share of its own height as more get added. Confirmed live: by
+    the 6th child in a 472-tall STACK (avatar+heading+subtitle+2 inputs
+    already using ~340px, 72% of the height), a 0.7 bias (330px) landed
+    BEFORE that used content instead of past it, nesting the next child
+    INSIDE the previous one's frame instead of appending it as a sibling —
+    and even 0.78 (tried next) only pushed the failure further out, not
+    away, for an 8-child STACK.
+
+    These two constraints (margin ceiling, content-fill floor) can close
+    entirely for a dense-enough composite — no SINGLE fixed fraction is
+    safe across a container's whole fill. `_place_items` no longer tries:
+    it tracks actual used space via `_item_size`'s per-type extent estimate
+    and computes each item's bias fresh with `_append_bias`, clamped to
+    [`_MIN_APPEND_BIAS`, `_MAX_APPEND_BIAS`] (0.5–0.8) rather than trusting
+    one constant. This function's own `horizontal_bias`/`vertical_bias`
+    params stay dumb on purpose — `_append_bias` is the one place that
+    understands fill; everything else just asks for a point.
     """
     await page.keyboard.press("Shift+2")
     await page.wait_for_timeout(450)
@@ -144,15 +188,22 @@ async def _zoom_to_selection(page, horizontal_bias: float = 0.5, vertical_bias: 
 
 
 async def _apply_auto_layout(
-    page, direction: str, pad_lr: float, pad_tb: float, gap: float, centered: bool
+    page, direction: str, pad_lr: float, pad_tb: float, gap: float, centered: bool,
+    align_start: bool = False,
 ) -> None:
     await page.keyboard.press("Shift+A")
     await page.wait_for_timeout(350)
-    if direction == "HORIZONTAL":
-        radio = page.get_by_role("radio", name="Horizontal")
-        if await radio.count():
-            await radio.click()
-            await page.wait_for_timeout(200)
+    # Shift+A's own default direction isn't reliably "Vertical" — it follows
+    # the drawn frame's aspect ratio (a wider-than-tall frame, e.g. a STACK
+    # sized 327x300, can land on Horizontal by default). Relying on that
+    # default meant a VERTICAL composite whose w/h happened to come out wider
+    # than tall would apply auto-layout in the wrong axis, then hang forever
+    # on `_set_number` looking for a "vertical-gap" field that doesn't exist
+    # in Horizontal mode. Click the matching radio explicitly either way.
+    radio = page.get_by_role("radio", name="Horizontal" if direction == "HORIZONTAL" else "Vertical")
+    if await radio.count():
+        await radio.click()
+        await page.wait_for_timeout(200)
     await _set_number(page, "scrubbable-control-horizontal-padding", pad_lr)
     await _set_number(page, "scrubbable-control-vertical-padding", pad_tb)
     gap_key = (
@@ -162,7 +213,42 @@ async def _apply_auto_layout(
     )
     await _set_number(page, gap_key, gap)
     if centered:
-        radio = page.get_by_role("radio", name="Align center", exact=True)
+        # Figma's alignment control is a single 3x3 grid combining BOTH the
+        # growth-axis packing and the cross-axis alignment in one click (9
+        # literal positions: "Align top left" .. "Align bottom right") --
+        # not two independent controls. The dead-center cell ("Align
+        # center") packs children from the CONTAINER's center on the
+        # GROWTH axis too, not just the cross axis.
+        #
+        # That's exactly right for a composite that places ONE thing meant
+        # to look centered as a block (a BUTTON/INPUT label, sized to the
+        # full box width) -- `align_start` stays False for those, same
+        # "Align center" as always.
+        #
+        # But it corrupts append-one-child-at-a-time construction (ROW/
+        # STACK, via `_place_items`'s `_append_bias` machinery): with only
+        # 1 of N siblings placed, that lone child renders centered in the
+        # whole (eventually-larger) container instead of flush against the
+        # start edge, so `_append_bias`'s click point (which assumes
+        # content starts at padding=0 and grows outward) lands on top of
+        # or past existing content unpredictably. Confirmed live: a ROW's
+        # first of 2 STACK cards rendered centered in the full row width,
+        # so the 2nd card's start-relative click landed INSIDE card 1
+        # instead of beside it (nested instead of sibling). `align_start`
+        # picks the grid cell that packs the GROWTH axis at its start edge
+        # and only centers the CROSS axis instead -- "Align left" for a
+        # HORIZONTAL row (packs left-to-right, vertically centered),
+        # "Align top center" for a VERTICAL stack (packs top-to-bottom,
+        # horizontally centered). Callers pass `align_start=True` only for
+        # ROW/STACK's own composite (see `_place_items`) -- BUTTON/INPUT/
+        # CHECKBOX keep true centering, confirmed live that `align_start`
+        # there mis-packs a button/input label flush-left instead of
+        # centered in the box.
+        align_name = (
+            ("Align left" if direction == "HORIZONTAL" else "Align top center")
+            if align_start else "Align center"
+        )
+        radio = page.get_by_role("radio", name=align_name, exact=True)
         if await radio.count():
             await radio.click()
             await page.wait_for_timeout(150)
@@ -208,11 +294,50 @@ async def _set_stroke(page, hex_color: str, weight: float | None = None) -> None
         await page.wait_for_timeout(150)
 
 
-async def _add_shadow(page) -> None:
+# Elevation tiers, not just an on/off shadow — a resting card and a
+# floating modal/dropdown read as different depth in any real design system,
+# and Figma's own default (Y4/Blur4/25%) is one fixed point, not a scale.
+# Live-confirmed selectors (`scrubbable-control-position-y`, `-blur-radius`,
+# `-spread`, `-opacity`) come from the flyout that auto-opens right after
+# picking "Drop shadow" from the Effects "Add effect" menu — same
+# `[data-onboarding-key=...] input` pattern `_set_number` already uses for
+# every other numeric field, so no new interaction primitive was needed,
+# just the field names.
+_SHADOW_ELEVATIONS = {
+    # (Y offset, blur radius, spread, opacity%) — soft, low-contrast: a card
+    # resting flush on its own background (the common case: list rows,
+    # product cards, most "this is a card" signals).
+    "subtle": (2, 8, 0, 8),
+    # A card that's meant to stand out from busy/colored content behind it,
+    # or a dropdown/popover — noticeably more separated than "subtle".
+    "medium": (8, 20, 0, 14),
+    # Reserve for the ONE most-elevated thing on a screen (a modal, an FAB) —
+    # a negative spread keeps the shadow from bleeding past rounded corners
+    # at this size.
+    "strong": (16, 32, -2, 20),
+}
+
+
+async def _add_shadow(page, elevation: str = "subtle") -> None:
     await page.get_by_role("button", name="Add effect").click()
     await page.wait_for_timeout(300)
     await page.get_by_text("Drop shadow", exact=True).click()
-    await page.wait_for_timeout(200)
+    await page.wait_for_timeout(300)
+    y, blur, spread, opacity = _SHADOW_ELEVATIONS.get(elevation, _SHADOW_ELEVATIONS["subtle"])
+    await _set_number(page, "scrubbable-control-position-y", y)
+    await _set_number(page, "scrubbable-control-blur-radius", blur)
+    if spread:
+        await _set_number(page, "scrubbable-control-spread", spread)
+    await _set_number(page, "scrubbable-control-opacity", opacity, last=True)
+    # Deliberately NO trailing Escape here, unlike `_set_fill_hex`/
+    # `_set_stroke`'s callers. `_add_shadow` is called from BOTH `_add_shape`
+    # (a leaf — safe to deselect, its own trailing Escape already covers
+    # this) AND `_add_composite`, which calls this BEFORE its own required
+    # `_zoom_to_selection(page)` — that needs the just-built composite to
+    # STILL be the current selection. Escape here risked deselecting it
+    # first, confirmed live: a STACK's 2nd+ child escaped to the page root
+    # every time the STACK itself had `shadow=True` — exactly the mistake
+    # `_set_fill_hex` avoided (see its own comment) but this one repeated.
 
 
 async def _add_text(
@@ -238,13 +363,30 @@ async def _add_text(
         await _set_fill_hex(page, color)
     if bold:
         await _set_bold(page)
+    # `_set_fill_hex`'s Enter commits the hex value but does not close the
+    # color-picker popover it opened (unlike `_set_bold`, which already
+    # presses Escape for the same reason). Left open, the NEXT item's
+    # tool-shortcut keypress ('t' for TEXT, 'f' for a shape/composite) can
+    # land in that popover instead of arming a canvas tool — so the next
+    # element is never drawn, and whatever gets typed lands on the stale
+    # selection instead. A plain (non-bold) TEXT item with a `color` is
+    # exactly that case, and it's the common one — most text sets a color.
+    # Safe to do unconditionally here (not inside `_set_fill_hex` itself):
+    # `_add_shape`/`_add_composite` callers already re-select their own
+    # parent explicitly afterward rather than relying on this node staying
+    # selected, but `_add_composite` uses `_set_fill_hex` INTERNALLY and
+    # then immediately zooms to what MUST still be the current selection —
+    # closing the popover there instead would deselect the very composite
+    # being built.
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(150)
 
 
 async def _add_shape(
     page, tool_key: str, cx: float, cy: float, w: float, h: float,
     color: str | None = None, corner_radius: float | None = None,
     border_color: str | None = None, border_width: float | None = None,
-    shadow: bool = False,
+    shadow: bool = False, elevation: str = "subtle",
 ) -> None:
     await _draw(page, tool_key, cx, cy)
     await _set_number(page, "scrubbable-control-width", w)
@@ -256,7 +398,160 @@ async def _add_shape(
     if border_color:
         await _set_stroke(page, border_color, border_width)
     if shadow:
-        await _add_shadow(page)
+        await _add_shadow(page, elevation)
+    # Same hazard as `_add_text`'s trailing Escape: `_set_stroke`'s stroke-
+    # weight textbox (and `_set_fill_hex`'s color popover) don't reliably
+    # release focus on their own after Enter. Left stuck, the NEXT item's
+    # tool-shortcut keypress can land there instead of the canvas — safe to
+    # force here unconditionally because `_add_shape` is only ever called
+    # for a LEAF shape, whose caller (`_place_items`) always re-selects the
+    # parent explicitly afterward rather than relying on this node staying
+    # selected (unlike `_add_composite`, which needs its own selection
+    # intact for the `_zoom_to_selection` right after it sets these same
+    # properties).
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(150)
+
+
+# See `_zoom_to_selection`'s docstring: a single fixed click-bias fraction
+# can't be safe for both an empty container (needs a LOW bias) and a nearly-
+# full one (needs a HIGH bias, close to its real edge) at the same time.
+# These bound the dynamic bias `_place_items` computes per item instead of
+# trusting one constant throughout a whole composite's fill.
+#
+# The floor is deliberately low, NOT 0.5 (a first cut at this used 0.5,
+# reasoning it should match `_add_composite`'s own safe (0.5, 0.5) zoom for
+# entering a brand-new composite — wrong: that's a one-time "first item"
+# case, unrelated to this per-item running fraction). `used` grows
+# monotonically as items are placed, so the raw fraction (start_padding +
+# used) / parent_extent ALREADY increases correctly on its own; clamping it
+# UP to 0.5 for every item whose true fraction is still below that undid
+# the whole point — confirmed live: it collapsed 2-3 early items onto the
+# SAME click point (all floored to 0.5 alike), and Figma's click-to-insert
+# picks a tree position by proximity to existing siblings, not always "at
+# the end" — so those items landed out of order (a heading created 2nd
+# ended up rendered 5th). 0.15 only guards the truly degenerate case (a
+# fraction near/at 0, which would click right at the frame's top padding
+# edge) without flattening the natural progression for every early item.
+_MIN_APPEND_BIAS = 0.15
+_MAX_APPEND_BIAS = 0.8
+
+
+def _text_extent(item: dict, available_w: float) -> float:
+    """Rough estimate of a TEXT/FOOTER_LINK node's rendered HEIGHT once
+    wrapped to `available_w`. There's no real layout engine here — Figma's
+    actual line-wrapping isn't queryable without reading the node back —
+    so this is a deliberately crude character-count wrap estimate. It only
+    needs to be in the right ballpark: it feeds `_place_items`'s running
+    `used` tally, which itself only sets a *bias fraction* clamped to a
+    safe range, not an exact pixel target — but it needs to err on the
+    generous side, not just "average", since UNDERestimating shrinks the
+    margin `_append_bias` tries to keep and can put the NEXT item's click
+    ambiguously close to this one. Confirmed live: 1.35x line-height
+    (roughly right for body copy) underestimated a bold 28px heading enough
+    that the following item's click landed on top of it, merging their
+    text into one node instead of creating two. 1.6x has more headroom.
+    """
+    font_size = float(item.get("fontSize") or 16)
+    content = str(item.get("content") or item.get("text") or "")
+    if not content:
+        return font_size * 1.6
+    avg_char_w = font_size * 0.55
+    chars_per_line = max(int(available_w / avg_char_w), 1) if available_w else len(content)
+    lines = max(1, -(-len(content) // chars_per_line))  # ceil division
+    return font_size * 1.6 * lines
+
+
+def _item_size(
+    item: dict, itype: str, content_w: float, box_size: tuple[float, float] | None = None,
+) -> tuple[float, float]:
+    """(width, height) Figma will actually draw this item at — mirrors the
+    same defaults each `_place_items` branch below applies, kept alongside
+    them so the running `used` tally (see `_place_items`) stays consistent
+    with what's really on screen. `box_size` is the `(box_w, box_h)` a
+    ROW/STACK branch already computed for itself — not worth re-deriving.
+    """
+    if itype in ("TEXT", "FOOTER_LINK"):
+        font_size = float(item.get("fontSize") or 16)
+        content = str(item.get("content") or item.get("text") or "")
+        w = min(len(content) * font_size * 0.55, content_w) if content else font_size
+        return w, _text_extent(item, content_w)
+    if itype in ("HEADER_IMAGE", "HEADER"):
+        return float(item.get("width") or content_w), float(item.get("height") or 220)
+    if itype in ("AVATAR", "ELLIPSE", "CIRCLE"):
+        size = float(item.get("size") or item.get("width") or 56)
+        return size, size
+    if itype in ("INPUT", "BUTTON"):
+        return float(item.get("width") or content_w), float(item.get("height") or 50)
+    if itype == "CHECKBOX":
+        return float(item.get("width") or content_w), float(item.get("height") or 28)
+    if itype in ("ROW", "STACK"):
+        if box_size is not None:
+            return box_size
+        return float(item.get("width") or content_w), float(item.get("height") or 140)
+    return float(item.get("width") or 100), float(item.get("height") or 40)
+
+
+# The Playwright browser here always runs at a fixed 1440x900 viewport (see
+# every `launch_kwargs` in this file) — the canvas element's own box has
+# been exactly {x:290, y:0, w:909, h:900} across every live test this
+# session, so hardcoding it is safe as long as that viewport size holds.
+_CANVAS_W = 909.0
+_CANVAS_H = 900.0
+
+
+def _append_bias(
+    used: float, start_padding: float, parent_extent: float | None,
+    cross_extent: float | None = None, horizontal: bool = False,
+) -> float:
+    """Fraction of the parent's growth-axis extent to click at for the NEXT
+    item, given `used` px already filled by prior siblings (plus their
+    gaps) and `start_padding` px consumed before the first one.
+
+    Deliberately does NOT click right at the `used` line itself — first cut
+    at this did, and it scrambled insertion order across 5+ items live: a
+    small underestimate in `_item_size`'s height guess (it's a heuristic,
+    not real layout) puts the click ambiguously close to the last-placed
+    sibling, and Figma's click-to-insert then sometimes places the new item
+    BEFORE that sibling instead of after — no error, just wrong order.
+    Instead this aims for the MIDPOINT between the used line and the safe
+    ceiling: a comfortable, unambiguous margin past existing content that
+    still narrows (never fully closes) as the container fills, and stays
+    strictly increasing in `used` — so insertion order is preserved by
+    construction, not just by hoping the estimate was close enough.
+
+    `cross_extent` (the parent's OTHER dimension — width, for a vertical
+    growth axis) is needed for a second correction: `_zoom_to_selection`'s
+    whole premise is a fraction of CANVAS extent lands at the same fraction
+    of the NODE's extent — true only when the node, zoomed to fit, actually
+    occupies close to the full canvas along that axis. A short-but-wide
+    composite (confirmed live: a 327x100 stat card) hits its zoom scale
+    from the WIDTH constraint, not height — it only occupied ~30% of the
+    canvas's height once fit, not ~85% like a near-viewport-filling ROOT
+    or STACK. A bias meant for "85% down a mostly-filled canvas" then
+    landed far below the node's actual (small, centered) on-screen box.
+    Recomputing the zoom-to-fit scale and remapping the bias into the
+    band the node actually occupies (zoom-to-fit centers its result) fixes
+    this without needing to observe the real render.
+    """
+    if not parent_extent:
+        return 0.7  # unsized parent shouldn't normally happen; a safe mid-range fallback
+    used_frac = min((start_padding + used) / parent_extent, _MAX_APPEND_BIAS)
+    target = used_frac + (_MAX_APPEND_BIAS - used_frac) * 0.5
+    target = max(_MIN_APPEND_BIAS, min(_MAX_APPEND_BIAS, target))
+    if cross_extent:
+        canvas_growth = _CANVAS_W if horizontal else _CANVAS_H
+        canvas_cross = _CANVAS_H if horizontal else _CANVAS_W
+        scale = min(canvas_cross / cross_extent, canvas_growth / parent_extent)
+        # The 0.85 factor: pure geometric fit (scale * extent / canvas)
+        # over-predicts how much of the canvas a fitted node occupies —
+        # Figma's "zoom to fit" reserves its own margin beyond the math,
+        # confirmed live: a 472-tall STACK (this formula's pure math says
+        # it should fill ~100% of the canvas height) actually measured at
+        # ~84%. 0.85 matches that without a second free parameter.
+        occupied_frac = min((parent_extent * scale * 0.85) / canvas_growth, 1.0)
+        target = 0.5 - occupied_frac / 2 + target * occupied_frac
+    return target
 
 
 async def _fetch_stock_photo(query: str, api_key: str, orientation: str = "landscape") -> bytes | None:
@@ -318,24 +613,30 @@ async def _add_composite(
     fill_children: Callable[[float, float], Awaitable[None]],
     corner_radius: float | None = None,
     border_color: str | None = None, border_width: float | None = None,
-    shadow: bool = False,
+    shadow: bool = False, elevation: str = "subtle",
+    align_start: bool = False,
 ) -> None:
     """Create a nested auto-layout sub-frame (button/input/checkbox row) and
     fill it via `fill_children(inner_cx, inner_cy)`. Always sets a real fill
     (even if just white) since an empty-fill frame can't be clicked into.
+
+    `align_start`: True only for a ROW/STACK's own composite (see
+    `_apply_auto_layout`'s docstring) -- every other caller (BUTTON, INPUT,
+    CHECKBOX) wants its single/paired child block visually centered, not
+    packed from the start edge.
     """
     await _draw(page, "f", cx, cy)
     await _set_number(page, "scrubbable-control-width", w)
     await _set_number(page, "scrubbable-control-height", h)
     if corner_radius:
         await _set_number(page, "scrubbable-control-corner-radius", corner_radius)
-    await _apply_auto_layout(page, direction, padding, padding, gap, centered=True)
+    await _apply_auto_layout(page, direction, padding, padding, gap, centered=True, align_start=align_start)
     await _lock_fixed_size(page, w, h)
     await _set_fill_hex(page, color)
     if border_color:
         await _set_stroke(page, border_color, border_width)
     if shadow:
-        await _add_shadow(page)
+        await _add_shadow(page, elevation)
     inner_cx, inner_cy = await _zoom_to_selection(page)
     await fill_children(inner_cx, inner_cy)
 
@@ -355,7 +656,9 @@ async def _current_row_selector(page) -> str:
     return f'[data-testid="{testid}"]'
 
 
-async def _return_to_parent(page, parent_row_selector: str, direction: str = "VERTICAL") -> tuple[float, float]:
+async def _return_to_parent(
+    page, parent_row_selector: str, direction: str = "VERTICAL", bias: float = 0.7,
+) -> tuple[float, float]:
     """Reselect a parent frame and re-zoom to it, restoring a valid click
     point for its remaining children.
 
@@ -370,18 +673,35 @@ async def _return_to_parent(page, parent_row_selector: str, direction: str = "VE
     point biased right, past its existing children; a VERTICAL one biased
     down. Getting this wrong doesn't error, it silently inserts the next
     item mid-stack (or drops it outside the parent entirely).
+
+    `bias` should be `_append_bias`'s output (how full the parent already
+    is), not a blind constant — see that function and `_zoom_to_selection`'s
+    docstring for why a single fixed fraction isn't safe across a
+    composite's whole fill. The default here is only a fallback for the
+    rare direct caller that doesn't track fill.
     """
-    await page.locator(parent_row_selector).click()
+    # `force=True`: the Layers panel reveals a lock/visibility toggle
+    # checkbox on row hover, positioned over part of the row — for a deeply
+    # indented row (a ROW nested inside a STACK inside the root), Playwright's
+    # actionability check treats that hover-revealed checkbox as "obscuring"
+    # the row and retries the click for its full timeout instead of ever
+    # landing (confirmed live: a footer ROW 3 levels deep hung the full 30s
+    # here before failing). The checkbox intercepting the click is a hover
+    # artifact of Playwright's own pointer, not a real interaction hazard —
+    # forcing the click (skip the actionability/visibility check, dispatch
+    # directly) selects the row exactly as a real click would.
+    await page.locator(parent_row_selector).click(force=True)
     await page.wait_for_timeout(150)
     if direction == "HORIZONTAL":
-        return await _zoom_to_selection(page, horizontal_bias=0.85)
-    return await _zoom_to_selection(page, vertical_bias=0.85)
+        return await _zoom_to_selection(page, horizontal_bias=bias)
+    return await _zoom_to_selection(page, vertical_bias=bias)
 
 
 async def _place_items(
     page, cx: float, cy: float, items: list[dict], content_w: float, parent_row_selector: str,
     parent_direction: str = "VERTICAL", unsplash_key: str | None = None,
     parent_w: float | None = None, parent_h: float | None = None,
+    gap: float = 16.0, start_padding: float = 0.0,
 ) -> tuple[float, float, int]:
     """Place a list of items into whatever frame is currently selected
     (`parent_row_selector` is that frame's own row, used to return to it
@@ -401,8 +721,18 @@ async def _place_items(
     child, not just once up front. Left uncorrected, it then shrinks to
     that one child's bounding box and every later sibling gets drawn
     relative to a tiny, wrong-sized frame — landing outside it entirely.
+
+    `gap`/`start_padding` are the parent's own AutoLayout spacing/padding
+    along its growth axis — used only to keep a running `used` tally (see
+    below) of how much of the parent is already filled, so each item's
+    click-point bias can be computed fresh via `_append_bias` instead of
+    reusing one fixed fraction for a container's entire fill (see
+    `_zoom_to_selection`'s docstring for why that's unsafe both when the
+    container is nearly empty and when it's nearly full).
     """
     created = 0
+    used = 0.0
+    parent_extent = parent_w if parent_direction == "HORIZONTAL" else parent_h
     for item in items:
         itype = str(item.get("type") or "").upper()
         try:
@@ -419,7 +749,7 @@ async def _place_items(
                     color=item.get("color") or "#E2E8F0",
                     corner_radius=item.get("borderRadius"),
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
-                    shadow=bool(item.get("shadow")),
+                    shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
                 )
                 photo_query = item.get("photoQuery")
                 if photo_query and unsplash_key:
@@ -431,7 +761,7 @@ async def _place_items(
                 await _add_shape(
                     page, "o", cx, cy, size, size, color=item.get("color") or "#0070F3",
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
-                    shadow=bool(item.get("shadow")),
+                    shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
                 )
                 photo_query = item.get("photoQuery")
                 if photo_query and unsplash_key:
@@ -453,7 +783,7 @@ async def _place_items(
                     # ask for what every mockup already implies.
                     border_color=item.get("borderColor") or "#E2E8F0",
                     border_width=item.get("borderWidth"),
-                    shadow=bool(item.get("shadow")),
+                    shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
                     direction="HORIZONTAL", gap=8, padding=20, fill_children=_fill_input,
                 )
             elif itype == "BUTTON":
@@ -475,7 +805,7 @@ async def _place_items(
                     page, cx, cy, item.get("width") or content_w, item.get("height") or 50,
                     color=fill, corner_radius=item.get("borderRadius", 50),
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
-                    shadow=bool(item.get("shadow")),
+                    shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
                     direction="HORIZONTAL", gap=8, padding=16, fill_children=_fill_button,
                 )
             elif itype == "CHECKBOX":
@@ -518,12 +848,13 @@ async def _place_items(
                 async def _fill_box(
                     icx: float, icy: float, _items=normalized, _child_w=default_child_w,
                     _direction=box_direction, _w=box_w, _h=box_h,
+                    _gap=box_gap, _pad=box_padding,
                 ) -> None:
                     box_selector = await _current_row_selector(page)
                     await _place_items(
                         page, icx, icy, _items, _child_w, box_selector,
                         parent_direction=_direction, unsplash_key=unsplash_key,
-                        parent_w=_w, parent_h=_h,
+                        parent_w=_w, parent_h=_h, gap=_gap, start_padding=_pad,
                     )
 
                 await _add_composite(
@@ -531,9 +862,9 @@ async def _place_items(
                     color=item.get("backgroundColor") or item.get("color") or "#FFFFFF",
                     corner_radius=item.get("borderRadius"),
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
-                    shadow=bool(item.get("shadow")),
+                    shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
                     direction=box_direction, gap=box_gap, padding=box_padding,
-                    fill_children=_fill_box,
+                    fill_children=_fill_box, align_start=True,
                 )
             else:
                 await _add_shape(
@@ -541,21 +872,36 @@ async def _place_items(
                     color=item.get("backgroundColor") or item.get("color") or item.get("fill"),
                     corner_radius=item.get("borderRadius"),
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
-                    shadow=bool(item.get("shadow")),
+                    shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
                 )
             created += 1
+            item_w, item_h = _item_size(
+                item, itype, content_w,
+                box_size=(box_w, box_h) if itype in ("ROW", "STACK") else None,
+            )
+            # +15 flat slack on top of the estimate itself: `_item_size` is a
+            # heuristic (exact for fixed-size shapes/composites, a guess for
+            # auto-height TEXT), and any underestimate directly shrinks
+            # `_append_bias`'s margin — this is cheap insurance against that
+            # for every type, not just text.
+            used += (item_w if parent_direction == "HORIZONTAL" else item_h) + gap + 15.0
+            cross_extent = parent_h if parent_direction == "HORIZONTAL" else parent_w
+            bias = _append_bias(used, start_padding, parent_extent,
+                               cross_extent=cross_extent, horizontal=(parent_direction == "HORIZONTAL"))
             # Refresh the click point for EVERY item, not just composites —
             # a second plain TEXT reusing a stale point can land on top of
             # the first (Figma then merges the keystrokes into it instead of
             # creating a separate node) once the container has real slack
-            # instead of hugging exactly around a single child.
-            cx, cy = await _return_to_parent(page, parent_row_selector, parent_direction)
+            # instead of hugging exactly around a single child. `bias` tracks
+            # how full the container actually is instead of trusting one
+            # fixed fraction for its whole fill — see `_append_bias`.
+            cx, cy = await _return_to_parent(page, parent_row_selector, parent_direction, bias=bias)
             if parent_w and parent_h:
                 await _lock_fixed_size(page, parent_w, parent_h)
                 cx, cy = await _zoom_to_selection(
                     page,
-                    horizontal_bias=0.85 if parent_direction == "HORIZONTAL" else 0.5,
-                    vertical_bias=0.85 if parent_direction != "HORIZONTAL" else 0.5,
+                    horizontal_bias=bias if parent_direction == "HORIZONTAL" else 0.5,
+                    vertical_bias=bias if parent_direction != "HORIZONTAL" else 0.5,
                 )
         except Exception:
             logger.exception("Failed to create Figma element via UI automation: %r", item)
@@ -600,17 +946,26 @@ async def _build_frame_via_ui(page, spec: dict[str, Any], unsplash_key: str | No
     await _set_number(page, "scrubbable-control-height", height)
     await _set_fill_hex(page, bg)
     await _apply_auto_layout(page, direction, pad_lr, pad_tb, gap, centered=False)
+    # First click point, nothing placed yet: bias off `_append_bias` with
+    # used=0 rather than jumping straight to a high fixed fraction — an
+    # empty root frame only needs the click past its own leading padding.
+    start_pad = pad_lr if direction == "HORIZONTAL" else pad_tb
+    first_bias = _append_bias(
+        0.0, start_pad, width if direction == "HORIZONTAL" else height,
+        cross_extent=height if direction == "HORIZONTAL" else width,
+        horizontal=(direction == "HORIZONTAL"),
+    )
     if direction == "HORIZONTAL":
-        cx, cy = await _zoom_to_selection(page, horizontal_bias=0.85)
+        cx, cy = await _zoom_to_selection(page, horizontal_bias=first_bias)
     else:
-        cx, cy = await _zoom_to_selection(page, vertical_bias=0.85)
+        cx, cy = await _zoom_to_selection(page, vertical_bias=first_bias)
     root_row_selector = await _current_row_selector(page)
 
     children = spec.get("children") or []
     cx, cy, created = await _place_items(
         page, cx, cy, children, content_w, root_row_selector,
         parent_direction=direction, unsplash_key=unsplash_key,
-        parent_w=width, parent_h=height,
+        parent_w=width, parent_h=height, gap=gap, start_padding=start_pad,
     )
 
     await page.keyboard.press("Escape")
