@@ -412,6 +412,7 @@ async def _add_shape(
     color: str | None = None, corner_radius: float | None = None,
     border_color: str | None = None, border_width: float | None = None,
     shadow: bool = False, elevation: str = "subtle",
+    rename: str | None = None,
 ) -> None:
     await _draw(page, tool_key, cx, cy)
     await _set_number(page, "scrubbable-control-width", w)
@@ -424,6 +425,11 @@ async def _add_shape(
         await _set_stroke(page, border_color, border_width)
     if shadow:
         await _add_shadow(page, elevation)
+    if rename:
+        # Must happen before the trailing Escape below — that deselects the
+        # shape, and `_rename_layer` needs it to still be the live
+        # selection (see its own docstring for why a stable name matters).
+        await _rename_layer(page, rename)
     # Same hazard as `_add_text`'s trailing Escape: `_set_stroke`'s stroke-
     # weight textbox (and `_set_fill_hex`'s color popover) don't reliably
     # release focus on their own after Enter. Left stuck, the NEXT item's
@@ -681,6 +687,38 @@ async def _current_row_selector(page) -> str:
     return f'[data-testid="{testid}"]'
 
 
+async def _rename_layer(page, name: str) -> None:
+    """Rename the currently-selected node's Layers-panel row.
+
+    Double-click arms the row's inline rename input (same interaction as a
+    human renaming a layer). Live-confirmed the new name persists across a
+    full page reload in a FRESH browser session/profile-reuse — this is
+    what makes `fix_figma_photo` possible: a node renamed to something
+    predictable (`hermes:photo:{index}:{kind}`) at build time can be found
+    again later by a plain `page.get_by_text(name, exact=True)`, with no
+    live selector carried over from the original session.
+    """
+    # Resolve the OUTER row (stable testid) via `_current_row_selector`
+    # rather than double-clicking `[data-fpl-tree-active="true"]` directly
+    # — that attribute lives on an INNER gridcell div, one level down from
+    # the actual row; double-clicking it worked for a root-level frame but
+    # not reliably for a freshly-drawn child shape (confirmed live: it
+    # silently missed rename-input mode, and the stray `Control+A` +
+    # typed name were then interpreted as canvas shortcuts instead of text
+    # — `Control+A` selected everything on the page, and letters in the
+    # name matching tool shortcuts, e.g. 'r' for Rectangle, drew a stray
+    # extra shape). Double-clicking the outer row (matching the selector
+    # this file already uses everywhere else to target a specific row) is
+    # the same interaction proven to work for a root-level frame.
+    row = page.locator(await _current_row_selector(page))
+    await row.dblclick(force=True)
+    await page.wait_for_timeout(250)
+    await page.keyboard.press("Control+A")
+    await page.keyboard.type(name)
+    await page.keyboard.press("Enter")
+    await page.wait_for_timeout(200)
+
+
 async def _return_to_parent(
     page, parent_row_selector: str, direction: str = "VERTICAL", bias: float = 0.7,
 ) -> tuple[float, float]:
@@ -727,6 +765,7 @@ async def _place_items(
     parent_direction: str = "VERTICAL", unsplash_key: str | None = None,
     parent_w: float | None = None, parent_h: float | None = None,
     gap: float = 16.0, start_padding: float = 0.0,
+    photo_registry: dict | None = None,
 ) -> tuple[float, float, int]:
     """Place a list of items into whatever frame is currently selected
     (`parent_row_selector` is that frame's own row, used to return to it
@@ -754,7 +793,20 @@ async def _place_items(
     reusing one fixed fraction for a container's entire fill (see
     `_zoom_to_selection`'s docstring for why that's unsafe both when the
     container is nearly empty and when it's nearly full).
+
+    `photo_registry` (`{"n": int, "nodes": [...]}`) tracks every HEADER_IMAGE/
+    AVATAR node encountered across the WHOLE build (shared by reference
+    through every recursive call, not re-created per composite) so
+    `_build_frame_via_ui` can report a stable, predictable name
+    (`hermes:photo:{n}:{kind}`) for each one in its result — the mechanism
+    `fix_figma_photo` (Phase 3 Step 2) needs to reselect a specific node in
+    a LATER, separate browser session and fix a missing/wrong photo without
+    rebuilding the whole frame. Defaults to a fresh registry when the
+    top-level caller doesn't pass one (single-frame builds don't need to
+    read it back); recursive calls always pass the same instance along.
     """
+    if photo_registry is None:
+        photo_registry = {"n": 0, "nodes": []}
     created = 0
     used = 0.0
     parent_extent = parent_w if parent_direction == "HORIZONTAL" else parent_h
@@ -768,6 +820,8 @@ async def _place_items(
                     bold=bool(item.get("bold")),
                 )
             elif itype in ("HEADER_IMAGE", "HEADER"):
+                photo_name = f"hermes:photo:{photo_registry['n']}:header"
+                photo_registry["n"] += 1
                 await _add_shape(
                     page, "r", cx, cy,
                     item.get("width") or content_w, item.get("height") or 220,
@@ -775,24 +829,41 @@ async def _place_items(
                     corner_radius=item.get("borderRadius"),
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
                     shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
+                    rename=photo_name,
                 )
                 photo_query = item.get("photoQuery")
+                placed = False
                 if photo_query and unsplash_key:
                     photo = await _fetch_stock_photo(photo_query, unsplash_key, orientation="landscape")
                     if photo:
-                        await _place_image_fill(page, cx, cy, photo)
+                        placed = await _place_image_fill(page, cx, cy, photo)
+                photo_registry["nodes"].append({
+                    "node_name": photo_name, "type": "HEADER_IMAGE",
+                    "photo_query": photo_query, "photo_placed": placed,
+                })
             elif itype in ("AVATAR", "ELLIPSE", "CIRCLE"):
                 size = item.get("size") or item.get("width") or 56
+                is_avatar = itype == "AVATAR"
+                photo_name = f"hermes:photo:{photo_registry['n']}:avatar" if is_avatar else None
+                if is_avatar:
+                    photo_registry["n"] += 1
                 await _add_shape(
                     page, "o", cx, cy, size, size, color=item.get("color") or "#0070F3",
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
                     shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
+                    rename=photo_name,
                 )
                 photo_query = item.get("photoQuery")
+                placed = False
                 if photo_query and unsplash_key:
                     photo = await _fetch_stock_photo(photo_query, unsplash_key, orientation="squarish")
                     if photo:
-                        await _place_image_fill(page, cx, cy, photo)
+                        placed = await _place_image_fill(page, cx, cy, photo)
+                if is_avatar:
+                    photo_registry["nodes"].append({
+                        "node_name": photo_name, "type": "AVATAR",
+                        "photo_query": photo_query, "photo_placed": placed,
+                    })
             elif itype == "INPUT":
                 async def _fill_input(icx: float, icy: float, _item=item) -> None:
                     await _add_text(
@@ -880,6 +951,7 @@ async def _place_items(
                         page, icx, icy, _items, _child_w, box_selector,
                         parent_direction=_direction, unsplash_key=unsplash_key,
                         parent_w=_w, parent_h=_h, gap=_gap, start_padding=_pad,
+                        photo_registry=photo_registry,
                     )
 
                 await _add_composite(
@@ -987,10 +1059,12 @@ async def _build_frame_via_ui(page, spec: dict[str, Any], unsplash_key: str | No
     root_row_selector = await _current_row_selector(page)
 
     children = spec.get("children") or []
+    photo_registry = {"n": 0, "nodes": []}
     cx, cy, created = await _place_items(
         page, cx, cy, children, content_w, root_row_selector,
         parent_direction=direction, unsplash_key=unsplash_key,
         parent_w=width, parent_h=height, gap=gap, start_padding=start_pad,
+        photo_registry=photo_registry,
     )
 
     await page.keyboard.press("Escape")
@@ -1009,6 +1083,13 @@ async def _build_frame_via_ui(page, spec: dict[str, Any], unsplash_key: str | No
         # the end of this function deselects everything, so "currently
         # selected" can't be relied on by then) and set its page position.
         "root_row_selector": root_row_selector,
+        # Every HEADER_IMAGE/AVATAR node built, each given a stable,
+        # predictable name (`hermes:photo:{n}:{kind}`) — Phase 3 Step 2's
+        # `fix_figma_photo` reselects one of these BY NAME in a fresh,
+        # separate browser session (live-confirmed a rename survives a full
+        # reload) to patch a missing/wrong photo without rebuilding the
+        # whole frame.
+        "photo_nodes": photo_registry["nodes"],
     }
 
 
@@ -1238,6 +1319,17 @@ async def design_figma_frame_web(
 
             result = await _build_frame_via_ui(page, spec, unsplash_key=unsplash_key)
 
+            # Figma redirects "design/new" to a real, reopenable file URL
+            # (e.g. .../design/<fileKey>/Untitled) the moment it creates the
+            # draft — `target_url` below is still the ORIGINAL literal
+            # string passed in (e.g. "design/new" itself), which is USELESS
+            # for reopening this exact file later. `page.url` at this point
+            # is the real one — live-confirmed reopening it in a completely
+            # separate browser session loads the same draft with all its
+            # content intact. Needed so `fix_figma_photo` (Phase 3 Step 2)
+            # can navigate back to THIS file in a later, separate tool call.
+            real_file_url = page.url
+
             await page.wait_for_timeout(1000)
             await page.screenshot(path=str(shot_path), full_page=False)
 
@@ -1257,6 +1349,7 @@ async def design_figma_frame_web(
                 "markdown": md_image,
                 "detail": detail,
                 "url": target_url,
+                "file_url": real_file_url,
                 "result": result,
             }
 
@@ -1386,7 +1479,10 @@ async def design_multi_frame_web(
                     "frame_name": spec.get("name"),
                     "children_created": r["children_created"],
                     "children_requested": r["children_requested"],
+                    "photo_nodes": r["photo_nodes"],
                 })
+
+            real_file_url = page.url
 
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(150)
@@ -1412,6 +1508,7 @@ async def design_multi_frame_web(
                 "markdown": md_image,
                 "detail": detail,
                 "url": target_url,
+                "file_url": real_file_url,
                 "results": results,
             }
 
@@ -1421,4 +1518,143 @@ async def design_multi_frame_web(
             "ok": False,
             "error": f"Figma Web browser error: {e}",
             "url": target_url,
+        }
+
+
+async def fix_figma_photo(
+    file_url: str,
+    node_name: str,
+    photo_query: str,
+    unsplash_key: str | None,
+    out_dir: Path | None = None,
+    headless: bool = False,
+    timeout_s: int = 120,
+) -> dict[str, Any]:
+    """Phase 3 Step 2 of docs/figma-uiux-roadmap.md, narrow first cut:
+    patch ONE missing/wrong photo on an already-built frame, in a fresh
+    browser session, instead of rebuilding the whole thing from scratch.
+
+    `file_url` must be a REAL file URL (`design_figma_frame_web`/
+    `design_multi_frame_web`'s `file_url` result field, NOT their `url`
+    field — the latter is just the original "design/new" string, useless
+    for reopening a specific draft). `node_name` must be one of the
+    `node_name` values in that build's `photo_nodes` result list
+    (`hermes:photo:{n}:{kind}`, assigned to every HEADER_IMAGE/AVATAR node
+    at build time specifically so it survives being found again here).
+
+    Mechanism, every step live-confirmed against a real Figma session
+    before this was written: reopening a file via its real URL in a
+    completely separate browser session/context shows the SAME renamed
+    layer, still findable by exact text match in the Layers panel — no
+    live selector from the original session is needed or available.
+    Clicking that text actually selects the underlying node (confirmed via
+    the Position panel reading back real coordinates), and
+    `_zoom_to_selection` behaves exactly as it does mid-build, so the
+    existing `_fetch_stock_photo` + `_place_image_fill` pair (unchanged,
+    the same ones every original HEADER_IMAGE/AVATAR photo goes through)
+    works without modification.
+
+    Orientation for the fetch is read off `node_name`'s own `:kind` suffix
+    (`header` → landscape, `avatar` → squarish) rather than needing the
+    caller to specify it — the name already encodes what it is.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
+        }
+
+    if not unsplash_key:
+        return {
+            "ok": False,
+            "error": "Unsplash API key belum diset — tidak bisa mengambil foto asli. "
+                     "Minta pengguna set Unsplash access key di Settings dulu.",
+        }
+
+    out_dir = out_dir or paths.artifacts_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shot_filename = f"figma_fix_{uuid.uuid4().hex[:8]}.png"
+    shot_path = out_dir / shot_filename
+    orientation = "squarish" if node_name.endswith(":avatar") else "landscape"
+
+    try:
+        async with async_playwright() as p:
+            session = await _open_figma_session(p, file_url, headless)
+            if isinstance(session, dict):
+                return session
+            context, page = session
+
+            # The Layers panel reopens fully COLLAPSED — a renamed child
+            # node isn't in the DOM at all yet, not just visually hidden,
+            # so `get_by_text` can't find it until the tree is expanded.
+            # `layers-panel-expand-caret` is the disclosure control's own
+            # stable testid (live-confirmed via DOM dump; the row's
+            # `data-fpl-tree-active` attribute lives on a DIFFERENT inner
+            # element and isn't itself clickable for this). Click every
+            # visible caret, repeatedly — each round can reveal further
+            # nested carets — until the target shows up or nothing new
+            # expands.
+            row = page.get_by_text(node_name, exact=True)
+            for _ in range(5):
+                if await row.count() > 0:
+                    break
+                carets = page.locator('[data-testid="layers-panel-expand-caret"]')
+                n = await carets.count()
+                if n == 0:
+                    break
+                for i in range(n):
+                    await carets.nth(i).click(force=True)
+                    await page.wait_for_timeout(150)
+            if await row.count() == 0:
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Node '{node_name}' tidak ditemukan di file ini — mungkin sudah "
+                             f"diganti nama atau dihapus.",
+                    "url": file_url,
+                }
+            await row.first.click()
+            await page.wait_for_timeout(200)
+            cx, cy = await _zoom_to_selection(page)
+
+            photo = await _fetch_stock_photo(photo_query, unsplash_key, orientation=orientation)
+            if not photo:
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Gagal mengambil foto Unsplash untuk query '{photo_query}'.",
+                    "url": file_url,
+                }
+            placed = await _place_image_fill(page, cx, cy, photo)
+
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(150)
+            await page.keyboard.press("Shift+2")
+            await page.wait_for_timeout(500)
+            await page.screenshot(path=str(shot_path), full_page=False)
+
+            await context.close()
+
+            md_image = f"![Figma Fix Preview](file:///{shot_path.as_posix()})"
+            detail = (
+                f"Foto '{photo_query}' {'berhasil' if placed else 'GAGAL'} dipasang ke node "
+                f"'{node_name}'."
+            )
+            return {
+                "ok": placed,
+                "node_name": node_name,
+                "screenshot_path": str(shot_path),
+                "markdown": md_image,
+                "detail": detail,
+                "url": file_url,
+            }
+
+    except Exception as e:
+        logger.exception("Error fixing Figma photo in browser")
+        return {
+            "ok": False,
+            "error": f"Figma Web browser error: {e}",
+            "url": file_url,
         }

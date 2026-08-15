@@ -282,22 +282,100 @@ prepended to `figma_web_design`'s tool description so a from-scratch build
 (no mockup to copy fidelity from) still lands on a coherent system instead
 of free-handed numbers.
 
-**Step 2 (bigger, do only if Step 1 proves the comparison quality is good
-enough to act on):** let the model issue a *delta* follow-up call — not a
-full rebuild, but targeted fixes (e.g. "the header wasn't a photo,
-`photoQuery` was missing") — which needs new fine-grained editing tools
-(reselect an existing node by name and change one property) since
-`_build_frame_via_ui` currently only knows how to build a frame from
-scratch, not patch an existing one. Scope this as its own follow-up plan
-once Step 1's comparison quality is validated — don't build the editing
-tools speculatively before knowing the comparisons are even accurate.
+**Step 1 validated against real usage (2026-08-16), before starting Step 2**
+— per this section's own gate. Built a deliberate-mismatch case (a
+HEADER_IMAGE with `photoQuery` set but no Unsplash key configured, so the
+build falls back to a plain color rectangle) and ran the EXACT message-
+assembly path `chat()`/`stream()` use (`_figma_selfcheck_message`, same
+client/model config) end to end against the real chat model. Result: "Ada
+yang meleset: Header belum pakai FOTO PANTAI asli — yang terlihat masih
+blok warna biru polos, bukan gambar pantai" — concrete, correctly
+identified, no generic praise over the real gap. A negative-control run
+(a correctly-built frame with no mismatch) got a clean "Sudah sesuai"
+with no hallucinated complaints. Comparison quality cleared the bar to
+proceed.
+
+**Step 2, narrow first cut — ✅ DONE (2026-08-16).** Scoped to exactly one
+delta-edit case per the user's own choice: fix a missing/wrong photo on
+an already-built frame without rebuilding it. New tool
+`figma_web_fix_photo` + `figma_browser.fix_figma_photo`. Needed solving a
+prerequisite gap and two new UI mechanisms, each live-recon'd before
+being written (per this roadmap's own rule) — the mechanism ended up
+different, and more general-purpose, than the roadmap's own placeholder
+description ("reselect an existing node by name") made it sound:
+
+- **Prerequisite gap: no real file URL was ever captured.**
+  `design_figma_frame_web`/`design_multi_frame_web` returned the literal
+  `"design/new"` string as `url` — Figma redirects that to a real,
+  reopenable file URL (`.../design/<fileKey>/Untitled`) the moment it
+  creates the draft, but nothing captured it. Both functions now also
+  return `file_url` (`page.url` read right after the build) — live-
+  confirmed reopening it in a completely separate browser session loads
+  the same draft with all content intact.
+- **Mechanism: rename at build time, find by name later.** Every
+  HEADER_IMAGE/AVATAR node gets a stable, predictable name
+  (`hermes:photo:{n}:{kind}`, new `_rename_layer` — double-click the
+  Layers-panel row via `_current_row_selector`, type, Enter) right after
+  it's drawn. `_build_frame_via_ui`'s result gained a `photo_nodes` list
+  (name/type/query/whether a real photo was actually placed) reported
+  back up through both single- and multi-frame builds, so a later
+  `figma_web_fix_photo` call always knows exactly what it can target —
+  the model never has to guess a name.
+- **Bug found live: renaming a freshly-drawn CHILD shape (not a root
+  frame) is less reliable than renaming a root.** Double-clicking
+  `[data-fpl-tree-active="true"]` (an INNER gridcell div, one level below
+  the actual row) worked for a root-level frame but silently missed
+  rename-input mode for a child shape — the stray `Control+A` and typed
+  name were then interpreted as canvas shortcuts instead of text
+  (`Control+A` selected everything on the page; a letter matching a tool
+  shortcut, e.g. 'r' for Rectangle, drew a stray extra shape). Fixed:
+  `_rename_layer` resolves the OUTER row via `_current_row_selector`
+  first (the same selector this file already uses everywhere else to
+  target a specific row) instead of the inner active-state div.
+- **Bug found live: a reopened file's Layers panel is fully COLLAPSED.**
+  A renamed child node isn't just visually hidden — it's not in the DOM
+  at all until the tree is expanded, so `page.get_by_text` can't find it
+  no matter how it's queried. The disclosure control turned out to have
+  its own stable testid (`layers-panel-expand-caret`, found via DOM dump
+  — not visible in a plain `outerHTML` capture of the row itself, only
+  appears once real mouse hover is simulated). `fix_figma_photo` clicks
+  every visible caret, repeatedly (further nesting can reveal more
+  carets), until the target node appears or nothing new expands.
+
+Live-verified end to end through the real, unmodified functions (only
+`_fetch_stock_photo`'s network call was stubbed with a locally-generated
+JPEG, since no real Unsplash key is available in this environment — every
+other step ran for real): built a frame with a HEADER_IMAGE and an
+AVATAR, both correctly renamed and reported in `photo_nodes`; reopened
+the captured `file_url` in a totally separate browser session; found and
+fixed only the header's photo — the Layers panel afterward showed both
+nodes correctly named, the header's icon changed to an image fill, the
+avatar completely untouched, and no stray shapes. 806 unit tests still
+green throughout (one new tool added to `tests/test_web_ui.py`'s
+tool-registry assertion). `_figma_selfcheck_message` (Step 1) now also
+fires after `figma_web_fix_photo`, so a fix gets the same close-the-loop
+verification as an original build — otherwise the model would report
+"sudah diperbaiki" on faith, the exact blind confidence Step 1 exists to
+prevent.
+
+**Not done — deliberately out of scope for this narrow cut:** editing any
+property other than a photo (color, text, size, ...), and multi-frame
+self-check (`figma_web_design_flow` doesn't get the Step 1 treatment yet
+— comparing a multi-frame screenshot against a multi-part request is a
+different, untested prompt shape). Both are natural next slices if a
+broader delta-edit tool is wanted later, now that the harder groundwork
+(real file URL, rename-and-refind, collapsed-tree handling) is proven.
 
 Files touched (Step 1): `hermes/chat_engine.py` (`_FIGMA_DESIGN_SYSTEM_GUIDE`,
 tool description), `hermes/main.py` (`_figma_selfcheck_message`, wired into
-both `chat()` and `stream()` tool-call rounds). Step 2 would touch
-`hermes/figma_browser.py` significantly (new node-selection/edit primitives)
-but is explicitly out of scope until Step 1's comparison quality is
-evaluated against real usage.
+both `chat()` and `stream()` tool-call rounds). Files touched (Step 2):
+`hermes/figma_browser.py` (`_rename_layer`, `_add_shape`'s `rename` param,
+`_place_items`'s `photo_registry` threading, `_build_frame_via_ui`'s
+`photo_nodes` result, `design_figma_frame_web`/`design_multi_frame_web`'s
+`file_url` result, new `fix_figma_photo`), `hermes/chat_engine.py` (new
+`figma_web_fix_photo` tool schema + dispatch), `hermes/main.py`
+(`_figma_selfcheck_message` extended to include it), `tests/test_web_ui.py`
+(tool-registry list updated).
 
 ## Phase 4 — Multi-frame output — ✅ DONE (2026-08-16)
 
@@ -389,12 +467,13 @@ were only found and fixed by insisting on that.
 ## Suggested order
 
 Phase 1 (done) → Phase 2 (done, Grid spike still skipped) → Phase 3 Step 1
-(done) → Phase 4 (done) → Phase 3 Step 2 (only if Step 1's comparisons prove
-reliable in real usage) → Grid spike (if still wanted). Each phase is
-independently shippable and testable — no phase blocks starting the next
-except in the order listed (fidelity before layout before self-check, since
-self-check's comparisons are only useful once the builder can actually hit
-what a mockup asks for). Remaining open items: Phase 3 Step 2 (delta edits),
+(done) → Phase 4 (done) → Phase 3 Step 2 (done, narrow: photo-only fix) →
+Grid spike (if still wanted). Each phase is independently shippable and
+testable — no phase blocks starting the next except in the order listed
+(fidelity before layout before self-check, since self-check's comparisons
+are only useful once the builder can actually hit what a mockup asks for).
+Remaining open items: Phase 3 Step 2 broadened to other properties (color,
+text, size) if wanted, multi-frame self-check for `figma_web_design_flow`,
 the ROW-of-cards-of-STACKs-inside-another-composite depth beyond what's
 been live-tested, the undersized-container residual noted in Phase 2, and
 the Grid layout spike.

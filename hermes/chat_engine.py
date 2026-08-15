@@ -432,6 +432,22 @@ CHAT_TOOLS = [
             }},
             "required": ["frames"]}}},
     {"type": "function", "function": {
+        "name": "figma_web_fix_photo",
+        "description": ("Ganti SATU foto pada frame Figma yang sudah pernah dibuat "
+                        "figma_web_design/figma_web_design_flow, TANPA membuat ulang "
+                        "seluruh frame. Pakai ini bila hasil self-check (screenshot "
+                        "setelah build) menunjukkan header/avatar seharusnya foto asli "
+                        "tapi masih warna polos (photoQuery lupa disertakan, atau "
+                        "pengambilan foto sebelumnya gagal). WAJIB pakai `file_url` "
+                        "dari hasil `file_url` build sebelumnya (BUKAN `url`) dan "
+                        "`node_name` dari salah satu entri `photo_nodes` pada hasil "
+                        "build itu — jangan menebak nilainya."),
+        "parameters": {"type": "object", "properties": {
+            "file_url": {"type": "string", "description": "field `file_url` dari hasil figma_web_design/figma_web_design_flow sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
+            "node_name": {"type": "string", "description": "field `node_name` dari salah satu entri `photo_nodes` pada hasil build sebelumnya, misal 'hermes:photo:0:header'"},
+            "photo_query": {"type": "string", "description": "kata kunci pencarian foto Unsplash, misal 'beach sunset'"}},
+            "required": ["file_url", "node_name", "photo_query"]}}},
+    {"type": "function", "function": {
         "name": "figma_login",
         "description": ("Buka browser visual Chrome/Edge agar pengguna bisa login "
                         "ke akun Figma secara manual. Browser akan tetap terbuka "
@@ -725,6 +741,25 @@ class ChatEngine:
                             except Exception as e:
                                 print(f"Could not send Figma flow screenshot to Telegram: {e}")
                         return json.dumps({**res, "url": url, "markdown": f"![Figma Flow Preview]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_web_fix_photo":
+                    res = await figma_browser.fix_figma_photo(
+                        file_url=str(args.get("file_url") or ""),
+                        node_name=str(args.get("node_name") or ""),
+                        photo_query=str(args.get("photo_query") or ""),
+                        unsplash_key=config.load_secrets().unsplash_access_key or None,
+                        out_dir=paths.artifacts_dir() / "figma",
+                    )
+                    if res.get("ok") and res.get("screenshot_path"):
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
+                            except Exception as e:
+                                print(f"Could not send Figma fix screenshot to Telegram: {e}")
+                        return json.dumps({**res, "url": url, "markdown": f"![Figma Fix Preview]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
 
                 if name == "figma_login":

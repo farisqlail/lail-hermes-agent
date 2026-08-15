@@ -145,8 +145,17 @@ _FIGMA_SELFCHECK_PROMPT = (
 
 def _figma_selfcheck_message(tool_name: str, result_content: str) -> dict | None:
     """A followup user message carrying the build's own screenshot, or None
-    for any other tool / a build that produced no usable screenshot."""
-    if tool_name != "figma_web_design":
+    for any other tool / a build that produced no usable screenshot.
+
+    `figma_web_fix_photo` (Phase 3 Step 2) is included so a delta fix gets
+    the same close-the-loop treatment as a full build — otherwise the model
+    would report "sudah diperbaiki" on faith, the exact blind confidence
+    Step 1 exists to prevent in the first place. `figma_web_design_flow`
+    (Phase 4) is deliberately NOT included yet — comparing a multi-frame
+    screenshot against a multi-part request is a different, untested
+    prompt shape, not just wiring the same mechanism through.
+    """
+    if tool_name not in ("figma_web_design", "figma_web_fix_photo"):
         return None
     try:
         data = json.loads(result_content)
