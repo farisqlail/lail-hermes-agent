@@ -391,6 +391,47 @@ CHAT_TOOLS = [
             }},
             "required": ["frame_name"]}}},
     {"type": "function", "function": {
+        "name": "figma_web_design_flow",
+        "description": ("Desain BEBERAPA frame Figma Web sekaligus dalam SATU sesi "
+                        "browser, disusun berjejer ke kanan di halaman yang sama "
+                        "(mis. alur onboarding multi-layar, wizard beberapa langkah, "
+                        "beberapa varian layar). Tiap item di `frames` punya struktur "
+                        "PERSIS sama dengan parameter figma_web_design (minus "
+                        "file_url) — frame_name, layout_mode, width, height, "
+                        "background_color, padding, item_spacing, children. Pakai "
+                        "tool ini HANYA bila pengguna eksplisit minta beberapa "
+                        "layar/screen/langkah sekaligus; untuk satu frame tunggal "
+                        "pakai figma_web_design biasa.\n\n"
+                        + _FIGMA_DESIGN_SYSTEM_GUIDE + "\n\n"
+                        "Tiap frame di `frames` mengikuti aturan desain di atas "
+                        "sendiri-sendiri, TAPI tetap konsisten satu sama lain dalam "
+                        "satu alur — warna aksen, radius, dan type scale yang sama "
+                        "dipakai di semua layar kecuali pengguna minta beda."),
+        "parameters": {"type": "object", "properties": {
+            "file_url": {"type": "string", "description": "URL dokumen Figma Web (opsional)"},
+            "frame_gap": {"type": "integer", "description": "jarak horizontal antar frame dalam px, default 120"},
+            "frames": {
+                "type": "array",
+                "description": "Daftar frame, URUT sesuai alur yang diminta pengguna (frame pertama = layar pertama).",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "frame_name": {"type": "string", "description": "nama frame UI, misal 'Onboarding 1'"},
+                        "layout_mode": {"type": "string", "enum": ["VERTICAL", "HORIZONTAL", "NONE"], "description": "orientasi AutoLayout frame ini"},
+                        "width": {"type": "integer", "description": "lebar frame dalam px, default 375"},
+                        "height": {"type": "integer", "description": "tinggi frame dalam px, default 812"},
+                        "background_color": {"type": "string", "description": "warna latar belakang hex, misal '#FFFFFF'"},
+                        "padding": {"type": "integer", "description": "padding inner frame dalam px, default 24"},
+                        "item_spacing": {"type": "integer", "description": "jarak antar elemen inner dalam px, default 16"},
+                        "children": {
+                            "type": "array",
+                            "description": "Elemen UI di dalam frame ini, urut dari atas ke bawah.",
+                            "items": _figma_child_item_schema(2),
+                        }},
+                    "required": ["frame_name"]},
+            }},
+            "required": ["frames"]}}},
+    {"type": "function", "function": {
         "name": "figma_login",
         "description": ("Buka browser visual Chrome/Edge agar pengguna bisa login "
                         "ke akun Figma secara manual. Browser akan tetap terbuka "
@@ -655,6 +696,35 @@ class ChatEngine:
                             except Exception as e:
                                 print(f"Could not send Figma screenshot to Telegram: {e}")
                         return json.dumps({**res, "url": url, "markdown": f"![Figma Preview]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_web_design_flow":
+                    file_url = args.get("file_url")
+                    frame_items = args.get("frames") or []
+                    specs = [{
+                        "name": str(f.get("frame_name") or f"Frame {i + 1}"),
+                        "layoutMode": f.get("layout_mode") or "VERTICAL",
+                        "width": int(f.get("width") or 375),
+                        "height": int(f.get("height") or 812),
+                        "backgroundColor": f.get("background_color") or "#0F172A",
+                        "padding": int(f.get("padding") or 24),
+                        "itemSpacing": int(f.get("item_spacing") or 16),
+                        "children": f.get("children") or [],
+                    } for i, f in enumerate(frame_items)]
+                    res = await figma_browser.design_multi_frame_web(
+                        file_url=file_url, frames=specs, out_dir=paths.artifacts_dir() / "figma",
+                        unsplash_key=config.load_secrets().unsplash_access_key or None,
+                        frame_gap=float(args.get("frame_gap") or 120),
+                    )
+                    if res.get("ok") and res.get("screenshot_path"):
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
+                            except Exception as e:
+                                print(f"Could not send Figma flow screenshot to Telegram: {e}")
+                        return json.dumps({**res, "url": url, "markdown": f"![Figma Flow Preview]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
 
                 if name == "figma_login":

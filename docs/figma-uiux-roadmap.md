@@ -299,22 +299,80 @@ both `chat()` and `stream()` tool-call rounds). Step 2 would touch
 but is explicitly out of scope until Step 1's comparison quality is
 evaluated against real usage.
 
-## Phase 4 — Multi-frame output
+## Phase 4 — Multi-frame output — ✅ DONE (2026-08-16)
 
-Add a `frames: [...]` array as an alternative to the current single flat
-`figma_web_design` args (or a second tool, `figma_web_design_flow`) that
-calls `_build_frame_via_ui` once per frame, anchoring each subsequent frame
-to the right of the previous one on the same page — Figma's canvas already
-supports multiple sibling frames; the only new work is computing each new
-frame's screen anchor (previous frame's on-screen right edge + a fixed gap,
-read via the same `canvas.bounding_box()` + `_current_row_selector` pattern
-already used for the single-frame case) and re-running the existing
-per-frame pipeline unchanged. Lowest-risk phase precisely because it reuses
-`_build_frame_via_ui` as-is rather than modifying it.
+Shipped as a second tool, `figma_web_design_flow` (`frames: [...]`, each
+item the same shape as `figma_web_design`'s params minus `file_url`, plus
+an optional `frame_gap`), backed by a new `design_multi_frame_web` in
+`hermes/figma_browser.py`. Reuses `_build_frame_via_ui` per frame
+completely unchanged, as planned — but the actual anchoring mechanism
+ended up different from this section's original plan, and needed its own
+live-reconnaissance round (per this roadmap's own rule: every new UI
+mechanism is unverified until proven live) that found two real bugs the
+plan hadn't anticipated:
 
-Files touched: `hermes/figma_browser.py` (new `design_multi_frame_web` or
-loop inside `design_figma_frame_web`), `hermes/chat_engine.py` (new/extended
-tool schema for a `frames` array).
+- **Original plan (reading back the previous frame's on-screen right
+  edge) was replaced before writing any code**, once recon found something
+  more robust: the Position panel's X/Y fields (`aria-label="X-position"`/
+  `"Y-position"`, sharing a non-unique `data-onboarding-key` with other
+  fields so `_set_number` can't target them — new `_set_position` helper
+  selects by `aria-label` instead) are directly settable, live-confirmed
+  to actually move the node. Setting each frame's exact Figma-space
+  position after building it sidesteps ever converting between screen
+  pixels and page space, which the original plan would have needed.
+- **Bug 1 — drawing frame N+1 at the default anchor risks nesting it
+  inside frame N.** `_build_frame_via_ui` always draws at a fixed
+  on-screen point near the canvas's top-left; after the previous frame's
+  own zoom-to-fit, that point can sit right on top of it, and Figma
+  auto-parents a frame drawn overlapping an existing one instead of
+  making a page sibling. Fixed: pan the canvas away (`page.mouse.wheel`,
+  live-confirmed to pan rather than zoom) before drawing frame N+1, then
+  reposition it to its real layout slot via `_set_position` afterward —
+  where it lands mid-draw doesn't matter once that runs.
+- **Bug 2 — the pan itself silently failed twice, in ways that only
+  showed up as corrupted TEXT, not a visible layout error.** (a) A fixed
+  wheel delta pans a different FIGMA-SPACE distance depending on the
+  current zoom level; without resetting zoom to a known value first
+  (`Shift+0` = 100%) via panning at the previous frame's own ~190%
+  zoom-to-fit level, frame N+1 landed Figma-space-close enough to frame N
+  that a LATER tight zoom-to-fit while building one of frame N+1's own
+  nested composites (e.g. its INPUT, zooming to ~330%) brought frame N
+  back into the shared viewport. (b) Figma's wheel-to-pan handling is
+  canvas-scoped, and the mouse pointer was never explicitly moved onto
+  the canvas before the wheel call — left wherever the last panel
+  interaction (`_set_position`'s own field clicks) put it, so the pan
+  silently no-opped. Combined, a click meant to create a new text node
+  inside frame N+1 landed on frame N's EXISTING text node instead —
+  confirmed live: `INPUT`'s "Email" placeholder, meant for frame 2, was
+  typed mid-string into frame 1's second text ("Let's get you set up" →
+  "Let's getEmail set up") — no exception, `children_created` still
+  matched `children_requested`, silently wrong. Both fixed: reset zoom via
+  `Shift+0` and explicitly `page.mouse.move` onto the canvas center before
+  every pan.
+
+Live-verified end to end (real Chrome, real Figma, unpatched production
+code): a 3-frame onboarding flow (dark Welcome screen → Create Account
+with INPUT+BUTTON → green success screen) built as 3 correct page
+siblings, each with its own correctly-nested, correctly-labeled children,
+no cross-frame contamination, positioned left-to-right with the expected
+gap. 806 unit tests still green throughout (added one new tool to the
+tool-registry assertion in `tests/test_web_ui.py`).
+
+`design_figma_frame_web` (single-frame) was refactored alongside this to
+extract its session-open/login/popup-dismiss boilerplate into a new
+`_open_figma_session` helper shared with `design_multi_frame_web`, instead
+of duplicating ~130 lines — re-verified live afterward that the
+single-frame path is unchanged in behavior. `_build_frame_via_ui`'s return
+dict gained one additive key, `root_row_selector` (the root frame's own
+Layers-panel row selector, needed to reselect a specific frame after
+`Escape` deselects everything at the end of each build) — safe for the
+existing single-frame caller, which just ignores the extra key.
+
+Files touched: `hermes/figma_browser.py` (`_set_position`,
+`_open_figma_session`, `design_multi_frame_web`, `_build_frame_via_ui`'s
+return dict, `design_figma_frame_web` refactored to use the shared
+helper), `hermes/chat_engine.py` (new `figma_web_design_flow` tool schema
++ dispatch handler), `tests/test_web_ui.py` (tool-registry list updated).
 
 ## Verification (every phase)
 
@@ -331,9 +389,12 @@ were only found and fixed by insisting on that.
 ## Suggested order
 
 Phase 1 (done) → Phase 2 (done, Grid spike still skipped) → Phase 3 Step 1
-(done) → Phase 4 → Phase 3 Step 2 (only if Step 1's comparisons prove
+(done) → Phase 4 (done) → Phase 3 Step 2 (only if Step 1's comparisons prove
 reliable in real usage) → Grid spike (if still wanted). Each phase is
 independently shippable and testable — no phase blocks starting the next
 except in the order listed (fidelity before layout before self-check, since
 self-check's comparisons are only useful once the builder can actually hit
-what a mockup asks for).
+what a mockup asks for). Remaining open items: Phase 3 Step 2 (delta edits),
+the ROW-of-cards-of-STACKs-inside-another-composite depth beyond what's
+been live-tested, the undersized-container residual noted in Phase 2, and
+the Grid layout spike.

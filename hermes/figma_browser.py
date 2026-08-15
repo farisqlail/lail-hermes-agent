@@ -58,6 +58,31 @@ async def _set_number(page, onboarding_key: str, value: float, last: bool = Fals
     await page.wait_for_timeout(150)
 
 
+async def _set_position(page, x: float, y: float) -> None:
+    """Set the currently-selected top-level node's absolute page position.
+
+    The Position panel's X/Y fields share ONE `data-onboarding-key`
+    ("properties-panel") with several unrelated fields (rotation, etc.) —
+    `_set_number`'s key-based lookup can't disambiguate them, so this uses
+    their own `aria-label` ("X-position"/"Y-position") instead. Live-
+    confirmed this actually repositions the node (not just cosmetic) — used
+    to lay out multiple root frames as page siblings without needing to
+    read back an on-screen pixel edge (see `design_multi_frame_web`).
+    """
+    x_field = page.locator('input[aria-label="X-position"]')
+    await x_field.click(timeout=8000)
+    await page.keyboard.press("Control+A")
+    await x_field.type(str(round(x)))
+    await page.keyboard.press("Enter")
+    await page.wait_for_timeout(150)
+    y_field = page.locator('input[aria-label="Y-position"]')
+    await y_field.click(timeout=8000)
+    await page.keyboard.press("Control+A")
+    await y_field.type(str(round(y)))
+    await page.keyboard.press("Enter")
+    await page.wait_for_timeout(150)
+
+
 async def _lock_fixed_size(page, width: float, height: float) -> None:
     """Force an auto-layout frame's own sizing back to Fixed.
 
@@ -978,6 +1003,12 @@ async def _build_frame_via_ui(page, spec: dict[str, Any], unsplash_key: str | No
         "mode": "ui_automation",
         "children_created": created,
         "children_requested": len(children),
+        # The root frame's own Layers-panel row selector, resolved while it
+        # was still the live selection right after being drawn — needed by
+        # `design_multi_frame_web` to reselect THIS frame later (Escape at
+        # the end of this function deselects everything, so "currently
+        # selected" can't be relied on by then) and set its page position.
+        "root_row_selector": root_row_selector,
     }
 
 
@@ -1061,6 +1092,105 @@ async def open_figma_login_session(timeout_s: int = 300) -> dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
+async def _open_figma_session(p, target_url: str, headless: bool) -> tuple[Any, Any] | dict[str, Any]:
+    """Launch persistent-profile Chrome (falling back to Edge, then plain
+    Chromium), navigate to `target_url`, wait through login if needed, and
+    dismiss onboarding popups. Returns `(context, page)` on success, or an
+    error dict the caller should return as-is on failure (login timeout).
+
+    Extracted from `design_figma_frame_web` so `design_multi_frame_web` can
+    reuse the exact same session-open behavior for a single browser session
+    that then builds several frames in a row, instead of duplicating it.
+    """
+    profile_dir = paths.figma_profile_dir()
+    logger.info(f"Opening Figma Web session at {target_url} using profile {profile_dir}")
+
+    launch_kwargs: dict[str, Any] = {
+        "user_data_dir": str(profile_dir),
+        "headless": headless,
+        "viewport": {"width": 1440, "height": 900},
+        "ignore_default_args": ["--enable-automation"],
+        "args": [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--start-maximized",
+        ],
+    }
+
+    try:
+        context = await p.chromium.launch_persistent_context(**launch_kwargs, channel="chrome")
+    except Exception:
+        try:
+            context = await p.chromium.launch_persistent_context(**launch_kwargs, channel="msedge")
+        except Exception:
+            context = await p.chromium.launch_persistent_context(**launch_kwargs)
+
+    page = await context.new_page()
+    # Use wait_until="commit" so redirects to SSO/Google/Figma login don't cause premature timeouts
+    try:
+        await page.goto(target_url, wait_until="commit", timeout=60000)
+    except Exception as goto_err:
+        logger.warning(f"Initial page.goto commit notice: {goto_err}")
+
+    # Check if login is required. If so, bring browser window to front and wait up to 300s
+    page_url = page.url
+    if "login" in page_url.lower() or "accounts.google.com" in page_url.lower():
+        try:
+            await page.bring_to_front()
+        except Exception:
+            pass
+        logger.info("Figma login page detected. Waiting up to 300s for user to complete login in the opened browser...")
+        login_success = False
+        for _ in range(150):  # poll every 2s up to 300s (5 minutes)
+            await asyncio.sleep(2)
+            if not context.pages:
+                break  # user closed the browser window
+            try:
+                if any(_looks_logged_in(pg.url) for pg in context.pages):
+                    login_success = True
+                    logger.info(f"User login completed! Current URL: {page.url}")
+                    # Navigate to target_url if we were redirected away to dashboard
+                    if target_url not in page.url and "design/new" in target_url:
+                        await page.goto(target_url, wait_until="commit", timeout=60000)
+                    break
+            except Exception:
+                # Transient error reading page.url mid-navigation (common
+                # during Google OAuth redirects) — keep waiting, don't
+                # treat it as a fatal login failure.
+                continue
+
+        if not login_success:
+            await context.close()
+            return {
+                "ok": False,
+                "requires_login": True,
+                "error": (
+                    "Waktu login di Figma habis (300 detik). Silakan jalankan perintah lagi "
+                    "dan selesaikan login di jendela browser yang terbuka."
+                ),
+                "url": target_url,
+            }
+
+    # Dismiss any popup dialogs or overlays blocking the canvas
+    try:
+        await page.evaluate("""
+            () => {
+                const buttons = document.querySelectorAll('button, [role="button"], [aria-label="Close"]');
+                buttons.forEach(b => {
+                    const txt = (b.innerText || b.getAttribute('aria-label') || '').toLowerCase();
+                    if (txt.includes('got it') || txt.includes('dismiss') || txt.includes('close') || txt.includes('accept')) {
+                        try { b.click(); } catch(e) {}
+                    }
+                });
+            }
+        """)
+    except Exception:
+        pass
+
+    await page.wait_for_timeout(4000)
+    return context, page
+
+
 async def design_figma_frame_web(
     file_url: str | None,
     spec: dict[str, Any],
@@ -1099,95 +1229,12 @@ async def design_figma_frame_web(
     shot_filename = f"figma_frame_{uuid.uuid4().hex[:8]}.png"
     shot_path = out_dir / shot_filename
 
-    profile_dir = paths.figma_profile_dir()
-
-    logger.info(f"Opening Figma Web session at {target_url} using profile {profile_dir}")
-
-    launch_kwargs: dict[str, Any] = {
-        "user_data_dir": str(profile_dir),
-        "headless": headless,
-        "viewport": {"width": 1440, "height": 900},
-        "ignore_default_args": ["--enable-automation"],
-        "args": [
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--start-maximized",
-        ],
-    }
-
     try:
         async with async_playwright() as p:
-            try:
-                context = await p.chromium.launch_persistent_context(**launch_kwargs, channel="chrome")
-            except Exception:
-                try:
-                    context = await p.chromium.launch_persistent_context(**launch_kwargs, channel="msedge")
-                except Exception:
-                    context = await p.chromium.launch_persistent_context(**launch_kwargs)
-
-            page = await context.new_page()
-            # Use wait_until="commit" so redirects to SSO/Google/Figma login don't cause premature timeouts
-            try:
-                await page.goto(target_url, wait_until="commit", timeout=60000)
-            except Exception as goto_err:
-                logger.warning(f"Initial page.goto commit notice: {goto_err}")
-
-            # Check if login is required. If so, bring browser window to front and wait up to 300s
-            page_url = page.url
-            if "login" in page_url.lower() or "accounts.google.com" in page_url.lower():
-                try:
-                    await page.bring_to_front()
-                except Exception:
-                    pass
-                logger.info("Figma login page detected. Waiting up to 300s for user to complete login in the opened browser...")
-                login_success = False
-                for _ in range(150):  # poll every 2s up to 300s (5 minutes)
-                    await asyncio.sleep(2)
-                    if not context.pages:
-                        break  # user closed the browser window
-                    try:
-                        if any(_looks_logged_in(p.url) for p in context.pages):
-                            login_success = True
-                            logger.info(f"User login completed! Current URL: {page.url}")
-                            # Navigate to target_url if we were redirected away to dashboard
-                            if target_url not in page.url and "design/new" in target_url:
-                                await page.goto(target_url, wait_until="commit", timeout=60000)
-                            break
-                    except Exception:
-                        # Transient error reading page.url mid-navigation (common
-                        # during Google OAuth redirects) — keep waiting, don't
-                        # treat it as a fatal login failure.
-                        continue
-
-                if not login_success:
-                    await context.close()
-                    return {
-                        "ok": False,
-                        "requires_login": True,
-                        "error": (
-                            "Waktu login di Figma habis (300 detik). Silakan jalankan perintah lagi "
-                            "dan selesaikan login di jendela browser yang terbuka."
-                        ),
-                        "url": target_url,
-                    }
-
-            # Dismiss any popup dialogs or overlays blocking the canvas
-            try:
-                await page.evaluate("""
-                    () => {
-                        const buttons = document.querySelectorAll('button, [role="button"], [aria-label="Close"]');
-                        buttons.forEach(b => {
-                            const txt = (b.innerText || b.getAttribute('aria-label') || '').toLowerCase();
-                            if (txt.includes('got it') || txt.includes('dismiss') || txt.includes('close') || txt.includes('accept')) {
-                                try { b.click(); } catch(e) {}
-                            }
-                        });
-                    }
-                """)
-            except Exception:
-                pass
-
-            await page.wait_for_timeout(4000)
+            session = await _open_figma_session(p, target_url, headless)
+            if isinstance(session, dict):
+                return session
+            context, page = session
 
             result = await _build_frame_via_ui(page, spec, unsplash_key=unsplash_key)
 
@@ -1215,6 +1262,161 @@ async def design_figma_frame_web(
 
     except Exception as e:
         logger.exception("Error executing Figma Web design in browser")
+        return {
+            "ok": False,
+            "error": f"Figma Web browser error: {e}",
+            "url": target_url,
+        }
+
+
+async def design_multi_frame_web(
+    file_url: str | None,
+    frames: list[dict[str, Any]],
+    out_dir: Path | None = None,
+    headless: bool = False,
+    timeout_s: int = 300,
+    unsplash_key: str | None = None,
+    frame_gap: float = 120.0,
+) -> dict[str, Any]:
+    """Design several Figma frames in ONE Figma Web session, laid out as
+    same-page siblings left-to-right (frame 2 starts at frame 1's right
+    edge + `frame_gap`, etc.) — the common "multi-screen flow" pattern
+    (onboarding steps, a wizard). Reuses `_build_frame_via_ui` per frame
+    completely unchanged; the only new work is:
+
+    1. Panning the canvas to a guaranteed-blank spot before each frame
+       (after the first) is drawn. `_build_frame_via_ui` always draws at a
+       fixed on-screen anchor near the canvas's top-left — after the
+       PREVIOUS frame's own zoom-to-fit, that anchor can be sitting right
+       on top of it, and Figma auto-parents a frame drawn overlapping an
+       existing one instead of creating a page sibling (confirmed live:
+       this is exactly the mechanism nested composites in this file rely
+       on deliberately — it's a hazard here, not there). Panning first
+       (`page.mouse.wheel` with a large negative dx, live-confirmed to pan
+       the canvas rather than zoom) guarantees blank space at that anchor.
+       Two easy-to-miss requirements, both confirmed live the hard way: the
+       zoom level must be reset to a KNOWN value (`Shift+0` = 100%) BEFORE
+       panning, since a fixed wheel delta covers a different Figma-space
+       distance at different zoom levels — skipping this once left a new
+       frame Figma-space-close enough to the previous one that a tight
+       zoom-to-fit while building one of ITS OWN nested composites (e.g. an
+       INPUT) brought the previous frame back into the shared viewport, and
+       a child's text landed on the previous frame's existing text node
+       instead of the new one. And the mouse must be explicitly moved onto
+       the canvas first — Figma's wheel-to-pan handling is canvas-scoped,
+       so a wheel event fired with the pointer still wherever the last
+       panel click left it (e.g. the Position fields from step 2 below)
+       silently does nothing.
+    2. Setting the frame's exact page position via `_set_position` right
+       after it's built, instead of trying to read back an on-screen pixel
+       edge (the roadmap's original idea) — live-confirmed settable the
+       same deterministic way width/height already are, and avoids ever
+       needing to convert between screen pixels and Figma's page space.
+
+    Frame 1 is NOT panned before drawing (matches `design_figma_frame_web`'s
+    existing single-frame behavior) — safe when `file_url` is None (a fresh
+    "design/new" file has an empty canvas already); an existing file with
+    content already near the default anchor is a pre-existing risk shared
+    with the single-frame tool, not something this phase changes.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
+        }
+
+    if not frames:
+        return {"ok": False, "error": "frames tidak boleh kosong"}
+
+    target_url = file_url or "https://www.figma.com/design/new"
+    out_dir = out_dir or paths.artifacts_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shot_filename = f"figma_flow_{uuid.uuid4().hex[:8]}.png"
+    shot_path = out_dir / shot_filename
+
+    try:
+        async with async_playwright() as p:
+            session = await _open_figma_session(p, target_url, headless)
+            if isinstance(session, dict):
+                return session
+            context, page = session
+
+            results = []
+            cumulative_x = 0.0
+            for i, spec in enumerate(frames):
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(150)
+                if i > 0:
+                    # Reset zoom to a KNOWN level (Shift+0 = 100%) before
+                    # panning — otherwise a fixed wheel delta translates to
+                    # a different Figma-space distance depending on
+                    # whatever zoom the previous frame's own build ended
+                    # at, and can leave the new frame Figma-space-CLOSE to
+                    # the previous one even though it looked clear on
+                    # screen at draw time. Confirmed live: at the previous
+                    # frame's ~190% zoom-to-fit level, this pan left the
+                    # frames close enough that a later tight zoom-to-fit
+                    # INSIDE the new frame (building one of its own nested
+                    # composites, e.g. an INPUT) brought the previous frame
+                    # back into view, and text meant for the new frame's
+                    # child got typed into the previous frame's existing
+                    # text node instead (selection/click-point contaminated
+                    # by the other frame's content sitting under the click).
+                    # The mouse must also be explicitly over the canvas
+                    # first — Figma's wheel-to-pan handling is canvas-
+                    # scoped, and without this the pan silently no-ops if
+                    # the pointer is still wherever the last panel click
+                    # left it.
+                    await page.keyboard.press("Shift+0")
+                    await page.wait_for_timeout(300)
+                    canvas = page.locator("canvas").first
+                    cbox = await canvas.bounding_box()
+                    await page.mouse.move(cbox["x"] + cbox["width"] / 2, cbox["y"] + cbox["height"] / 2)
+                    for _ in range(8):
+                        await page.mouse.wheel(-1500, 0)
+                        await page.wait_for_timeout(60)
+                r = await _build_frame_via_ui(page, spec, unsplash_key=unsplash_key)
+                await page.locator(r["root_row_selector"]).click(force=True)
+                await page.wait_for_timeout(200)
+                await _set_position(page, cumulative_x, 0)
+                cumulative_x += float(spec.get("width") or 390) + frame_gap
+                results.append({
+                    "frame_name": spec.get("name"),
+                    "children_created": r["children_created"],
+                    "children_requested": r["children_requested"],
+                })
+
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(150)
+            await page.keyboard.press("Shift+1")  # zoom to fit ALL frames on the page
+            await page.wait_for_timeout(600)
+            await page.screenshot(path=str(shot_path), full_page=False)
+
+            await context.close()
+
+            md_image = f"![Figma Flow Preview](file:///{shot_path.as_posix()})"
+            total_created = sum(r["children_created"] for r in results)
+            total_requested = sum(r["children_requested"] for r in results)
+            ok = total_created == total_requested
+            names = ", ".join(str(r["frame_name"]) for r in results)
+            detail = (
+                f"{len(results)} frame dibuat di Figma Web ({names}) — "
+                f"{total_created}/{total_requested} elemen berhasil ditambahkan."
+            )
+            return {
+                "ok": ok,
+                "frame_names": [r["frame_name"] for r in results],
+                "screenshot_path": str(shot_path),
+                "markdown": md_image,
+                "detail": detail,
+                "url": target_url,
+                "results": results,
+            }
+
+    except Exception as e:
+        logger.exception("Error executing Figma Web multi-frame design in browser")
         return {
             "ok": False,
             "error": f"Figma Web browser error: {e}",
