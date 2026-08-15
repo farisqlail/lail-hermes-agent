@@ -776,3 +776,118 @@ def test_fetch_readme_url_is_the_npm_registry():
     from hermes import main
     assert main.readme_url("@cocal/x") == "https://registry.npmjs.org/@cocal%2fx"
     assert main.readme_url("pkg") == "https://registry.npmjs.org/pkg"
+
+
+def _fake_png(path):
+    """A file just valid enough for uploads.sniff — it only reads the first
+    16 bytes to identify the format, never decodes real image data."""
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+    return path
+
+
+def test_figma_selfcheck_message_wraps_a_successful_build(tmp_path):
+    """The model must actually SEE its own Figma build (docs/figma-uiux-roadmap.md
+    Phase 3 Step 1) — a successful result with a real screenshot becomes an
+    inline image in a followup user message."""
+    from hermes import main
+    shot = _fake_png(tmp_path / "frame.png")
+    result = main.json.dumps({"ok": True, "screenshot_path": str(shot)})
+
+    msg = main._figma_selfcheck_message("figma_web_design", result)
+
+    assert msg["role"] == "user"
+    parts = msg["content"]
+    assert parts[0] == {"type": "text", "text": main._FIGMA_SELFCHECK_PROMPT}
+    assert parts[1]["type"] == "image_url"
+    assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_figma_selfcheck_message_ignores_other_tools():
+    from hermes import main
+    assert main._figma_selfcheck_message("recent_tasks", "[]") is None
+
+
+def test_figma_selfcheck_message_ignores_a_failed_build():
+    from hermes import main
+    result = main.json.dumps({"ok": False, "error": "boom"})
+    assert main._figma_selfcheck_message("figma_web_design", result) is None
+
+
+def test_figma_selfcheck_message_ignores_a_missing_screenshot_file(tmp_path):
+    """ok=True but the path doesn't exist on disk (e.g. cleaned up already) —
+    must not raise, must not fabricate an image."""
+    from hermes import main
+    missing = tmp_path / "gone.png"
+    result = main.json.dumps({"ok": True, "screenshot_path": str(missing)})
+    assert main._figma_selfcheck_message("figma_web_design", result) is None
+
+
+def test_figma_selfcheck_message_ignores_malformed_json():
+    from hermes import main
+    assert main._figma_selfcheck_message("figma_web_design", "not json") is None
+
+
+class _FigmaToolCall:
+    def __init__(self, call_id, args):
+        self.id = call_id
+        self.type = "function"
+        self.function = type("F", (), {"name": "figma_web_design", "arguments": args})()
+
+
+class _FigmaRoundMessage:
+    """Round 1: one figma_web_design tool call. Round 2+: plain prose — used
+    to assert what the model saw on ITS round 2 turn."""
+    def __init__(self, tool_calls=None, content=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+    def model_dump(self):
+        return {"role": "assistant", "content": self.content, "tool_calls": []}
+
+
+async def test_chat_shows_the_model_its_own_figma_screenshot_next_round(hermes_home, monkeypatch, tmp_path):
+    """End-to-end through main.build_nim_chat's tool loop: after a successful
+    figma_web_design call, the very next completion request's message list
+    must carry the screenshot as an image, not just the tool's JSON text."""
+    from hermes import config, main
+
+    shot = _fake_png(tmp_path / "frame.png")
+    figma_result = main.json.dumps({"ok": True, "screenshot_path": str(shot)})
+    tool_call = _FigmaToolCall("call_1", "{}")
+
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        def __init__(self):
+            self._round = 0
+
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            self._round += 1
+            if self._round == 1:
+                msg = _FigmaRoundMessage(tool_calls=[tool_call])
+            else:
+                msg = _FigmaRoundMessage(content="Sudah sesuai mockup.")
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    async def dispatch(name, args):
+        assert name == "figma_web_design"
+        return figma_result
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(tts_enabled=False))
+    chat = main.build_nim_chat(config.load_settings(),
+                               config.Secrets(nvidia_api_key="nvapi-test"))
+    out = await chat([{"role": "user", "content": "desain login screen"}],
+                     tools=[{"type": "function",
+                             "function": {"name": "figma_web_design", "parameters": {}}}],
+                     dispatch=dispatch)
+
+    assert out == "Sudah sesuai mockup."
+    round2_messages = calls[1]["messages"]
+    assert round2_messages[-1]["role"] == "user"
+    assert round2_messages[-1]["content"][1]["type"] == "image_url"

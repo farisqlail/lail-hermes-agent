@@ -85,6 +85,74 @@ RESUME_NUDGE = (
     "dan apa yang kamu butuhkan dari operator."
 )
 
+# Senior UI/UX design-token guide, prepended to figma_web_design's tool
+# description. A from-scratch design has no mockup to copy fidelity from —
+# without a concrete scale to pick numbers from, the model free-hands
+# spacing/type/color and produces the classic "AI-generated UI" tell:
+# inconsistent gaps, five different font sizes, low-contrast text. Giving it
+# one fixed scale (not a range) means every element in one build actually
+# shares a system instead of each being independently "close enough".
+_FIGMA_DESIGN_SYSTEM_GUIDE = (
+    "ATURAN DESAIN SENIOR UI/UX — pakai untuk SETIAP desain, termasuk yang "
+    "dibuat dari nol (tanpa gambar referensi):\n"
+    "- SPACING (8pt grid): semua padding/gap/itemSpacing HARUS salah satu "
+    "dari 4/8/12/16/24/32/48/64px. Jangan pakai angka acak (mis. 18, 22, "
+    "35) — itu ciri khas desain AI yang terlihat berantakan.\n"
+    "- TYPE SCALE: caption 12, body kecil 14, body 16, subjudul 20, h3 24, "
+    "h2 28, h1/hero 32-40. Maksimal 2-3 ukuran berbeda per layar; jangan "
+    "campur banyak ukuran untuk elemen sejenis.\n"
+    "- HIERARKI: HANYA SATU judul besar bold per layar/section. Body text "
+    "selalu Regular (bold=false), kecuali label tombol/CTA.\n"
+    "- RADIUS: kecil/input 8-12, card 16, pill/tombol/avatar 999 (penuh "
+    "bulat). Konsisten dalam satu layar — jangan campur kotak tajam dan "
+    "sangat bulat tanpa alasan.\n"
+    "- WARNA — palet netral konkret, jangan menebak-nebak tiap kali: "
+    "background layar #FFFFFF atau #F8FAFC; permukaan card #FFFFFF (kalau "
+    "background layarnya abu) atau #F8FAFC/#F1F5F9 (kalau background "
+    "layarnya putih) — card harus BEDA sedikit dari background di "
+    "belakangnya, jangan sama persis; border/pembatas tipis #E2E8F0; teks "
+    "utama #0F172A atau #1E293B; teks sekunder/caption #64748B atau "
+    "#94A3B8. SATU warna aksen/primary dipakai KONSISTEN untuk SEMUA "
+    "elemen interaktif utama (tombol CTA, link aktif, ikon terpilih) dalam "
+    "satu layar — jangan ganti hue aksen di tengah layar. Kontras "
+    "teks-latar WAJIB terbaca: teks gelap di latar terang, teks putih di "
+    "latar gelap/jenuh — jangan taruh teks sekunder (#94A3B8 ke bawah) "
+    "untuk teks yang penting dibaca, hanya untuk placeholder/caption yang "
+    "memang boleh redup. Warna semantik (hijau=sukses, merah=bahaya, "
+    "kuning=peringatan) HANYA untuk status/badge yang benar-benar makna "
+    "itu — jangan dipakai sebagai dekorasi.\n"
+    "- SHADOW/ELEVATION: field `shadow`+`elevation` ('subtle'/'medium'/"
+    "'strong', default 'subtle'). 'subtle' = card biasa yang istirahat di "
+    "atas background-nya sendiri (list item, product card — PALING SERING "
+    "dipakai). 'medium' = card yang perlu menonjol dari background ramai/"
+    "berwarna/foto, atau dropdown/popover. 'strong' = HANYA untuk SATU "
+    "elemen paling mengambang di layar (modal, floating action button) — "
+    "jangan pakai 'strong' untuk banyak elemen sekaligus, itu bikin semua "
+    "kelihatan sama pentingnya (= tidak ada yang penting). Card FLAT tanpa "
+    "shadow (cukup border tipis) untuk daftar/list yang statis dan tidak "
+    "actionable.\n"
+    "- CARD: kombinasi backgroundColor (surface, lihat WARNA) + "
+    "borderRadius 16 + padding 16-24 + salah SATU dari borderColor tipis "
+    "ATAU shadow (bukan dua-duanya sekaligus kecuali memang diminta). "
+    "Beberapa card sejenis dikelompokkan lewat ROW (kalau muat sejajar, "
+    "mis. 2-3 stat card) atau STACK (kalau berturutan vertikal, mis. "
+    "daftar transaksi) — jangan taruh card langsung sebagai children "
+    "campur-baur tanpa pembungkus kalau memang harusnya satu grup rapi.\n"
+    "- LAYOUT: urutan visual atas→bawah mengikuti prioritas informasi — "
+    "header/hero → judul → konten inti → aksi utama (tombol) → aksi "
+    "sekunder (link kecil di bawah). ROW hanya kalau elemen sejenis MUAT "
+    "sejajar dengan lebar wajar (2-3 item pas di layar mobile ~375px); "
+    "kalau item terlalu banyak untuk sejajar (4+), susun VERTICAL (STACK) "
+    "sebagai gantinya, jangan dipaksa sejajar sampai kegepengan. Untuk "
+    "STACK/ROW yang isinya banyak elemen, beri `height` yang REALISTIS "
+    "untuk isinya (perkirakan: jumlah total tinggi tiap anak + gap antar "
+    "anak + padding atas-bawah, lalu tambah sedikit slack) — height yang "
+    "kekecilan untuk isinya bikin proses pembuatannya gagal menata elemen "
+    "dengan benar.\n"
+    "- WHITESPACE konsisten: satu `itemSpacing` dan satu `padding` per "
+    "frame/composite, bukan beda-beda tiap anak tanpa alasan visual."
+)
+
 # Leaf-level figma_web_design child item — the bottom of the nesting depth
 # built by _figma_child_item_schema below. No `type` enum entries for
 # ROW/STACK and no `children` field at this level.
@@ -122,6 +190,7 @@ _FIGMA_CHILD_LEAF_PROPS = {
     "borderColor": {"type": "string", "description": "warna hex garis pinggir (stroke). INPUT sudah otomatis dapat border abu muda meski field ini kosong; isi untuk tipe lain (BUTTON/RECTANGLE/AVATAR/HEADER_IMAGE/ROW) kalau di gambar terlihat ada garis pinggir"},
     "borderWidth": {"type": "integer", "description": "ketebalan border dalam px, default 1"},
     "shadow": {"type": "boolean", "description": "true kalau elemen di gambar terlihat 'mengambang' (drop shadow) — umum untuk card/button di atas latar polos"},
+    "elevation": {"type": "string", "enum": ["subtle", "medium", "strong"], "description": "seberapa 'mengambang' shadow-nya (hanya berlaku kalau `shadow`=true), default 'subtle'. subtle=card biasa di atas background sendiri (paling umum). medium=card yang perlu menonjol dari background ramai/berwarna, atau dropdown. strong=HANYA untuk satu elemen paling mengambang di layar (modal/FAB) — jangan pakai untuk banyak elemen sekaligus."},
 }
 
 
@@ -289,14 +358,20 @@ CHAT_TOOLS = [
                         "menggunakan automation UI asli (draw tools + panel Figma), "
                         "bukan API/plugin. Menghasilkan frame, AutoLayout, warna, dan "
                         "elemen UI, lalu mengembalikan screenshot preview-nya. Pakai "
-                        "ini bila pengguna minta didesainkan frame / UI di Figma Web. "
+                        "ini bila pengguna minta didesainkan frame / UI di Figma Web.\n\n"
+                        + _FIGMA_DESIGN_SYSTEM_GUIDE + "\n\n"
                         "Jika pengguna melampirkan gambar (screenshot/mockup/referensi "
                         "UI) di chat, JADI senior UI/UX: baca gambar itu langsung — "
                         "tata letak, urutan elemen dari atas ke bawah, warna (hex "
                         "sedekat mungkin), teks persis, ukuran relatif tiap elemen — "
                         "lalu tuangkan sebagai `children` di bawah sedetail mungkin. "
                         "Jangan menebak generik; reproduksi apa yang benar-benar "
-                        "terlihat di gambar."),
+                        "terlihat di gambar, TAPI tetap rapikan ke skala spacing/type "
+                        "di atas kalau gambarnya sendiri tidak presisi ke grid. Bila "
+                        "TIDAK ada gambar (desain dari nol), rancang sendiri sebagai "
+                        "senior UI/UX: tentukan hierarki informasi yang masuk akal, "
+                        "lalu terapkan skala di atas — jangan sekadar menumpuk elemen "
+                        "generik."),
         "parameters": {"type": "object", "properties": {
             "file_url": {"type": "string", "description": "URL dokumen Figma Web (misal https://www.figma.com/design/xxx/yyy)"},
             "frame_name": {"type": "string", "description": "nama frame UI, misal 'Login Screen'"},

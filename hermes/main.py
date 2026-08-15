@@ -5,7 +5,7 @@ from openai import AsyncOpenAI
 import uvicorn
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, CommandHandler, filters
-from . import brain, cleanup, config, paths, voice
+from . import brain, cleanup, config, paths, uploads, voice
 from .session_store import Store
 from .mcp_hub import McpHub, RealMcpSession, to_openai_tools
 from .orchestrator import Orchestrator
@@ -124,6 +124,45 @@ async def _call_tool_once(seen: dict, call, name: str, raw_args: str) -> str:
         args = {}
     seen[key] = await call(name, args)
     return seen[key]
+
+# Phase 3 Step 1 of docs/figma-uiux-roadmap.md: the model otherwise never
+# actually SEES its own Figma build — figma_web_design's result is just a
+# JSON string with a screenshot path, text the model cannot visually reason
+# over. Wrapping that screenshot as an inline image in a followup user
+# message (same data_url pattern as a human's uploaded mockup) lets the model
+# compare its own output against what was asked and self-correct next round,
+# instead of confidently reporting success on a build it never looked at.
+_FIGMA_SELFCHECK_PROMPT = (
+    "Ini screenshot hasil desain Figma yang baru saja kamu buat. Bandingkan "
+    "dengan mockup/referensi yang diberikan pengguna (kalau ada gambar "
+    "terlampir sebelumnya di percakapan ini) atau dengan permintaan "
+    "pengguna. Sebutkan SECARA KONKRET kalau ada yang meleset — warna, "
+    "elemen hilang/salah urutan, teks salah, ukuran/spacing janggal. Jangan "
+    "memuji generik kalau sebenarnya ada yang salah. Kalau sudah sesuai, "
+    "cukup katakan singkat sudah sesuai."
+)
+
+
+def _figma_selfcheck_message(tool_name: str, result_content: str) -> dict | None:
+    """A followup user message carrying the build's own screenshot, or None
+    for any other tool / a build that produced no usable screenshot."""
+    if tool_name != "figma_web_design":
+        return None
+    try:
+        data = json.loads(result_content)
+    except json.JSONDecodeError:
+        return None
+    shot = data.get("screenshot_path")
+    if not data.get("ok") or not shot:
+        return None
+    p = Path(shot)
+    if not p.is_file():
+        return None
+    try:
+        parts = uploads.as_content_parts(_FIGMA_SELFCHECK_PROMPT, [p])
+    except uploads.UnsupportedImage:
+        return None
+    return {"role": "user", "content": parts}
 
 # python-telegram-bot's default HTTP timeouts (connect/read ~5s) are tight for
 # a slow or flaky uplink to api.telegram.org: a single timed-out send raised
@@ -471,10 +510,15 @@ def build_nim_chat(settings, secrets):
             m = resp.choices[0].message
             if m.tool_calls and not last:
                 msgs.append(m.model_dump())
+                selfchecks = []
                 for tc in m.tool_calls:
                     result = await _call_tool_once(called, dispatch, tc.function.name,
                                                    tc.function.arguments)
                     msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                    sc = _figma_selfcheck_message(tc.function.name, result)
+                    if sc:
+                        selfchecks.append(sc)
+                msgs.extend(selfchecks)
                 continue
             content = m.content or ""
             if _has_visible_prose(content) or empty_rounds >= MAX_EMPTY_REPLY_ROUNDS:
@@ -557,9 +601,14 @@ def build_nim_chat(settings, secrets):
                                  {"id": s["id"], "type": "function",
                                   "function": {"name": s["name"], "arguments": s["args"] or "{}"}}
                                  for s in tool_acc.values()]})
+                selfchecks = []
                 for s in tool_acc.values():
                     result = await _call_tool_once(called, dispatch, s["name"], s["args"])
                     msgs.append({"role": "tool", "tool_call_id": s["id"], "content": result})
+                    sc = _figma_selfcheck_message(s["name"], result)
+                    if sc:
+                        selfchecks.append(sc)
+                msgs.extend(selfchecks)
                 continue
             # A round that streamed nothing the operator can see is the
             # "(tidak ada balasan)" placeholder in the making. Retry once with
