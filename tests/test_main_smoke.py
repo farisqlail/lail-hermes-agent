@@ -802,6 +802,26 @@ def test_figma_selfcheck_message_wraps_a_successful_build(tmp_path):
     assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
+def test_figma_selfcheck_message_wraps_a_successful_multi_frame_build(tmp_path):
+    """Phase 4 follow-up: figma_web_design_flow's own screenshot (several
+    frames side by side in one image) gets the same close-the-loop
+    treatment as a single build, but with the multi-frame-aware prompt
+    variant — not the single-frame one, which doesn't tell the model there
+    are multiple frames to check."""
+    from hermes import main
+    shot = _fake_png(tmp_path / "flow.png")
+    result = main.json.dumps({"ok": True, "screenshot_path": str(shot)})
+
+    msg = main._figma_selfcheck_message("figma_web_design_flow", result)
+
+    assert msg["role"] == "user"
+    parts = msg["content"]
+    assert parts[0] == {"type": "text", "text": main._FIGMA_SELFCHECK_FLOW_PROMPT}
+    assert parts[0]["text"] != main._FIGMA_SELFCHECK_PROMPT
+    assert parts[1]["type"] == "image_url"
+    assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
 def test_figma_selfcheck_message_ignores_other_tools():
     from hermes import main
     assert main._figma_selfcheck_message("recent_tasks", "[]") is None

@@ -498,12 +498,39 @@ verification as an original build — otherwise the model would report
 prevent.
 
 **Not done — deliberately out of scope for this narrow cut:** editing any
-property other than a photo (color, text, size, ...), and multi-frame
-self-check (`figma_web_design_flow` doesn't get the Step 1 treatment yet
-— comparing a multi-frame screenshot against a multi-part request is a
-different, untested prompt shape). Both are natural next slices if a
-broader delta-edit tool is wanted later, now that the harder groundwork
-(real file URL, rename-and-refind, collapsed-tree handling) is proven.
+property other than a photo (color, text, size, ...). A natural next
+slice if a broader delta-edit tool is wanted later, now that the harder
+groundwork (real file URL, rename-and-refind, collapsed-tree handling) is
+proven.
+
+**Multi-frame self-check — ✅ DONE (2026-08-16, follow-up session).**
+`figma_web_design_flow` gets the same close-the-loop treatment as a single
+build now — the mechanical wiring turned out trivial (`design_multi_frame_web`
+already returned a `screenshot_path` for its own `Shift+1`
+zoom-to-fit-ALL-frames screenshot, unused until now), but the actual
+concern this section flagged (a multi-frame screenshot is genuinely a
+different shape to check — several frames side by side in one image,
+against a request describing several screens) needed its own prompt, not
+just reusing the single-frame one: `_FIGMA_SELFCHECK_FLOW_PROMPT` in
+`hermes/main.py` explicitly tells the model to check EVERY frame against
+its corresponding part of the request, not just the first one.
+
+Validated with the same methodology Step 1 used: built a real 3-frame flow
+(Welcome → Add Photo → Done) with a deliberate mismatch (frame 2's
+HEADER_IMAGE, no Unsplash key configured, falls back to a plain color
+box) and ran the exact `_figma_selfcheck_message` assembly against the
+real chat model. Result: it correctly named frame 2 specifically —
+"`Frame 2`... isi fotonya belum benar-benar berupa foto/preview – masih
+kotak placeholder polos biru muda" — not just "something's wrong
+somewhere." It also flagged two more real visual defects the run
+happened to have (white text invisible on a white background in frames 1
+and 3, traced back to the validation script itself calling
+`design_multi_frame_web` directly with the tool-schema's snake_case keys
+instead of going through `chat_engine.py`'s dispatch translation to
+camelCase — confirmed live that dispatch handler already does this
+translation correctly, so not a real bug, just a test-script artifact) —
+concrete, per-frame, no generic praise, clearing the same bar Step 1's own
+validation did.
 
 Files touched (Step 1): `hermes/chat_engine.py` (`_FIGMA_DESIGN_SYSTEM_GUIDE`,
 tool description), `hermes/main.py` (`_figma_selfcheck_message`, wired into
@@ -514,7 +541,10 @@ both `chat()` and `stream()` tool-call rounds). Files touched (Step 2):
 `file_url` result, new `fix_figma_photo`), `hermes/chat_engine.py` (new
 `figma_web_fix_photo` tool schema + dispatch), `hermes/main.py`
 (`_figma_selfcheck_message` extended to include it), `tests/test_web_ui.py`
-(tool-registry list updated).
+(tool-registry list updated). Files touched (multi-frame self-check):
+`hermes/main.py` (`_FIGMA_SELFCHECK_FLOW_PROMPT`, `_figma_selfcheck_message`
+extended to `figma_web_design_flow` with the variant prompt),
+`tests/test_main_smoke.py` (new wiring test).
 
 ## Phase 4 — Multi-frame output — ✅ DONE (2026-08-16)
 
@@ -618,7 +648,7 @@ nests correctly, but a Grid frame with `rows` on "Auto" keeps growing
 taller than requested, which an unsized-generously outer parent's `Clip
 content` can cut off; a same-session fix attempt was tried and reverted,
 see that section), Phase 3 Step 2 broadened to other properties (color,
-text, size) if wanted, multi-frame self-check for `figma_web_design_flow`,
-and the ROW-of-cards-of-STACKs-inside-another-composite depth beyond
-what's been live-tested. The undersized-container residual (Phase 2) is
-now fixed — see its own section above.
+text, size) if wanted, and the ROW-of-cards-of-STACKs-inside-another-
+composite depth beyond what's been live-tested. Multi-frame self-check
+for `figma_web_design_flow` and the undersized-container residual
+(Phase 2) are now both fixed — see their own sections above.
