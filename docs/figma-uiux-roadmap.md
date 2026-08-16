@@ -144,24 +144,41 @@ find:
    before failing. Fixed: `force=True` skips that check (safe here — it's a
    hover-rendering artifact, not a real interaction hazard).
 
-**Residual, understood but not fixed:** an UNDERSIZED container (content
-that genuinely doesn't fit — the 8-item onboarding STACK forced into 472px
-when it needs ~600+) still breaks: `used`'s running estimate exceeds the
-container's real height partway through, `_append_bias` clamps every
-remaining item to the same 0.8 ceiling, and the ordering/nesting problem
-this whole fix targets comes back for just those tail items (confirmed
-live: BUTTON's label escaped to the page root, ROW gained an extra nesting
-level — while the preceding 6 items stayed perfect). This is not a bug to
-chase further with tuning; it's the honest limit of estimating fit without
-reading Figma's real layout back — `_item_size` is a heuristic, not ground
-truth, and no bias formula fixes a container that's actually too small for
-its content. Two real ways out, neither started: (a) give `figma_web_design`
-sizing guidance/validation so specs don't hand STACK a `height` its own
-children can't fit in, or (b) read the parent's real remaining space back
-from Figma (Position/Layout panel) between items instead of estimating —
-bigger scope, see `_zoom_to_selection`'s docstring for why that's more
-robust than any heuristic. Solid and live-reverified for correctly-sized
-containers up to 8 children; the constraint is fit, not count.
+**Residual — ✅ FIXED (2026-08-16, follow-up session).** An UNDERSIZED
+container (content that genuinely doesn't fit — the 8-item onboarding
+STACK forced into 472px when it needs ~600+) used to break: `used`'s
+running estimate exceeds the container's real height partway through,
+`_append_bias` clamps every remaining item to the same 0.8 ceiling, and
+the ordering/nesting problem this whole fix targets comes back for just
+those tail items (confirmed live: BUTTON's label escaped to the page
+root, ROW gained an extra nesting level — while the preceding 6 items
+stayed perfect).
+
+Took option (a) from this section's own list of two ways out — auto-
+correct the container instead of reading Figma's real layout back
+mid-build (option (b); after this same session's Grid work showed that
+kind of live re-measurement can itself destabilize placement when done
+repeatedly, (a) was the lower-risk path). `_place_items`' ROW/STACK branch
+now computes a minimum required extent — summing each child's own
+`_item_size` estimate + gap + the same +15 flat slack the bias math
+itself already applies, for consistency — and clamps `box_h` (STACK) or
+`box_w` (ROW) up to at least that minimum, BEFORE the frame is ever drawn,
+regardless of what height/width the spec (or a default) declared. A
+container can still end up TALLER/WIDER than a human would have chosen,
+but never smaller than its own children need, which is what was actually
+breaking placement.
+
+Live-verified against the exact documented repro (8-item onboarding
+STACK — avatar, heading, subtitle, 2 inputs, checkbox, button, footer ROW
+of 2 links — forced to `height: 472`): all 17 nodes (including the
+nested INPUT/CHECKBOX/BUTTON/ROW composites' own children) built and
+nested correctly, in correct visual order, no escapes, no stray nesting
+— the exact failure this residual described did not reproduce. Solid for
+containers that were previously undersized; still governed by
+`_item_size`'s heuristics (a guess, not ground truth) for exactly how
+much bigger to make the container, but "somewhat more generous than
+strictly needed" was already established elsewhere in this file as the
+safe direction to err.
 
 ### Shadow elevation + card/color/layout guide, and two more bias bugs (2026-08-15, same day)
 
@@ -599,8 +616,9 @@ actually hit what a mockup asks for). Remaining open items: the Grid
 height-keeps-growing cosmetic residual (own section above — content
 nests correctly, but a Grid frame with `rows` on "Auto" keeps growing
 taller than requested, which an unsized-generously outer parent's `Clip
-content` can cut off), Phase 3 Step 2 broadened to other properties
-(color, text, size) if wanted, multi-frame self-check for
-`figma_web_design_flow`, the ROW-of-cards-of-STACKs-inside-another-
-composite depth beyond what's been live-tested, and the undersized-
-container residual noted in Phase 2.
+content` can cut off; a same-session fix attempt was tried and reverted,
+see that section), Phase 3 Step 2 broadened to other properties (color,
+text, size) if wanted, multi-frame self-check for `figma_web_design_flow`,
+and the ROW-of-cards-of-STACKs-inside-another-composite depth beyond
+what's been live-tested. The undersized-container residual (Phase 2) is
+now fixed — see its own section above.

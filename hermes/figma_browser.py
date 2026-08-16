@@ -1142,6 +1142,35 @@ async def _place_items(
                     default_child_w = box_content_w
                 normalized = [{**c, "width": c.get("width") or default_child_w} for c in sub_items]
 
+                # Auto-correct an undersized declared height/width instead
+                # of building it anyway and letting the tail items break —
+                # a container smaller than its own children need breaks
+                # `_append_bias`'s fit tracking for whatever doesn't fit
+                # (documented, live-confirmed residual: an 8-item STACK
+                # forced into 472px when it needed ~600+ built its first 6
+                # children perfectly, then a BUTTON's label escaped to the
+                # page root and a ROW gained a stray extra nesting level for
+                # the tail). No bias formula fixes a container that's
+                # genuinely too small for its content — the actual fix is
+                # not letting it be too small in the first place. Estimates
+                # mirror `_place_items`' own `used` tally exactly (each
+                # child's `_item_size` extent + gap + the same +15 flat
+                # slack already applied there for the same
+                # heuristic-not-ground-truth reason) so this stays
+                # consistent with what the bias math itself expects to fit.
+                sub_child_type = [str(c.get("type") or "").upper() for c in sub_items]
+                min_extent = box_padding * 2 + sum(
+                    (_item_size(c, t, default_child_w)[0 if is_row else 1] + box_gap + 15.0)
+                    for c, t in zip(sub_items, sub_child_type)
+                )
+                if is_row:
+                    box_w = max(box_w, min_extent)
+                    box_content_w = max(box_w - 2 * box_padding, 20)
+                    default_child_w = max((box_content_w - box_gap * (n - 1)) / n, 20)
+                    normalized = [{**c, "width": c.get("width") or default_child_w} for c in sub_items]
+                else:
+                    box_h = max(box_h, min_extent)
+
                 async def _fill_box(
                     icx: float, icy: float, _items=normalized, _child_w=default_child_w,
                     _direction=box_direction, _w=box_w, _h=box_h,
