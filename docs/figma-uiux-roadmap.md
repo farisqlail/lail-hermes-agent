@@ -319,20 +319,22 @@ wrong assumption than the last:
 across a 6-item/3-column build) — cosmetic (the outer parent's `Clip
 content` can cut off later rows if it wasn't sized generously), not
 corruption, and a same-session attempt to also fight this via a second
-selector was tried and reverted (see `_lock_grid_height`'s own docstring)
-after a subsequent run showed 2 missing elements — though that run was in
-a test file so cluttered with ~13 leftover frames from repeated live
-verification that Figma's own row-selection reliability is itself in
-question there, so it's not proven the revert was the actual fix rather
-than coincidence. **Run-to-run reliability beyond the one clean 6/6 result
-is not proven** — later verification attempts, in an increasingly
-cluttered shared test file (hit Figma's own "too many new files" rate
-limit, blocking a from-scratch clean re-test), showed intermittent missing
-elements (a root-level sibling, a grid child) that may be a real residual
-bug or may be that file's own clutter confusing `_current_row_selector`'s
-active-row detection — undetermined. Next session should re-verify with a
-fresh file once the rate limit clears before trusting this beyond the
-narrow case already confirmed.
+selector was tried and reverted (see `_lock_grid_height`'s own docstring).
+
+**Reliability confirmed (2026-08-16, same day, follow-up session) — the
+"missing elements" scare WAS the cluttered test file, not a real bug.**
+Re-verified via a NEW PAGE in the same existing file (not a new file —
+Figma's own new-file rate limit was still active; not the same cluttered
+page — ~13 leftover frames from the earlier debugging session had made
+`_current_row_selector`'s active-row detection unreliable there) — a
+genuinely clean canvas. Result: all 7 elements (the heading + 6 grid
+children) correctly nested, zero escapes, confirmed via both the
+`_build_frame_via_ui` result and a direct layers-panel dump. This settles
+it: the Grid placement mechanism itself is solid; the earlier missing-
+element observations were the shared file's own clutter, not a code bug.
+See `[[figma-testing-no-new-files]]` (agent memory) for the reusable
+lesson — new Page in an existing file, never a new file, for repeated live
+verification within one session.
 
 Files touched: `hermes/figma_browser.py` (`_apply_grid_layout`,
 `_grid_column_major_order`, `_lock_grid_height`, `_read_number`,
@@ -544,19 +546,18 @@ were only found and fixed by insisting on that.
 ## Suggested order
 
 Phase 1 (done) → Phase 2 (done; Grid spike shipped 2026-08-16, core
-mechanism live-verified, run-to-run reliability not fully proven — see its
-own section above) → Phase 3 Step 1 (done) → Phase 4 (done) → Phase 3 Step
-2 (done, narrow: photo-only fix). Each phase is independently shippable and
-testable — no phase blocks starting the next except in the order listed
-(fidelity before layout before self-check, since self-check's comparisons
-are only useful once the builder can actually hit what a mockup asks for).
-Remaining open items: **a from-scratch clean-file re-verification of Grid**
-(blocked on Figma's own "too many new files" rate limit as of this
-writing — the shared test file used for the last few verification rounds
-had accumulated ~13 leftover frames, muddying whether the last two
-"missing element" observations were a real residual bug or that file's own
-clutter), the Grid height-keeps-growing cosmetic residual (own section
-above), Phase 3 Step 2 broadened to other properties (color, text, size)
-if wanted, multi-frame self-check for `figma_web_design_flow`, the
-ROW-of-cards-of-STACKs-inside-another-composite depth beyond what's been
-live-tested, and the undersized-container residual noted in Phase 2.
+mechanism live-verified AND reliability confirmed via a clean-page
+re-test — see its own section above) → Phase 3 Step 1 (done) → Phase 4
+(done) → Phase 3 Step 2 (done, narrow: photo-only fix). Each phase is
+independently shippable and testable — no phase blocks starting the next
+except in the order listed (fidelity before layout before self-check,
+since self-check's comparisons are only useful once the builder can
+actually hit what a mockup asks for). Remaining open items: the Grid
+height-keeps-growing cosmetic residual (own section above — content
+nests correctly, but a Grid frame with `rows` on "Auto" keeps growing
+taller than requested, which an unsized-generously outer parent's `Clip
+content` can cut off), Phase 3 Step 2 broadened to other properties
+(color, text, size) if wanted, multi-frame self-check for
+`figma_web_design_flow`, the ROW-of-cards-of-STACKs-inside-another-
+composite depth beyond what's been live-tested, and the undersized-
+container residual noted in Phase 2.
