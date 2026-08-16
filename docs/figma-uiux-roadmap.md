@@ -336,6 +336,49 @@ See `[[figma-testing-no-new-files]]` (agent memory) for the reusable
 lesson — new Page in an existing file, never a new file, for repeated live
 verification within one session.
 
+**Height-residual fix attempted and reverted (2026-08-16, same day) — the
+per-item height lock is load-bearing for correctness, not just cosmetic,
+and can't be safely removed or replaced without a deeper rework.** Two
+follow-up attempts, in order:
+
+1. Read `_place_items`' own `used` tracker after all grid children were
+   placed and lock the frame to `used + padding` as a "final settle."
+   Live result: settled to 580px for a 6-item/3-column text grid that
+   should need well under 100px — `used`'s value is itself a mid-
+   construction snapshot (contaminated by the same row-eager-growth this
+   whole section is about), not a clean final measurement, so locking to
+   it just baked in whatever inflation existed at that moment.
+2. Stopped re-locking height on every item during construction entirely
+   (only reading it, for the click-bias math) and instead measured +
+   locked once at the very end, theorizing the per-item lock might itself
+   be *causing* Figma to reshuffle the grid's row/column assignment via
+   repeated forced resizes. Live result, in TWO different ways depending
+   on exact form: the grid became a sparse, non-contiguous 3x3 layout for
+   6 items (3 empty gaps, not a tight 2x3) when height was still being
+   read-and-relocked per item just without the forced Hug→Fixed switch;
+   and when the per-item lock was removed OUTRIGHT, 5 of 6 children
+   escaped back to being ROOT-level siblings instead of nesting in the
+   grid at all — the exact original escape bug the per-item lock was
+   built to fix in the first place.
+
+Conclusion: the per-item `_lock_grid_height` call, despite ALSO being the
+proximate cause of the height inflating past what's needed, is what keeps
+the frame's real on-screen bounds stable enough for the click-bias math to
+land inside it reliably. Removing or replacing it destabilizes placement
+correctness faster than it fixes the cosmetic height issue — this isn't a
+free-standing cosmetic residual, it's entangled with the actual placement
+mechanism. **Reverted to the last known-good version** (this section's own
+"Residual, NOT resolved" paragraph above, and commit `d0066cf`/`3ffc4e8`)
+rather than ship a regression chasing a cosmetic fix. A real fix here
+likely needs a fundamentally different mechanism — e.g. pre-computing and
+setting the EXACT correct height once, before any children are added
+(requires knowing real per-row content height in advance, which isn't
+known until items are actually rendered), or reading back each existing
+child's position between placements instead of relying on the frame's own
+reported height at all (the same "read Figma's real state back instead of
+estimating" pattern this whole Grid section already needed once) — not
+attempted; flag for a dedicated session, not a quick follow-up.
+
 Files touched: `hermes/figma_browser.py` (`_apply_grid_layout`,
 `_grid_column_major_order`, `_lock_grid_height`, `_read_number`,
 `_read_position_y`, `_place_items`'s `grid_mode`/`grid_columns` params and
