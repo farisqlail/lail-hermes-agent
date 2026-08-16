@@ -191,6 +191,8 @@ _FIGMA_CHILD_LEAF_PROPS = {
     "borderWidth": {"type": "integer", "description": "ketebalan border dalam px, default 1"},
     "shadow": {"type": "boolean", "description": "true kalau elemen di gambar terlihat 'mengambang' (drop shadow) — umum untuk card/button di atas latar polos"},
     "elevation": {"type": "string", "enum": ["subtle", "medium", "strong"], "description": "seberapa 'mengambang' shadow-nya (hanya berlaku kalau `shadow`=true), default 'subtle'. subtle=card biasa di atas background sendiri (paling umum). medium=card yang perlu menonjol dari background ramai/berwarna, atau dropdown. strong=HANYA untuk satu elemen paling mengambang di layar (modal/FAB) — jangan pakai untuk banyak elemen sekaligus."},
+    "fontFamily": {"type": "string", "description": "nama font family untuk TEXT/FOOTER_LINK, mis. 'Roboto', 'Poppins', 'Playfair Display' — HARUS nama font yang benar-benar ada di katalog Google Fonts Figma (jangan mengarang nama). Kosongkan untuk default 'Inter'. Pakai HANYA kalau gambar/permintaan jelas menunjukkan font khusus (mis. judul serif elegan, atau brand font tertentu) — jangan ganti font tanpa alasan visual."},
+    "gradientColors": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2, "description": "DUA warna hex [awal, akhir] untuk gradient linear (atas ke bawah), khusus BUTTON/RECTANGLE, mis. ['#0070F3', '#00C2FF']. Kosongkan untuk warna solid biasa (paling umum) — gradient HANYA kalau gambar/permintaan jelas menunjukkan transisi warna, jangan dipakai sebagai dekorasi default."},
 }
 
 

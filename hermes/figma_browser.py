@@ -184,6 +184,102 @@ async def _set_fill_hex(page, hex_color: str | None) -> None:
     await page.wait_for_timeout(150)
 
 
+async def _set_gradient_fill(page, color_start: str, color_end: str) -> None:
+    """Set the selected node's fill to a 2-stop LINEAR gradient.
+
+    Mechanism, live-confirmed: click the Fill swatch (same one
+    `_set_fill_hex` types a hex into for a solid fill) to open the
+    color-picker popover, then click the "Linear" option in the fill-type
+    tab group — a real `<fieldset role="radiogroup">`
+    (`paint_type_group_tabs--container-...`) whose radio inputs have
+    literal `value="GRADIENT_LINEAR"` etc — NOT a hardcoded pixel
+    position (a first attempt clicking the tab icons by their on-screen
+    coordinate wasn't reproducible: the popover's own screen position
+    shifts between sessions/trigger points, landing on a completely
+    different tab — e.g. "Check color contrast" — depending on where the
+    Fill row happened to render). Switching to Linear leaves exactly 2
+    default stops (0%/100%, an auto-generated color pair) already present
+    at `input[aria-label="Gradient Stop Color"]`; this overwrites both.
+
+    Only ever produces exactly 2 stops (start/end) — a real limitation,
+    not an oversight: Figma's "Add gradient stop" control inserts a stop
+    by ITS OWN position logic (not necessarily DOM-appended at the end),
+    which wasn't live-tested this session, so a 3+-stop gradient isn't
+    attempted here rather than guessing at ordering. Radial/Angular/
+    Diamond sub-types are ALSO not covered — Figma's own "Linear" text
+    next to the gradient bar is a separate in-editor dropdown for that,
+    not explored this session — same "narrow first cut" scoping
+    `fix_figma_photo`/`fix_figma_text` used.
+    """
+    swatch = page.locator('[data-onboarding-key="paint-panel-row-paint-1-0"] button').first
+    if await swatch.count() == 0:
+        add_fill = page.get_by_role("button", name="Add fill")
+        if await add_fill.count() > 0:
+            await add_fill.click()
+            await page.wait_for_timeout(300)
+    linear_radio = page.locator(
+        '[class*="paint_type_group_tabs--container"] input[value="GRADIENT_LINEAR"]')
+    # The swatch click doesn't always open the picker popover on the FIRST
+    # try right after a fresh "Add fill" — live-confirmed: the Fill row
+    # ends up showing a plain white solid (exactly what "Add fill" alone
+    # produces) with no popover ever appearing, no exception raised either
+    # time (the click itself lands fine, it just doesn't trigger the
+    # popover) — a rendering/animation race on the panel's fill-count
+    # transitioning from 0 to 1, not a wrong selector (a plain shape,
+    # never needing "Add fill" first since it already starts with the
+    # `color` fill applied, opens the popover reliably on the first try).
+    # Retrying the swatch click a second time after a brief wait clears it.
+    for attempt in range(3):
+        await swatch.click(timeout=8000)
+        await page.wait_for_timeout(300)
+        if await linear_radio.count() > 0:
+            break
+        await page.wait_for_timeout(300)
+    await linear_radio.click(force=True, timeout=8000)
+    await page.wait_for_timeout(300)
+
+    stop_inputs = page.locator('input[aria-label="Gradient Stop Color"]')
+    for i, hexval in enumerate((color_start, color_end)):
+        color = (hexval or "").lstrip("#").upper() or ("000000" if i == 0 else "FFFFFF")
+        field = stop_inputs.nth(i)
+        await field.click(timeout=8000)
+        await page.keyboard.press("Control+A")
+        await field.type(color)
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(150)
+
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(150)
+
+
+async def _set_font_family(page, family: str) -> bool:
+    """Set the currently-selected TEXT node's font family. Returns whether
+    the requested family was actually found and applied.
+
+    Mechanism, live-confirmed: clicking the font-picker button
+    (`text-panel-font-picker-button`, showing the current family — "Inter"
+    by default) opens a searchable list with an already-focused "Search
+    fonts" field; typing directly (no separate click into the search box
+    needed) filters the list, and the matching entry is a plain
+    `role="option"` clickable by exact name.
+    """
+    picker = page.locator('[data-onboarding-key="text-panel-font-picker-button"]')
+    if await picker.count() == 0:
+        return False
+    await picker.click()
+    await page.wait_for_timeout(300)
+    await page.keyboard.type(family)
+    await page.wait_for_timeout(400)
+    option = page.get_by_role("option", name=family, exact=True)
+    if await option.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await option.first.click()
+    await page.wait_for_timeout(200)
+    return True
+
+
 async def _draw(page, tool_key: str, cx: float, cy: float, w: float = 40, h: float = 30) -> None:
     """Select a tool and drag a small box centered at (cx, cy).
 
@@ -538,6 +634,7 @@ async def _add_shadow(page, elevation: str = "subtle") -> None:
 async def _add_text(
     page, cx: float, cy: float, content: str,
     font_size: float | None = None, color: str | None = None, bold: bool = False,
+    font_family: str | None = None,
 ) -> None:
     await page.keyboard.press("t")
     await page.wait_for_timeout(150)
@@ -554,6 +651,8 @@ async def _add_text(
             await size_field.first.type(str(int(font_size)))
             await page.keyboard.press("Enter")
             await page.wait_for_timeout(150)
+    if font_family:
+        await _set_font_family(page, font_family)
     if color:
         await _set_fill_hex(page, color)
     if bold:
@@ -583,13 +682,16 @@ async def _add_shape(
     border_color: str | None = None, border_width: float | None = None,
     shadow: bool = False, elevation: str = "subtle",
     rename: str | None = None,
+    gradient: tuple[str, str] | None = None,
 ) -> None:
     await _draw(page, tool_key, cx, cy)
     await _set_number(page, "scrubbable-control-width", w)
     await _set_number(page, "scrubbable-control-height", h)
     if corner_radius:
         await _set_number(page, "scrubbable-control-corner-radius", corner_radius)
-    if color:
+    if gradient:
+        await _set_gradient_fill(page, gradient[0], gradient[1])
+    elif color:
         await _set_fill_hex(page, color)
     if border_color:
         await _set_stroke(page, border_color, border_width)
@@ -818,6 +920,7 @@ async def _add_composite(
     align_start: bool = False,
     columns: int | None = None, gap_row: float | None = None,
     rename: str | None = None,
+    gradient: tuple[str, str] | None = None,
 ) -> None:
     """Create a nested auto-layout sub-frame (button/input/checkbox row) and
     fill it via `fill_children(inner_cx, inner_cy)`. Always sets a real fill
@@ -849,7 +952,10 @@ async def _add_composite(
     else:
         await _apply_auto_layout(page, direction, padding, padding, gap, centered=True, align_start=align_start)
     await _lock_fixed_size(page, w, h)
-    await _set_fill_hex(page, color)
+    if gradient:
+        await _set_gradient_fill(page, gradient[0], gradient[1])
+    else:
+        await _set_fill_hex(page, color)
     if border_color:
         await _set_stroke(page, border_color, border_width)
     if shadow:
@@ -1026,7 +1132,7 @@ async def _place_items(
                 await _add_text(
                     page, cx, cy, item.get("content") or item.get("text") or "",
                     font_size=item.get("fontSize"), color=item.get("color"),
-                    bold=bool(item.get("bold")),
+                    bold=bool(item.get("bold")), font_family=item.get("fontFamily"),
                 )
             elif itype in ("HEADER_IMAGE", "HEADER"):
                 photo_name = f"hermes:photo:{photo_registry['n']}:header"
@@ -1106,6 +1212,8 @@ async def _place_items(
                 label_color = item.get("textColor") or (item.get("color") if item.get("backgroundColor") else None) or "#FFFFFF"
                 button_name = f"hermes:node:{photo_registry['node_n']}:button"
                 photo_registry["node_n"] += 1
+                button_gradient = item.get("gradientColors")
+                button_gradient = tuple(button_gradient[:2]) if button_gradient and len(button_gradient) >= 2 else None
 
                 async def _fill_button(icx: float, icy: float, _item=item, _label_color=label_color) -> None:
                     await _add_text(
@@ -1119,7 +1227,7 @@ async def _place_items(
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
                     shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
                     direction="HORIZONTAL", gap=8, padding=16, fill_children=_fill_button,
-                    rename=button_name,
+                    rename=button_name, gradient=button_gradient,
                 )
                 photo_registry["fixable_nodes"].append({"node_name": button_name, "type": "BUTTON"})
             elif itype == "CHECKBOX":
@@ -1261,13 +1369,15 @@ async def _place_items(
             else:
                 rect_name = f"hermes:node:{photo_registry['node_n']}:rectangle"
                 photo_registry["node_n"] += 1
+                rect_gradient = item.get("gradientColors")
+                rect_gradient = tuple(rect_gradient[:2]) if rect_gradient and len(rect_gradient) >= 2 else None
                 await _add_shape(
                     page, "r", cx, cy, item.get("width") or 100, item.get("height") or 40,
                     color=item.get("backgroundColor") or item.get("color") or item.get("fill"),
                     corner_radius=item.get("borderRadius"),
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
                     shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
-                    rename=rect_name,
+                    rename=rect_name, gradient=rect_gradient,
                 )
                 photo_registry["fixable_nodes"].append({"node_name": rect_name, "type": "RECTANGLE"})
             created += 1

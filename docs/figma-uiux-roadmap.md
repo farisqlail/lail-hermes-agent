@@ -688,6 +688,105 @@ return dict, `design_figma_frame_web` refactored to use the shared
 helper), `hermes/chat_engine.py` (new `figma_web_design_flow` tool schema
 + dispatch handler), `tests/test_web_ui.py` (tool-registry list updated).
 
+## Phase 5 — Color & typography variety (gradient fills, font family) — ✅ DONE (2026-08-16)
+
+New user-facing request, not on this roadmap before now: gradient color
+fills and font-family choice beyond the fixed "Inter" default. Both
+needed live reconnaissance from scratch (this roadmap's own standing
+rule) — neither had ever been touched by any prior phase.
+
+**Font family — straightforward, worked first try.** Figma's Typography
+panel has a `button[data-onboarding-key="text-panel-font-picker-button"]`
+(shows the current family, "Inter" by default) that opens a searchable
+list; a "Search fonts" input is already focused on open, so typing
+directly (no separate click into the search field) filters it, and the
+matching entry is a plain `role="option"` clickable by exact name. New
+`_set_font_family` helper, wired into `_add_text` via a new
+`font_family` param, itself wired to a new `fontFamily` schema field
+(TEXT/FOOTER_LINK only, narrow first cut). Live-verified: a TEXT node
+requesting `fontFamily: "Playfair Display"` rendered visibly in that
+serif face, panel correctly showing "Playfair Display" instead of
+"Inter".
+
+**Gradient fills — three real dead ends before the working mechanism.**
+1. First attempt: click the Fill swatch to open its picker, then click
+   one of the small fill-TYPE tab icons (Solid/Linear/Radial/...) by
+   on-screen PIXEL COORDINATE (estimated from one screenshot). Wrong
+   almost immediately — a coordinate that hit "Linear" in one session hit
+   "Check color contrast" (the LAST icon in the row) in another, because
+   the popover's own screen position isn't fixed (shifts with which Fill
+   row triggered it). Nearly shipped this before noticing the
+   inconsistency across repeated recon runs.
+2. Second attempt: broad DOM dumps trying to find a stable `aria-label`
+   or `role="tab"` on the icons — they have neither; they're plain
+   `<div>`-wrapped radio `<input>`s with no accessible name of their own.
+3. **What worked:** walking up from a KNOWN, uniquely-findable anchor
+   (`data-testid="color-contrast-button"`, the one icon in that row that
+   DOES have a stable aria-label) to its container, then searching for
+   sibling elements sharing Figma's own BEM-style CSS class prefix
+   (`color_picker_v2--...`) revealed the real structure: a
+   `<fieldset role="radiogroup" class="paint_type_group_tabs--container-...">`
+   whose child `<input>`s have literal, meaningful `value`s —
+   `"SOLID"`, `"GRADIENT_LINEAR"`, `"PATTERN"`, `"IMAGE"`, `"VIDEO"`,
+   `"CUSTOM"`. `page.locator('[class*="paint_type_group_tabs--container"]
+   input[value="GRADIENT_LINEAR"]').click(force=True)` reliably switches
+   to Linear gradient regardless of the popover's screen position — DOM
+   structure, not pixel geometry. New `_set_gradient_fill` helper
+   switches the tab, then overwrites the 2 default gradient stops
+   Figma auto-creates (`input[aria-label="Gradient Stop Color"]`,
+   `.nth(0)`/`.nth(1)`) with the caller's own start/end hex colors.
+4. **A fourth bug, order-dependent, found only in the full pipeline (not
+   in isolated testing):** a composite (BUTTON) reaching this call for
+   the FIRST time has no fill yet at all (`_add_composite` skips its
+   normal `_set_fill_hex` call when `gradient` is given, and a
+   freshly-drawn frame starts with an empty fill list) — the Fill
+   swatch button doesn't exist until "Add fill" is clicked first, same
+   gap `_set_fill_hex` already handles for solid colors. Handling that
+   ALONE still intermittently failed live (no exception, but the Fill
+   row ended up a plain white solid — exactly what "Add fill" alone
+   produces — with no picker popover ever appearing): the swatch's FIRST
+   click right after "Add fill" doesn't always register as opening the
+   popover, a rendering/animation race on the panel's fill-count
+   transitioning 0→1. Fixed with a bounded retry (re-click the swatch,
+   re-check for the radiogroup, up to 3 times) rather than a longer fixed
+   wait, since the flake wasn't reliably timing-bound in testing.
+
+Only a 2-stop LINEAR gradient is supported — deliberately narrow, same
+scoping `fix_figma_photo`/`fix_figma_text` used for their own first cuts.
+NOT covered: Radial/Angular/Diamond (Figma's own "Linear" text next to
+the gradient bar is a SEPARATE in-editor dropdown for that, not explored
+this session), 3+ stops (Figma's "Add gradient stop" inserts by its own
+position logic, not necessarily DOM-appended at the end — untested, so
+not attempted rather than guessed at), and gradient angle (only "Flip
+gradient"/"Rotate gradient" quick-action buttons were found, no numeric
+degree field — default is Figma's own top-to-bottom vertical). Wired into
+RECTANGLE and BUTTON only (the two most common places a UI gradient
+appears — a card/hero background or a CTA button) via a new
+`gradientColors` schema field (`[start, end]`, exactly 2 hex strings);
+`_add_shape`/`_add_composite` both gained a `gradient` param that, when
+given, replaces the ordinary `_set_fill_hex` call.
+
+Live-verified end to end: a frame with a Playfair-Display heading, an
+orange→red gradient RECTANGLE, and a blue→cyan gradient BUTTON with a
+label — all three built correctly together in one pass, screenshot-
+confirmed (serif heading visibly different from Inter, both gradients
+rendering as smooth 2-color transitions, BUTTON's label correctly
+nested). 807 unit tests still green throughout (no new unit test for the
+browser-automation logic itself — same "proven live, not unit-tested"
+precedent as every other UI-mechanism helper in this file).
+
+Files touched: `hermes/figma_browser.py` (`_set_gradient_fill`,
+`_set_font_family`, `_add_text`'s `font_family` param, `_add_shape`'s
+`gradient` param, `_add_composite`'s `gradient` param, BUTTON/RECTANGLE
+dispatch branches in `_place_items`), `hermes/chat_engine.py`
+(`fontFamily`/`gradientColors` schema fields in `_FIGMA_CHILD_LEAF_PROPS`).
+
+**Remaining open items for this phase, not started:** gradient on other
+node types (HEADER_IMAGE/INPUT/AVATAR/ROW/STACK/GRID backgrounds), Radial/
+Angular/Diamond gradient types, 3+ gradient stops, gradient angle control,
+and font family on BUTTON/INPUT/CHECKBOX labels (currently TEXT/
+FOOTER_LINK only).
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of
@@ -722,4 +821,7 @@ color (`figma_web_fix_property`) are now all fixed — see their own
 sections above. Phase 3 Step 2's delta-fix family now covers photo, text
 content/color, and BUTTON/INPUT/CHECKBOX/RECTANGLE color/width/height —
 the main remaining gap is deeper properties (border, shadow, corner
-radius) if ever wanted, not started.
+radius) if ever wanted, not started. Phase 5 (gradient fills + font
+family) is done too — see its own section above; open items there are
+gradient on more node types, Radial/Angular/Diamond gradient, 3+ stops,
+gradient angle, and font family on BUTTON/INPUT/CHECKBOX labels.
