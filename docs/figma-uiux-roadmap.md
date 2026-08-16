@@ -830,6 +830,92 @@ Radial. 807 unit tests still green.
 ROW/STACK/GRID backgrounds), 3+ gradient stops, gradient angle control,
 and font family on INPUT/CHECKBOX labels.
 
+## Phase 6 — Design system (Color & Text Styles) — ✅ DONE (2026-08-16)
+
+New request: reusable, NAMED Figma Styles (Color styles, Text styles) —
+define a color/typography once, apply it to many elements, and editing
+the style later would propagate everywhere it's used (not exercised this
+session, but that's the whole point of a Style vs. a hardcoded hex/font).
+Genuinely new territory — this roadmap's own standing rule (live recon
+before any code) applied in full; nothing here existed in any prior
+phase.
+
+**Mechanism, both found via the same shape of investigation as
+gradient's own dead-ends earlier — accessible-name dumps first, DOM
+structure only when those came up empty:**
+
+- **Color style — create:** select a node with a Fill, click its swatch
+  (`paint-panel-row-paint-1-0`, the same one `_set_fill_hex`/
+  `_set_gradient_fill` already use), click `button[aria-label="New style
+  or variable"]` — opens a small "Style"/"Variable" tabbed form that
+  DEFAULTS to the Variable tab (Style must be clicked explicitly), type a
+  name into `placeholder="New color style"`, click the form's own
+  "Create style" submit button. That button shares its accessible name
+  with the ICON that opened the form — two elements match
+  `get_by_role("button", name="Create style")`, the submit one is the
+  LAST.
+- **Color style — apply:** a SEPARATE button next to the Fill row,
+  `button[aria-label="Fill, Apply styles and variables"]` (not the swatch
+  itself), opens a styles/variables browser defaulting to the "Libraries"
+  tab. Its `placeholder="Search"` box (needs `exact=True` — a bare
+  substring match also catches an unrelated font-picker's leftover
+  "Search fonts" field if one's still in the DOM) filters across every
+  source, LOCAL styles included, with no separate "Custom" tab click
+  needed. A hierarchical name like `"Brand/Primary"` renders with the
+  group ("Brand") as a non-clickable section header and only the leaf
+  ("Primary") as the actual clickable row — matching is done on the leaf
+  segment.
+- **Text style — create/apply:** same two-button shape
+  (`button[aria-label="Typography, Apply styles"]` next to the Typography
+  section), but a DIFFERENTLY-SHAPED popover than Fill's (a "Text styles"
+  panel — Text styles have no Variable concept in Figma, so no tab
+  choice) with its own `button[aria-label="Create style"]` ("+" icon)
+  opening a "Create new text style" form — `placeholder="New text
+  style"` name field, submit button sharing the SAME "Create style" name
+  collision as the color-style form (again, take the LAST match).
+
+**A real, load-bearing bug found only once verifying the full
+create-then-apply round trip through the ACTUAL production functions (not
+the narrower recon scripts):** every `fix_figma_*`/`fix_figma_property`
+function's existing collapsed-tree-search loop gives up immediately the
+FIRST time zero expand-carets exist, assuming that means "nothing left to
+expand." True for a small, fast-loading file — false once a file (a real
+design system tends to accumulate pages/styles/components over time, and
+this session's own shared test file had grown past 100 pages from
+`[[figma-testing-no-new-files]]`'s reuse-a-page strategy) takes longer
+than `_open_figma_session`'s fixed internal wait to even finish showing
+Figma's OWN loading spinner — confirmed live: a 1s post-open check found
+zero carets and zero matching text; a 10s wait found both. New
+`_select_node_by_display_name` (shared by both new style functions, NOT
+yet backported to the older `fix_figma_*` functions — narrower fix,
+flagged as a possible follow-up) waits for the canvas to actually be
+visible first, then retries the caret-search loop across pauses instead
+of giving up on the first empty check.
+
+Live-verified end to end through the real, unmodified functions:
+`create_figma_style` on a RECTANGLE's fill (named "Brand/Accent"), then
+`apply_figma_style` to a SECOND rectangle (previously red, correctly
+turned the same purple); `create_figma_style` on a TEXT node's typography
+(named "Display/Large"), then `apply_figma_style` to a second, originally
+small-and-gray TEXT node (correctly picked up the full font/size/weight).
+Screenshot-confirmed both pairs visually matching, and the page-level
+Styles panel showing both new styles under "Color styles"/"Text styles".
+807 unit tests still green throughout.
+
+Files touched: `hermes/figma_browser.py` (`_select_node_by_display_name`,
+`_create_color_style`, `_apply_color_style`, `_create_text_style`,
+`_apply_text_style`, new `create_figma_style`/`apply_figma_style`),
+`hermes/chat_engine.py` (new `figma_web_create_style`/
+`figma_web_apply_style` tool schemas + dispatch), `hermes/main.py`
+(`_figma_selfcheck_message` extended to include both), `tests/
+test_web_ui.py` (tool-registry list updated).
+
+**Not started:** Variables (design tokens with light/dark modes — this
+phase only covers Styles), Effect styles (shadows), applying a style to
+MULTIPLE nodes in one call, and reading back which styles already exist
+in a file (a caller currently has to remember the exact name it used at
+create time).
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of
@@ -865,6 +951,10 @@ sections above. Phase 3 Step 2's delta-fix family now covers photo, text
 content/color, and BUTTON/INPUT/CHECKBOX/RECTANGLE color/width/height —
 the main remaining gap is deeper properties (border, shadow, corner
 radius) if ever wanted, not started. Phase 5 (gradient fills + font
-family) is done too — see its own section above; open items there are
-gradient on more node types, Radial/Angular/Diamond gradient, 3+ stops,
-gradient angle, and font family on BUTTON/INPUT/CHECKBOX labels.
+family) is done too — see its own section above; Angular/Diamond gradient
+and font family on BUTTON labels have since shipped too (own sections
+above) — open items there are gradient on more node types, 3+ stops,
+gradient angle, and font family on INPUT/CHECKBOX labels. Phase 6 (design
+system: Color & Text Styles) is done too — see its own section above;
+open items there are Variables, Effect styles, multi-node style apply,
+and reading back existing style names from a file.

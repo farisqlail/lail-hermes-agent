@@ -2422,3 +2422,404 @@ async def fix_figma_property(
             "error": f"Figma Web browser error: {e}",
             "url": file_url,
         }
+
+
+async def _select_node_by_display_name(page, node_name: str) -> bool:
+    """Reselect a node by whatever text its Layers-panel row shows —
+    either a `hermes:node:...`/`hermes:photo:...` name explicitly assigned
+    at build time, or a plain TEXT node's own auto-derived name (Figma
+    names an unrenamed TEXT layer after its current content). Both are
+    found the exact same way: same collapsed-tree-expand mechanism every
+    `fix_figma_*` function in this file already uses (a reopened file's
+    Layers panel starts fully collapsed). Returns whether the node was
+    found and is now selected.
+
+    Waits for the canvas to actually be visible FIRST — live-confirmed a
+    real gap: a heavily-used file (a real design system tends to accumulate
+    many pages/styles/components over time) can still be showing Figma's
+    OWN loading spinner (not the app at all yet) well past
+    `_open_figma_session`'s fixed internal wait, and the ORIGINAL inline
+    version of this pattern (`fix_figma_photo` etc.) gives up immediately
+    the first time zero expand-carets exist rather than considering that
+    the app might just not have finished loading — fine for a small
+    single-purpose file, a real gap once a file's own size becomes a
+    variable outside this function's control.
+    """
+    canvas = page.locator("canvas").first
+    try:
+        await canvas.wait_for(state="visible", timeout=20000)
+    except Exception:
+        pass
+    row = page.get_by_text(node_name, exact=True)
+    for _ in range(8):
+        if await row.count() > 0:
+            break
+        carets = page.locator('[data-testid="layers-panel-expand-caret"]')
+        n = await carets.count()
+        if n == 0:
+            await page.wait_for_timeout(500)
+            continue
+        for i in range(n):
+            await carets.nth(i).click(force=True)
+            await page.wait_for_timeout(150)
+    if await row.count() == 0:
+        return False
+    await row.first.click()
+    await page.wait_for_timeout(200)
+    return True
+
+
+async def _create_color_style(page, name: str) -> bool:
+    """Save the currently-selected node's fill as a reusable Figma Color
+    Style, findable by name afterward via `_apply_color_style`.
+
+    Mechanism, live-confirmed: click the Fill swatch (same one
+    `_set_fill_hex`/`_set_gradient_fill` use) to open the color-picker
+    popover, click `button[aria-label="New style or variable"]` (opens a
+    small "Style"/"Variable" tabbed form — DEFAULTS to the Variable tab,
+    so "Style" must be clicked explicitly), type the name into the
+    `placeholder="New color style"` field, click the form's own
+    "Create style" submit button (NOT the same-named icon button that
+    opened this form — two elements share that accessible name, the
+    submit one is the LAST match).
+    """
+    swatch = page.locator('[data-onboarding-key="paint-panel-row-paint-1-0"] button').first
+    if await swatch.count() == 0:
+        return False
+    await swatch.click()
+    await page.wait_for_timeout(400)
+    new_btn = page.get_by_role("button", name="New style or variable")
+    if await new_btn.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await new_btn.click()
+    await page.wait_for_timeout(400)
+    style_tab = page.get_by_text("Style", exact=True).first
+    if await style_tab.count() > 0:
+        await style_tab.click()
+        await page.wait_for_timeout(300)
+    name_field = page.get_by_placeholder("New color style")
+    if await name_field.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await name_field.click()
+    await name_field.type(name)
+    await page.wait_for_timeout(200)
+    create_btn = page.get_by_role("button", name="Create style")
+    await create_btn.last.click()
+    await page.wait_for_timeout(400)
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(150)
+    return True
+
+
+async def _apply_color_style(page, style_name: str) -> bool:
+    """Apply an EXISTING Color Style (by name) to the currently-selected
+    node's fill, replacing whatever solid/gradient fill it had.
+
+    Mechanism, live-confirmed: `button[aria-label="Fill, Apply styles and
+    variables"]` (a SEPARATE button next to the Fill row's own swatch —
+    not the swatch itself) opens a styles/variables browser defaulting to
+    the "Libraries" tab; its `placeholder="Search"` box (exact match
+    needed — a bare substring match also catches the unrelated font
+    picker's "Search fonts" field if one happens to still be in the DOM)
+    filters across ALL sources (local page styles included) as you type,
+    so no separate "Custom" tab click is needed. A hierarchical style name
+    like `"Brand/Primary"` renders with the group ("Brand") as a
+    non-clickable section header and only the leaf ("Primary") as the
+    actual clickable row text, so matching is done on the leaf segment.
+    """
+    apply_btn = page.locator('button[aria-label="Fill, Apply styles and variables"]').first
+    if await apply_btn.count() == 0:
+        return False
+    await apply_btn.click()
+    await page.wait_for_timeout(400)
+    search_box = page.get_by_placeholder("Search", exact=True)
+    if await search_box.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await search_box.click()
+    await search_box.type(style_name)
+    await page.wait_for_timeout(500)
+    leaf = style_name.rsplit("/", 1)[-1]
+    option = page.get_by_text(leaf, exact=True)
+    if await option.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await option.first.click()
+    await page.wait_for_timeout(300)
+    return True
+
+
+async def _create_text_style(page, name: str) -> bool:
+    """Save the currently-selected TEXT node's typography (font, size,
+    weight, line height, letter spacing) as a reusable Figma Text Style.
+
+    Mechanism, live-confirmed: `button[aria-label="Typography, Apply
+    styles"]` opens a "Text styles" popover — a DIFFERENT shape than the
+    Fill picker's Style/Variable tabbed form (Text styles have no
+    Variable concept in Figma) — with its own
+    `button[aria-label="Create style"]` (a "+" icon in the popover
+    header) opening a "Create new text style" form: a
+    `placeholder="New text style"` name field and a submit button ALSO
+    named "Create style" (two elements share that name here too — the
+    submit one is the LAST match, same pattern as the color-style form).
+    """
+    apply_btn = page.locator('button[aria-label="Typography, Apply styles"]').first
+    if await apply_btn.count() == 0:
+        return False
+    await apply_btn.click()
+    await page.wait_for_timeout(400)
+    create_icon = page.locator('button[aria-label="Create style"]').first
+    if await create_icon.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await create_icon.click()
+    await page.wait_for_timeout(400)
+    name_field = page.get_by_placeholder("New text style")
+    if await name_field.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await name_field.click()
+    await name_field.type(name)
+    await page.wait_for_timeout(200)
+    confirm_btn = page.get_by_role("button", name="Create style", exact=True)
+    await confirm_btn.last.click()
+    await page.wait_for_timeout(400)
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(150)
+    return True
+
+
+async def _apply_text_style(page, style_name: str) -> bool:
+    """Apply an EXISTING Text Style (by name) to the currently-selected
+    TEXT node, replacing its font/size/weight/etc with the style's own.
+
+    Same search-and-click mechanism as `_apply_color_style` (leaf-name
+    matching for a hierarchical style name), triggered from
+    `button[aria-label="Typography, Apply styles"]` instead of the Fill
+    row's equivalent.
+    """
+    apply_btn = page.locator('button[aria-label="Typography, Apply styles"]').first
+    if await apply_btn.count() == 0:
+        return False
+    await apply_btn.click()
+    await page.wait_for_timeout(400)
+    search_box = page.get_by_placeholder("Search", exact=True)
+    if await search_box.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await search_box.click()
+    await search_box.type(style_name)
+    await page.wait_for_timeout(500)
+    leaf = style_name.rsplit("/", 1)[-1]
+    option = page.get_by_text(leaf, exact=True)
+    if await option.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await option.first.click()
+    await page.wait_for_timeout(300)
+    return True
+
+
+_STYLE_TYPES = ("color", "text")
+
+
+async def create_figma_style(
+    file_url: str,
+    node_name: str,
+    style_type: str,
+    style_name: str,
+    out_dir: Path | None = None,
+    headless: bool = False,
+    timeout_s: int = 120,
+) -> dict[str, Any]:
+    """Design-system building block: save an existing node's current
+    color (Fill) or typography as a reusable, NAMED Figma Style — the
+    foundation `_apply_figma_style` (and later builds referencing the
+    same name) draw consistency from, instead of every element hardcoding
+    its own hex/font values independently.
+
+    `node_name` is found the same way every other `fix_figma_*`/
+    `fix_figma_property` tool finds a node — either a `hermes:node:...`/
+    `hermes:photo:...` registry name (`fixable_nodes`/`photo_nodes` from
+    a prior build) or a TEXT node's own current content. `style_type` is
+    `"color"` (saves the node's Fill) or `"text"` (saves a TEXT node's
+    full typography — font/size/weight/spacing).
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
+        }
+
+    if style_type not in _STYLE_TYPES:
+        return {
+            "ok": False,
+            "error": f"style_type harus salah satu dari {_STYLE_TYPES}, dapat '{style_type}'.",
+        }
+
+    out_dir = out_dir or paths.artifacts_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shot_filename = f"figma_style_{uuid.uuid4().hex[:8]}.png"
+    shot_path = out_dir / shot_filename
+
+    try:
+        async with async_playwright() as p:
+            session = await _open_figma_session(p, file_url, headless)
+            if isinstance(session, dict):
+                return session
+            context, page = session
+
+            if not await _select_node_by_display_name(page, node_name):
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Node '{node_name}' tidak ditemukan di file ini — mungkin sudah "
+                             f"diganti nama atau dihapus.",
+                    "url": file_url,
+                }
+
+            created = (await _create_color_style(page, style_name) if style_type == "color"
+                       else await _create_text_style(page, style_name))
+            if not created:
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Gagal membuat style '{style_name}' — kemungkinan node "
+                             f"'{node_name}' bukan tipe yang tepat untuk style_type '{style_type}'.",
+                    "url": file_url,
+                }
+
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(150)
+            await page.keyboard.press("Shift+2")
+            await page.wait_for_timeout(500)
+            await page.screenshot(path=str(shot_path), full_page=False)
+
+            await context.close()
+
+            md_image = f"![Figma Style Preview](file:///{shot_path.as_posix()})"
+            detail = f"Style '{style_name}' ({style_type}) berhasil dibuat dari node '{node_name}'."
+            return {
+                "ok": True,
+                "style_name": style_name,
+                "style_type": style_type,
+                "screenshot_path": str(shot_path),
+                "markdown": md_image,
+                "detail": detail,
+                "url": file_url,
+            }
+
+    except Exception as e:
+        logger.exception("Error creating Figma style in browser")
+        return {
+            "ok": False,
+            "error": f"Figma Web browser error: {e}",
+            "url": file_url,
+        }
+
+
+async def apply_figma_style(
+    file_url: str,
+    node_name: str,
+    style_type: str,
+    style_name: str,
+    out_dir: Path | None = None,
+    headless: bool = False,
+    timeout_s: int = 120,
+) -> dict[str, Any]:
+    """Apply an EXISTING, already-created Figma Style (by name, from
+    `create_figma_style`) to another node — the other half of the
+    design-system workflow: define a style once, then reuse it across
+    many elements/frames so they all update together if the style itself
+    is ever edited later, instead of each element carrying its own
+    independent hardcoded value.
+
+    `node_name`/`style_type` semantics match `create_figma_style` exactly
+    (same node-finding mechanism, same color/text distinction).
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
+        }
+
+    if style_type not in _STYLE_TYPES:
+        return {
+            "ok": False,
+            "error": f"style_type harus salah satu dari {_STYLE_TYPES}, dapat '{style_type}'.",
+        }
+
+    out_dir = out_dir or paths.artifacts_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shot_filename = f"figma_style_{uuid.uuid4().hex[:8]}.png"
+    shot_path = out_dir / shot_filename
+
+    try:
+        async with async_playwright() as p:
+            session = await _open_figma_session(p, file_url, headless)
+            if isinstance(session, dict):
+                return session
+            context, page = session
+
+            if not await _select_node_by_display_name(page, node_name):
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Node '{node_name}' tidak ditemukan di file ini — mungkin sudah "
+                             f"diganti nama atau dihapus.",
+                    "url": file_url,
+                }
+
+            applied = (await _apply_color_style(page, style_name) if style_type == "color"
+                       else await _apply_text_style(page, style_name))
+            if not applied:
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Gagal menerapkan style '{style_name}' ke node '{node_name}' — "
+                             f"style mungkin tidak ada atau namanya tidak cocok persis.",
+                    "url": file_url,
+                }
+
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(150)
+            await page.keyboard.press("Shift+2")
+            await page.wait_for_timeout(500)
+            await page.screenshot(path=str(shot_path), full_page=False)
+
+            await context.close()
+
+            md_image = f"![Figma Style Preview](file:///{shot_path.as_posix()})"
+            detail = f"Style '{style_name}' ({style_type}) berhasil diterapkan ke node '{node_name}'."
+            return {
+                "ok": True,
+                "node_name": node_name,
+                "style_name": style_name,
+                "style_type": style_type,
+                "screenshot_path": str(shot_path),
+                "markdown": md_image,
+                "detail": detail,
+                "url": file_url,
+            }
+
+    except Exception as e:
+        logger.exception("Error applying Figma style in browser")
+        return {
+            "ok": False,
+            "error": f"Figma Web browser error: {e}",
+            "url": file_url,
+        }

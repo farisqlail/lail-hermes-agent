@@ -496,6 +496,40 @@ CHAT_TOOLS = [
             "value": {"type": "string", "description": "nilai baru — warna hex (misal '#16A34A') untuk property=color, atau angka px (misal '48') untuk property=width/height"}},
             "required": ["file_url", "node_name", "property", "value"]}}},
     {"type": "function", "function": {
+        "name": "figma_web_create_style",
+        "description": ("Simpan warna atau tipografi elemen yang SUDAH ADA di frame "
+                        "Figma sebagai STYLE reusable (design system) — bagian dari "
+                        "'Color styles'/'Text styles' Figma, bukan sekadar hex/font "
+                        "hardcode. Pakai ini kalau pengguna minta bikin palette/design "
+                        "system, atau minta beberapa elemen pakai warna/font yang SAMA "
+                        "dan konsisten (ubah satu style nanti otomatis ikut semua "
+                        "elemen yang pakai). WAJIB `file_url` dari hasil build "
+                        "sebelumnya (BUKAN `url`) dan `node_name` — untuk style_type "
+                        "'color' boleh dari `fixable_nodes`/`photo_nodes` ATAU isi teks "
+                        "persis sebuah TEXT; untuk style_type 'text' WAJIB isi teks "
+                        "persis sebuah elemen TEXT (bukan BUTTON/RECTANGLE)."),
+        "parameters": {"type": "object", "properties": {
+            "file_url": {"type": "string", "description": "field `file_url` dari hasil build sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
+            "node_name": {"type": "string", "description": "node sumber warna/font — `node_name` dari fixable_nodes/photo_nodes, atau isi teks persis sebuah TEXT"},
+            "style_type": {"type": "string", "enum": ["color", "text"], "description": "'color' = simpan Fill node sebagai Color Style. 'text' = simpan font/ukuran/berat node TEXT sebagai Text Style."},
+            "style_name": {"type": "string", "description": "nama style baru, boleh berjenjang pakai '/', mis. 'Brand/Primary' atau 'Display/H1' — dipakai lagi nanti di figma_web_apply_style"}},
+            "required": ["file_url", "node_name", "style_type", "style_name"]}}},
+    {"type": "function", "function": {
+        "name": "figma_web_apply_style",
+        "description": ("Terapkan STYLE (warna/tipografi) yang SUDAH DIBUAT lewat "
+                        "figma_web_create_style ke elemen lain, agar konsisten satu "
+                        "sama lain sebagai bagian design system — bukan menyalin nilai "
+                        "hex/font secara manual. WAJIB `file_url` dari hasil build "
+                        "sebelumnya (BUKAN `url`), `node_name` target (sama aturan "
+                        "dengan figma_web_create_style), dan `style_name` PERSIS sama "
+                        "seperti saat dibuat."),
+        "parameters": {"type": "object", "properties": {
+            "file_url": {"type": "string", "description": "field `file_url` dari hasil build sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
+            "node_name": {"type": "string", "description": "node target — `node_name` dari fixable_nodes/photo_nodes, atau isi teks persis sebuah TEXT"},
+            "style_type": {"type": "string", "enum": ["color", "text"], "description": "'color' = terapkan ke Fill node. 'text' = terapkan ke tipografi node TEXT (harus node TEXT)."},
+            "style_name": {"type": "string", "description": "nama style yang sudah dibuat sebelumnya lewat figma_web_create_style, mis. 'Brand/Primary'"}},
+            "required": ["file_url", "node_name", "style_type", "style_name"]}}},
+    {"type": "function", "function": {
         "name": "figma_login",
         "description": ("Buka browser visual Chrome/Edge agar pengguna bisa login "
                         "ke akun Figma secara manual. Browser akan tetap terbuka "
@@ -846,6 +880,44 @@ class ChatEngine:
                             except Exception as e:
                                 print(f"Could not send Figma property fix screenshot to Telegram: {e}")
                         return json.dumps({**res, "url": url, "markdown": f"![Figma Fix Preview]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_web_create_style":
+                    res = await figma_browser.create_figma_style(
+                        file_url=str(args.get("file_url") or ""),
+                        node_name=str(args.get("node_name") or ""),
+                        style_type=str(args.get("style_type") or ""),
+                        style_name=str(args.get("style_name") or ""),
+                        out_dir=paths.artifacts_dir() / "figma",
+                    )
+                    if res.get("ok") and res.get("screenshot_path"):
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
+                            except Exception as e:
+                                print(f"Could not send Figma style screenshot to Telegram: {e}")
+                        return json.dumps({**res, "url": url, "markdown": f"![Figma Style Preview]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_web_apply_style":
+                    res = await figma_browser.apply_figma_style(
+                        file_url=str(args.get("file_url") or ""),
+                        node_name=str(args.get("node_name") or ""),
+                        style_type=str(args.get("style_type") or ""),
+                        style_name=str(args.get("style_name") or ""),
+                        out_dir=paths.artifacts_dir() / "figma",
+                    )
+                    if res.get("ok") and res.get("screenshot_path"):
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
+                            except Exception as e:
+                                print(f"Could not send Figma style screenshot to Telegram: {e}")
+                        return json.dumps({**res, "url": url, "markdown": f"![Figma Style Preview]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
 
                 if name == "figma_login":
