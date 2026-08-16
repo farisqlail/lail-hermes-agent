@@ -203,17 +203,22 @@ async def _set_gradient_fill(
     default stops (0%/100%, an auto-generated color pair) already present
     at `input[aria-label="Gradient Stop Color"]`; this overwrites both.
 
-    `gradient_type`: `"LINEAR"` (default) or `"RADIAL"`. There is only
-    ONE outer radio value for gradients (`GRADIENT_LINEAR` — Figma doesn't
-    expose a separate `GRADIENT_RADIAL` radio in that group); Radial/
-    Angular/Diamond are chosen via a SEPARATE in-editor dropdown next to
-    the gradient bar, live-confirmed via its own stable class prefix
-    (`gradient_editor--paintTypeSelect-...`, distinct from the Fill row's
-    OWN "Linear" text label which sits outside the popover and isn't the
-    right element to click) — opening it reveals plain `role="option"`
-    entries named "Linear"/"Radial"/"Angular"/"Diamond", selected by exact
-    name. Only Radial is wired up here (Angular/Diamond untested, same
-    "narrow first cut" reasoning throughout this file).
+    `gradient_type`: `"LINEAR"` (default), `"RADIAL"`, `"ANGULAR"`, or
+    `"DIAMOND"`. There is only ONE outer radio value for gradients
+    (`GRADIENT_LINEAR` — Figma doesn't expose a separate radio per
+    sub-type in that group); the other three are chosen via a SEPARATE
+    in-editor dropdown next to the gradient bar, live-confirmed via its
+    own stable class prefix (`gradient_editor--paintTypeSelect-...`,
+    distinct from the Fill row's OWN "Linear" text label which sits
+    outside the popover and isn't the right element to click) — opening
+    it reveals plain `role="option"` entries named "Linear"/"Radial"/
+    "Angular"/"Diamond", selected by exact name (`gradient_type.
+    capitalize()` maps directly onto the option text). Radial live-
+    verified as a genuine center-out radial glow; Angular/Diamond use the
+    identical dropdown mechanism (same option list, same click pattern)
+    but weren't independently screenshot-verified for their own visual
+    shape — low risk given Radial's proof that the shared mechanism works,
+    but flagged here rather than silently assumed.
 
     Only ever produces exactly 2 stops (start/end) — a real limitation,
     not an oversight: Figma's "Add gradient stop" control inserts a stop
@@ -248,15 +253,24 @@ async def _set_gradient_fill(
     await linear_radio.click(force=True, timeout=8000)
     await page.wait_for_timeout(300)
 
-    if gradient_type == "RADIAL":
+    if gradient_type != "LINEAR":
+        # "Linear" is Figma's own default the moment GRADIENT_LINEAR is
+        # selected, so it needs no further click. Radial/Angular/Diamond
+        # all share this SAME in-editor dropdown (live-confirmed: opening
+        # it lists all four as plain `role="option"` entries named
+        # "Linear"/"Radial"/"Angular"/"Diamond") — only the option text
+        # differs, so one code path covers all three non-default types.
         type_select = page.locator('[class*="gradient_editor--paintTypeSelect"]').first
         if await type_select.count() > 0:
             await type_select.click()
             await page.wait_for_timeout(300)
-            radial_option = page.get_by_role("option", name="Radial", exact=True)
-            if await radial_option.count() > 0:
-                await radial_option.click()
+            option = page.get_by_role("option", name=gradient_type.capitalize(), exact=True)
+            if await option.count() > 0:
+                await option.click()
                 await page.wait_for_timeout(300)
+            else:
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(150)
 
     stop_inputs = page.locator('input[aria-label="Gradient Stop Color"]')
     for i, hexval in enumerate((color_start, color_end)):

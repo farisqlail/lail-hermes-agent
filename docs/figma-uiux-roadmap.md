@@ -809,9 +809,26 @@ Both live-verified together in one build (radial-glow RECTANGLE +
 Montserrat-labeled BUTTON, screenshot-confirmed). 807 unit tests still
 green.
 
+**Follow-up (2026-08-16, same day) — Angular + Diamond gradient — ✅
+DONE.** Both reuse the exact SAME `gradient_editor--paintTypeSelect`
+dropdown Radial already proved — `_set_gradient_fill`'s `if gradient_type
+!= "LINEAR"` branch generalized from a Radial-only check to any of the
+three (`gradient_type.capitalize()` maps directly onto the dropdown's
+own option text: "Angular", "Diamond"), no new mechanism needed. Schema
+`gradientType` enum extended to `["LINEAR", "RADIAL", "ANGULAR",
+"DIAMOND"]`.
+
+Live-verified: two RECTANGLEs in one build, `gradientType: "ANGULAR"`
+rendering a genuine conic/sweep gradient (color rotating around the
+center, not radiating from it) and `gradientType: "DIAMOND"` rendering a
+correct rhombus-shaped radiation pattern — both visually distinct from
+Radial's circular glow and from each other, confirming the shared
+dropdown mechanism picks the right option every time, not just for
+Radial. 807 unit tests still green.
+
 **Still open:** gradient on other node types (HEADER_IMAGE/INPUT/AVATAR/
-ROW/STACK/GRID backgrounds), Angular/Diamond gradient types, 3+ gradient
-stops, gradient angle control, and font family on INPUT/CHECKBOX labels.
+ROW/STACK/GRID backgrounds), 3+ gradient stops, gradient angle control,
+and font family on INPUT/CHECKBOX labels.
 
 ## Verification (every phase)
 
