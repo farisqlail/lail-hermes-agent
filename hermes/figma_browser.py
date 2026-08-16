@@ -58,6 +58,51 @@ async def _set_number(page, onboarding_key: str, value: float, last: bool = Fals
     await page.wait_for_timeout(150)
 
 
+async def _read_number(page, onboarding_key: str | tuple[str, ...], default: float = 0.0) -> float:
+    """Read back a numeric field's current value (the read counterpart to
+    `_set_number`). Used to measure Figma's REAL, live state instead of
+    trusting whatever value we last wrote — needed for GRID's row-transition
+    bias (see `_place_items`'s `grid_mode` docstring): a Grid frame has no
+    Fixed-size lock at all, so its real height only ever matches what we
+    asked for by coincidence, not by any control we hold.
+
+    `onboarding_key` accepts a tuple of candidates, tried in order — a
+    node's height field can live under a DIFFERENT onboarding-key depending
+    on its current Fixed/Hug mode (live-confirmed: `scrubbable-control-
+    height` disappears from the DOM entirely once a Grid frame flips to
+    Hug, and a plain TEXT leaf never seems to expose that key at all — its
+    W/H shows as a bare, key-less combobox pair instead). Silently falling
+    back to `default` when NONE of the candidates match (rather than
+    raising) previously masked this — every "real" read was quietly the
+    caller's own guess the whole time, never Figma's actual value.
+    """
+    keys = (onboarding_key,) if isinstance(onboarding_key, str) else onboarding_key
+    for key in keys:
+        loc = page.locator(f'[data-onboarding-key="{key}"] input').first
+        if await loc.count() == 0:
+            continue
+        try:
+            return float(await loc.input_value())
+        except Exception:
+            continue
+    return default
+
+
+async def _read_position_y(page, default: float = 0.0) -> float:
+    """Read back the currently-selected node's Y-position, frame-relative
+    (live-confirmed: a node nested inside a frame reports its position
+    relative to that immediate parent, not the absolute page) — the
+    ground-truth counterpart to `_place_items`' grid_mode click-bias math.
+    """
+    loc = page.locator('input[aria-label="Y-position"]').first
+    if await loc.count() == 0:
+        return default
+    try:
+        return float(await loc.input_value())
+    except Exception:
+        return default
+
+
 async def _set_position(page, x: float, y: float) -> None:
     """Set the currently-selected top-level node's absolute page position.
 
@@ -225,7 +270,17 @@ async def _apply_auto_layout(
     # than tall would apply auto-layout in the wrong axis, then hang forever
     # on `_set_number` looking for a "vertical-gap" field that doesn't exist
     # in Horizontal mode. Click the matching radio explicitly either way.
-    radio = page.get_by_role("radio", name="Horizontal" if direction == "HORIZONTAL" else "Vertical")
+    #
+    # Scoped to `[data-test-id="stack_panel"]` (Figma's own container for
+    # this direction radio group) rather than a bare page-wide
+    # `get_by_role` — live-confirmed a GRID composite's own alignment
+    # section can stay in the DOM alongside a nested STACK's auto-layout
+    # panel (building a STACK inside a GRID cell), and its "Align vertical
+    # centers" button ALSO exposes the accessible name "Vertical", making
+    # an unscoped `get_by_role("radio", name="Vertical")` match 2 elements
+    # and raise a strict-mode violation instead of clicking anything.
+    radio = page.locator('[data-test-id="stack_panel"]').get_by_role(
+        "radio", name="Horizontal" if direction == "HORIZONTAL" else "Vertical")
     if await radio.count():
         await radio.click()
         await page.wait_for_timeout(200)
@@ -277,6 +332,121 @@ async def _apply_auto_layout(
         if await radio.count():
             await radio.click()
             await page.wait_for_timeout(150)
+
+
+async def _apply_grid_layout(
+    page, columns: int, gap_col: float, gap_row: float, pad_lr: float, pad_tb: float,
+) -> None:
+    """Apply Figma's Grid auto-layout mode and set its column count.
+
+    Grid is a structurally different control from Vertical/Horizontal — no
+    single direction-axis gap, instead separate column/row gaps, and no
+    "Number of columns" field exists in the DOM at all until the collapsed
+    "N x Auto" summary control (e.g. "2 x Auto") is clicked open first
+    (live-confirmed via DOM dump: absent before that click, present after).
+
+    Only `columns` is ever set — `rows` is deliberately left on its default
+    "Auto". Live-tested setting BOTH columns and rows to fixed numbers
+    produced a broken, unevenly-distributed grid (3 of 4 items crammed into
+    column 1, only 1 in column 2, in scrambled creation order); columns-
+    fixed + rows-Auto reliably auto-balances items into clean, evenly-sized
+    columns instead. See `_grid_column_major_order`'s docstring for the
+    fill-order this implies for callers.
+    """
+    await page.keyboard.press("Shift+A")
+    await page.wait_for_timeout(350)
+    radio = page.get_by_role("radio", name="Grid")
+    if await radio.count():
+        await radio.click()
+        await page.wait_for_timeout(400)
+    summary = page.get_by_text(re.compile(r"^\d+\s*[x×]\s*(Auto|\d+)$", re.I)).first
+    if await summary.count():
+        await summary.click()
+        await page.wait_for_timeout(400)
+        col_field = page.get_by_role("spinbutton", name="Number of columns")
+        if await col_field.count():
+            await col_field.click()
+            await page.keyboard.press("Control+A")
+            await col_field.type(str(max(int(columns), 1)))
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(250)
+    await _set_number(page, "scrubbable-control-gap-between columns", gap_col)
+    await _set_number(page, "scrubbable-control-gap-between rows", gap_row)
+    await _set_number(page, "scrubbable-control-horizontal-padding", pad_lr)
+    await _set_number(page, "scrubbable-control-vertical-padding", pad_tb)
+
+
+async def _lock_grid_height(page, height: float) -> None:
+    """Force a Grid-mode frame's height back to Fixed.
+
+    Grid frames DO have a vertical-resizing mode control (Fixed vs Hug),
+    but unlike Vertical/Horizontal auto-layout frames it's not a
+    `role="combobox"` element — `_lock_fixed_size`'s
+    `get_by_role("combobox", name="Vertical resizing")` finds nothing for a
+    Grid frame (live-confirmed count()==0) and silently no-ops, which is
+    why it was never actually locking anything here. Live DOM dump found
+    the real control: a `<label aria-label="Vertical resizing"
+    data-onboarding-key="scrubbable-control-vertical-resizing">` showing
+    "Hug" as its current text — the frame collapses to Hug the moment it
+    gains its first child (confirmed live: a 342x420 Grid frame with one
+    text child rendered at H=17, just that one line's height), the exact
+    "any frame can silently flip to Hug on its first child" failure Phase 1
+    already found and fixed for ROOT/STACK frames — Grid frames need their
+    own fix since they don't share the same control shape. Width's
+    equivalent control was NOT observed stuck on Hug in the same recon
+    (stayed "Fixed width"), so only height needs this.
+
+    Once switched to Fixed, a Grid frame with `rows` left on "Auto"
+    (required — see `_apply_grid_layout`) still silently grows its OWN
+    height as new rows are needed (live-confirmed via `real_h` readings
+    across a 6-item build: 420 -> 860 -> 1300 as rows filled) — a known,
+    separate limitation from the Hug-collapse this function fixes. A
+    same-session attempt to also reassert the height via the plain
+    `scrubbable-control-height` key once Fixed (mirroring `_set_number`)
+    was tried and reverted: it landed right before a run that lost 2 of 7
+    elements (a root-level sibling and a grid child), and — used shared
+    test-file clutter as a possible confound or not — nothing here proves
+    it was safe, so the narrower, live-verified-clean version (Hug-
+    transition only, real height growth left unfixed) stays as what
+    actually shipped. Fixing that residual growth is a follow-up, not
+    blocking this function's actual job (preventing Hug-collapse escapes).
+    """
+    hug_control = page.locator('[data-onboarding-key="scrubbable-control-vertical-resizing"] input').first
+    if await hug_control.count() == 0:
+        return
+    await hug_control.click(timeout=8000)
+    await page.keyboard.press("Control+A")
+    await hug_control.type(str(round(height)))
+    await page.keyboard.press("Enter")
+    await page.wait_for_timeout(150)
+
+
+def _grid_column_major_order(items: list, columns: int) -> list:
+    """Reorder `items` (given in natural left-to-right, top-to-bottom
+    reading order) into the column-major sequence Figma's Grid auto-layout
+    actually fills in.
+
+    Live-confirmed: with `columns` fixed and rows left on "Auto", Figma
+    doesn't place each new child at its click point (every child in the
+    recon was clicked at the exact same dead-center coordinate) — it
+    auto-slots each new child by CREATION ORDER, filling column 1 top-to-
+    bottom first, then column 2, etc. (CSS's `grid-auto-flow: column`, not
+    the `row` default most authors expect). A caller creating items in
+    plain reading order (item 1 = top-left, item 2 = top-right, ...) would
+    render with item 2 in the wrong cell. This function inverts that: given
+    N items destined for `columns` columns, it computes rows_per_column =
+    ceil(N / columns) and re-indexes so that feeding the RETURNED list to
+    Figma in creation order reproduces the ORIGINAL reading order visually.
+    """
+    n = len(items)
+    if columns <= 1 or n <= 1:
+        return list(items)
+    rows = (n + columns - 1) // columns
+    ordered: list = [None] * n
+    for i, item in enumerate(items):
+        r, c = divmod(i, columns)
+        ordered[c * rows + r] = item
+    return ordered
 
 
 async def _set_bold(page) -> None:
@@ -516,7 +686,7 @@ def _item_size(
         return float(item.get("width") or content_w), float(item.get("height") or 50)
     if itype == "CHECKBOX":
         return float(item.get("width") or content_w), float(item.get("height") or 28)
-    if itype in ("ROW", "STACK"):
+    if itype in ("ROW", "STACK", "GRID"):
         if box_size is not None:
             return box_size
         return float(item.get("width") or content_w), float(item.get("height") or 140)
@@ -646,6 +816,7 @@ async def _add_composite(
     border_color: str | None = None, border_width: float | None = None,
     shadow: bool = False, elevation: str = "subtle",
     align_start: bool = False,
+    columns: int | None = None, gap_row: float | None = None,
 ) -> None:
     """Create a nested auto-layout sub-frame (button/input/checkbox row) and
     fill it via `fill_children(inner_cx, inner_cy)`. Always sets a real fill
@@ -655,13 +826,22 @@ async def _add_composite(
     `_apply_auto_layout`'s docstring) -- every other caller (BUTTON, INPUT,
     CHECKBOX) wants its single/paired child block visually centered, not
     packed from the start edge.
+
+    `direction="GRID"` takes a different path entirely (`_apply_grid_layout`,
+    `columns` required, `gap` doubles as the column gap and `gap_row`
+    the row gap) -- see that function's docstring for why Grid's control
+    shape and fill-order semantics don't fit the Vertical/Horizontal path.
     """
     await _draw(page, "f", cx, cy)
     await _set_number(page, "scrubbable-control-width", w)
     await _set_number(page, "scrubbable-control-height", h)
     if corner_radius:
         await _set_number(page, "scrubbable-control-corner-radius", corner_radius)
-    await _apply_auto_layout(page, direction, padding, padding, gap, centered=True, align_start=align_start)
+    if direction == "GRID":
+        await _apply_grid_layout(page, columns or 2, gap, gap_row if gap_row is not None else gap, padding, padding)
+        await _lock_grid_height(page, h)
+    else:
+        await _apply_auto_layout(page, direction, padding, padding, gap, centered=True, align_start=align_start)
     await _lock_fixed_size(page, w, h)
     await _set_fill_hex(page, color)
     if border_color:
@@ -766,6 +946,7 @@ async def _place_items(
     parent_w: float | None = None, parent_h: float | None = None,
     gap: float = 16.0, start_padding: float = 0.0,
     photo_registry: dict | None = None,
+    grid_mode: bool = False, grid_columns: int = 1,
 ) -> tuple[float, float, int]:
     """Place a list of items into whatever frame is currently selected
     (`parent_row_selector` is that frame's own row, used to return to it
@@ -804,6 +985,26 @@ async def _place_items(
     rebuilding the whole frame. Defaults to a fresh registry when the
     top-level caller doesn't pass one (single-frame builds don't need to
     read it back); recursive calls always pass the same instance along.
+
+    `grid_mode`/`grid_columns`: True only when placing a GRID's own
+    children (already re-sequenced into column-major creation order by
+    `_grid_column_major_order`). Figma's Grid DOES auto-slot each new child
+    into its correct cell by creation order regardless of click position —
+    but the click point still has to land somewhere that (a) is inside the
+    grid frame's current on-screen bounds (which shift as `_zoom_to_selection`
+    re-fits a growing frame, same as any composite) and (b) isn't on top of
+    an already-rendered child (or Figma's text tool edits that node instead
+    of creating a new one). Two estimate-based attempts failed live: a fixed
+    dead-center click (merges/escapes once the grid has real content), and a
+    row-count-based `used` guess assuming the frame's requested height held
+    (it doesn't — a Grid frame has no Fixed-size lock at all, see the
+    `grid_mode` branch below). Both failed because a Grid frame's real
+    height grows roughly IN STEP with its content, which silently
+    self-cancels any fraction-of-height guess. The fix that held: after each
+    child, reselect it and read its REAL Y-position + height back from
+    Figma (both live-confirmed frame-relative) instead of estimating either
+    number — see the `grid_mode` branch's own comment for the full
+    mechanism.
     """
     if photo_registry is None:
         photo_registry = {"n": 0, "nodes": []}
@@ -963,6 +1164,50 @@ async def _place_items(
                     direction=box_direction, gap=box_gap, padding=box_padding,
                     fill_children=_fill_box, align_start=True,
                 )
+            elif itype == "GRID":
+                # Figma's Grid auto-layout ignores click position for new-
+                # child placement and instead auto-slots each new child by
+                # CREATION order, column-major (fills column 1 top-to-
+                # bottom, then column 2, ...) — live-confirmed in
+                # `_apply_grid_layout`'s docstring. `_grid_column_major_order`
+                # re-sequences the model's natural reading-order list into
+                # the creation order that reproduces that reading order
+                # once Figma's column-major fill is applied.
+                sub_items = item.get("children") or []
+                columns = max(int(item.get("columns") or 2), 1)
+                box_gap = float(item.get("itemSpacing") or 16)
+                box_gap_row = float(item.get("rowSpacing") or box_gap)
+                box_padding = float(item.get("padding") or 0)
+                box_w = item.get("width") or content_w
+                rows_needed = (max(len(sub_items), 1) + columns - 1) // columns
+                box_h = item.get("height") or (rows_needed * 90 + box_padding * 2)
+                box_content_w = max(box_w - 2 * box_padding, 20)
+                cell_w = max((box_content_w - box_gap * (columns - 1)) / columns, 20)
+                ordered = _grid_column_major_order(sub_items, columns)
+                normalized = [{**c, "width": c.get("width") or cell_w} for c in ordered]
+
+                async def _fill_grid(
+                    icx: float, icy: float, _items=normalized, _child_w=cell_w,
+                    _w=box_w, _h=box_h, _gap_row=box_gap_row, _pad=box_padding,
+                    _columns=columns,
+                ) -> None:
+                    box_selector = await _current_row_selector(page)
+                    await _place_items(
+                        page, icx, icy, _items, _child_w, box_selector,
+                        parent_direction="VERTICAL", unsplash_key=unsplash_key,
+                        parent_w=_w, parent_h=_h, gap=_gap_row, start_padding=_pad,
+                        photo_registry=photo_registry, grid_mode=True, grid_columns=_columns,
+                    )
+
+                await _add_composite(
+                    page, cx, cy, box_w, box_h,
+                    color=item.get("backgroundColor") or item.get("color") or "#FFFFFF",
+                    corner_radius=item.get("borderRadius"),
+                    border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
+                    shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
+                    direction="GRID", gap=box_gap, gap_row=box_gap_row, padding=box_padding,
+                    fill_children=_fill_grid, columns=columns,
+                )
             else:
                 await _add_shape(
                     page, "r", cx, cy, item.get("width") or 100, item.get("height") or 40,
@@ -974,32 +1219,81 @@ async def _place_items(
             created += 1
             item_w, item_h = _item_size(
                 item, itype, content_w,
-                box_size=(box_w, box_h) if itype in ("ROW", "STACK") else None,
+                box_size=(box_w, box_h) if itype in ("ROW", "STACK", "GRID") else None,
             )
             # +15 flat slack on top of the estimate itself: `_item_size` is a
             # heuristic (exact for fixed-size shapes/composites, a guess for
             # auto-height TEXT), and any underestimate directly shrinks
             # `_append_bias`'s margin — this is cheap insurance against that
             # for every type, not just text.
-            used += (item_w if parent_direction == "HORIZONTAL" else item_h) + gap + 15.0
-            cross_extent = parent_h if parent_direction == "HORIZONTAL" else parent_w
-            bias = _append_bias(used, start_padding, parent_extent,
-                               cross_extent=cross_extent, horizontal=(parent_direction == "HORIZONTAL"))
-            # Refresh the click point for EVERY item, not just composites —
-            # a second plain TEXT reusing a stale point can land on top of
-            # the first (Figma then merges the keystrokes into it instead of
-            # creating a separate node) once the container has real slack
-            # instead of hugging exactly around a single child. `bias` tracks
-            # how full the container actually is instead of trusting one
-            # fixed fraction for its whole fill — see `_append_bias`.
-            cx, cy = await _return_to_parent(page, parent_row_selector, parent_direction, bias=bias)
-            if parent_w and parent_h:
-                await _lock_fixed_size(page, parent_w, parent_h)
-                cx, cy = await _zoom_to_selection(
-                    page,
-                    horizontal_bias=bias if parent_direction == "HORIZONTAL" else 0.5,
-                    vertical_bias=bias if parent_direction != "HORIZONTAL" else 0.5,
-                )
+            if grid_mode:
+                # A Grid-mode frame has NO "Horizontal/Vertical resizing"
+                # combobox at all (live-confirmed via DOM: count()==0) —
+                # `_lock_fixed_size` has always been a silent no-op here, and
+                # with `rows` left on "Auto" (required — see
+                # `_apply_grid_layout`) Figma grows the frame's real height
+                # on its own, roughly IN STEP with how much content exists
+                # (live-confirmed: it eagerly reserves a full empty extra
+                # row the moment the current row is exactly full). That
+                # self-cancels any FRACTION-of-height bias estimate — two
+                # different formulas (assuming `parent_h` stayed fixed, and
+                # re-reading the live height but still guessing `used` from
+                # a row-count heuristic) both computed nearly the SAME bias
+                # for row 1 and row 2, because the container grew at close
+                # to the same rate as the guessed fill — one escaped content
+                # off the frame's real edge, the other merged two rows'
+                # texts into one. Guessing which way to correct that offset
+                # further would just be a third blind formula.
+                #
+                # Fix: stop estimating `used` and MEASURE it — reselect the
+                # just-placed node via the Layers panel (its lingering
+                # selection state isn't reliable to read directly; e.g. a
+                # `color` fill leaves a picker popover open that masks the
+                # Position panel) and read its real Y-position + height back
+                # (both live-confirmed frame-relative, not absolute page
+                # coordinates). `used` tracks the DEEPEST bottom edge seen
+                # across every item placed so far (not just the latest —
+                # column-major order means the item just placed may be in a
+                # shallower row than an earlier column), so the next click
+                # always lands past the tallest content so far regardless of
+                # which column it came from.
+                node_selector = await _current_row_selector(page)
+                await page.locator(node_selector).click(force=True)
+                await page.wait_for_timeout(150)
+                node_y = await _read_position_y(page)
+                node_h = await _read_number(
+                    page, ("scrubbable-control-height", "transform-height"), default=item_h)
+                used = max(used, node_y + node_h)
+
+                await page.locator(parent_row_selector).click(force=True)
+                await page.wait_for_timeout(150)
+                if parent_h:
+                    await _lock_grid_height(page, parent_h)
+                real_h = await _read_number(
+                    page, ("scrubbable-control-height", "transform-height"), default=parent_h or 0.0)
+                bias = _append_bias(used, start_padding, real_h, cross_extent=parent_w, horizontal=False)
+                cx, cy = await _zoom_to_selection(page, horizontal_bias=0.5, vertical_bias=bias)
+            else:
+                used += (item_w if parent_direction == "HORIZONTAL" else item_h) + gap + 15.0
+                cross_extent = parent_h if parent_direction == "HORIZONTAL" else parent_w
+                bias = _append_bias(used, start_padding, parent_extent,
+                                   cross_extent=cross_extent, horizontal=(parent_direction == "HORIZONTAL"))
+                # Refresh the click point for EVERY item, not just composites
+                # — a second plain TEXT reusing a stale point can land on top
+                # of the first (Figma then merges the keystrokes into it
+                # instead of creating a separate node) once the container has
+                # real slack instead of hugging exactly around a single
+                # child. `bias` tracks how full the container actually is
+                # instead of trusting one fixed fraction for its whole fill
+                # — see `_append_bias`.
+                cx, cy = await _return_to_parent(page, parent_row_selector, parent_direction, bias=bias)
+                if parent_w and parent_h:
+                    await _lock_fixed_size(page, parent_w, parent_h)
+                    cx, cy = await _zoom_to_selection(
+                        page,
+                        horizontal_bias=bias if parent_direction == "HORIZONTAL" else 0.5,
+                        vertical_bias=bias if parent_direction != "HORIZONTAL" else 0.5,
+                    )
         except Exception:
             logger.exception("Failed to create Figma element via UI automation: %r", item)
     return cx, cy, created

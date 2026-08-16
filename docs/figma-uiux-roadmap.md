@@ -253,16 +253,93 @@ BUTTON/INPUT labels are still visually centered, CHECKBOX's icon+label still
 read left-to-right as a pair. 806 unit tests still green (none exercise live
 Figma).
 
-**Grid layout** — Figma's auto-layout has a `radio "Grid"` option (seen,
-never explored) alongside Vertical/Horizontal. Flag as a **spike**: its
-field set (row/column count? fixed cell size?) is unknown and needs a
-dedicated live-reconnaissance session before any implementation estimate is
-real. Lowest-confidence item in this roadmap — do it last within this
-phase, and only after the rest of Phase 2 is proven solid.
+**Grid layout — ⚠️ SHIPPED, core mechanism live-verified, reliability not
+fully proven (2026-08-16).** The spike ran: live recon found Grid's real
+field set (`radio "Grid"`, `spinbutton "Number of columns"` — hidden until
+a collapsed "N x Auto" summary control is clicked open — `rows` left on
+"Auto", separate `scrubbable-control-gap-between columns`/`-rows`). New
+`GRID` type shipped in both files, with `columns`/`rowSpacing` schema
+fields and a `_grid_column_major_order` reindex (Figma fills a Grid
+column-major — down column 1 first, not row-major reading order — so
+children must be re-sequenced before creation to *read* in the order the
+model specified them).
 
-Files touched: `hermes/figma_browser.py` (`_place_items`'s `ROW` branch
-generalized or duplicated for `STACK`), `hermes/chat_engine.py` (schema
-nesting depth, new `STACK` enum value).
+Three real, distinct bugs found and fixed live, each exposing a different
+wrong assumption than the last:
+
+1. **`_apply_auto_layout`'s direction radio was page-wide, not scoped** —
+   unrelated to Grid's own mechanism but only surfaced once a STACK was
+   built *inside* a GRID cell: the GRID's own alignment section stays in
+   the DOM alongside the nested STACK's panel, and its "Align vertical
+   centers" button ALSO exposes accessible name "Vertical", so
+   `get_by_role("radio", name="Vertical")` matched 2 elements and raised a
+   strict-mode violation. Fixed: scoped to Figma's own
+   `[data-test-id="stack_panel"]` container. Independent, real bug, safe
+   on its own regardless of Grid's outcome.
+2. **Click position was assumed to not matter for Grid at all** — first
+   recon (a sparse 4-item/400x400 box, plain dead-center click every time)
+   looked clean, but was actually luck: a denser real 6-item/3-column grid
+   broke two different ways depending on box size (texts merging into one
+   when the reused point landed on existing content; the last several
+   children escaping as stray page-level objects when it drifted past the
+   frame's real edge as the frame grew). Two fraction-of-height bias
+   formulas (assuming the requested height held; re-reading the live
+   height but still guessing `used` from a row-count heuristic) BOTH
+   failed for the same underlying reason: a Grid frame's real height grows
+   roughly in step with its own content, which silently cancels out any
+   fraction-based estimate — row 1 and row 2 computed to nearly the same
+   bias either way.
+3. **The real fix: measure, don't estimate.** After each child, reselect
+   it via the Layers panel (its lingering "selection" isn't reliable to
+   read directly — e.g. a `color` fill leaves a picker popover open that
+   masks the Position panel) and read its REAL Y-position + height back
+   from Figma (live-confirmed both are frame-relative, not absolute page
+   coordinates) instead of estimating either number. `used` tracks the
+   deepest bottom edge seen across every child placed so far. This is the
+   same "read the parent's real remaining space back from Figma instead of
+   estimating" escape hatch this doc already flagged for STACK's
+   undersized-container residual (see above) — turned out necessary here,
+   not just theoretically more robust.
+4. **A Grid-mode frame has no Fixed/Hug lock at all via the mechanism
+   every other composite in this file uses** — `_lock_fixed_size`'s
+   `get_by_role("combobox", name="Vertical resizing")` matches nothing for
+   Grid (`count()==0`), so it silently never locked anything; the frame
+   collapses to Hug (17px, one text line) the instant it gains its first
+   child — the same "any frame can flip to Hug on its first child" bug
+   Phase 1 already fixed for ROOT/STACK, recurring because Grid's control
+   is a differently-shaped `<label>`, not a `role="combobox"`. New
+   `_lock_grid_height` targets it directly
+   (`scrubbable-control-vertical-resizing`) and fixed the Hug-collapse.
+   Live-verified this took the failure from "most children escape/merge"
+   to "6 of 6 children correctly nested, in the right cells, in the right
+   reading order" on at least one clean run.
+
+**Residual, NOT resolved:** even once Fixed, a Grid frame with `rows` on
+"Auto" keeps growing its own height as rows fill (measured 420→860→1300
+across a 6-item/3-column build) — cosmetic (the outer parent's `Clip
+content` can cut off later rows if it wasn't sized generously), not
+corruption, and a same-session attempt to also fight this via a second
+selector was tried and reverted (see `_lock_grid_height`'s own docstring)
+after a subsequent run showed 2 missing elements — though that run was in
+a test file so cluttered with ~13 leftover frames from repeated live
+verification that Figma's own row-selection reliability is itself in
+question there, so it's not proven the revert was the actual fix rather
+than coincidence. **Run-to-run reliability beyond the one clean 6/6 result
+is not proven** — later verification attempts, in an increasingly
+cluttered shared test file (hit Figma's own "too many new files" rate
+limit, blocking a from-scratch clean re-test), showed intermittent missing
+elements (a root-level sibling, a grid child) that may be a real residual
+bug or may be that file's own clutter confusing `_current_row_selector`'s
+active-row detection — undetermined. Next session should re-verify with a
+fresh file once the rate limit clears before trusting this beyond the
+narrow case already confirmed.
+
+Files touched: `hermes/figma_browser.py` (`_apply_grid_layout`,
+`_grid_column_major_order`, `_lock_grid_height`, `_read_number`,
+`_read_position_y`, `_place_items`'s `grid_mode`/`grid_columns` params and
+GRID dispatch branch, `_add_composite`'s GRID path,
+`_apply_auto_layout`'s scoped radio fix), `hermes/chat_engine.py` (`GRID`
+enum value, `columns`/`rowSpacing` schema fields).
 
 ## Phase 3 — Self-check / correction loop
 
@@ -466,14 +543,20 @@ were only found and fixed by insisting on that.
 
 ## Suggested order
 
-Phase 1 (done) → Phase 2 (done, Grid spike still skipped) → Phase 3 Step 1
-(done) → Phase 4 (done) → Phase 3 Step 2 (done, narrow: photo-only fix) →
-Grid spike (if still wanted). Each phase is independently shippable and
+Phase 1 (done) → Phase 2 (done; Grid spike shipped 2026-08-16, core
+mechanism live-verified, run-to-run reliability not fully proven — see its
+own section above) → Phase 3 Step 1 (done) → Phase 4 (done) → Phase 3 Step
+2 (done, narrow: photo-only fix). Each phase is independently shippable and
 testable — no phase blocks starting the next except in the order listed
 (fidelity before layout before self-check, since self-check's comparisons
 are only useful once the builder can actually hit what a mockup asks for).
-Remaining open items: Phase 3 Step 2 broadened to other properties (color,
-text, size) if wanted, multi-frame self-check for `figma_web_design_flow`,
-the ROW-of-cards-of-STACKs-inside-another-composite depth beyond what's
-been live-tested, the undersized-container residual noted in Phase 2, and
-the Grid layout spike.
+Remaining open items: **a from-scratch clean-file re-verification of Grid**
+(blocked on Figma's own "too many new files" rate limit as of this
+writing — the shared test file used for the last few verification rounds
+had accumulated ~13 leftover frames, muddying whether the last two
+"missing element" observations were a real residual bug or that file's own
+clutter), the Grid height-keeps-growing cosmetic residual (own section
+above), Phase 3 Step 2 broadened to other properties (color, text, size)
+if wanted, multi-frame self-check for `figma_web_design_flow`, the
+ROW-of-cards-of-STACKs-inside-another-composite depth beyond what's been
+live-tested, and the undersized-container residual noted in Phase 2.

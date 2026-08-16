@@ -209,7 +209,7 @@ def _figma_child_item_schema(container_depth: int) -> dict:
     if container_depth <= 0:
         return {"type": "object", "properties": dict(_FIGMA_CHILD_LEAF_PROPS)}
     type_with_containers = {**_FIGMA_CHILD_LEAF_PROPS["type"], "enum": [
-        *_FIGMA_CHILD_LEAF_PROPS["type"]["enum"], "ROW", "STACK",
+        *_FIGMA_CHILD_LEAF_PROPS["type"]["enum"], "ROW", "STACK", "GRID",
     ], "description": (
         _FIGMA_CHILD_LEAF_PROPS["type"]["description"] +
         " ROW=beberapa elemen SEJAJAR HORIZONTAL dalam satu baris (mis. "
@@ -217,16 +217,25 @@ def _figma_child_item_schema(container_depth: int) -> dict:
         "bawah, BUKAN lewat `text`/`content`. STACK=beberapa elemen "
         "bertumpuk VERTIKAL menyatu jadi satu grup (mis. icon+judul+"
         "subjudul di dalam satu card) — isi lewat `children`; tiap anak "
-        "otomatis selebar STACK kecuali diisi `width` eksplisit."
+        "otomatis selebar STACK kecuali diisi `width` eksplisit. "
+        "GRID=elemen sejenis tersusun dalam kolom×baris (mis. galeri foto, "
+        "grid kategori/ikon, papan produk) — isi lewat `children` dalam "
+        "urutan baca NORMAL (kiri-ke-kanan, atas-ke-bawah, seperti akan "
+        "dibaca manusia); wajib isi `columns` (jumlah kolom, baris "
+        "menyesuaikan otomatis). Pakai GRID, bukan beberapa ROW manual, "
+        "kalau jumlah item konsisten per baris dan ≥2 baris (mis. 6 ikon "
+        "kategori dalam grid 3 kolom) — ROW tetap untuk SATU baris saja."
     )}
     return {"type": "object", "properties": {
         **_FIGMA_CHILD_LEAF_PROPS,
         "type": type_with_containers,
-        "itemSpacing": {"type": "integer", "description": "jarak antar elemen di dalam ROW/STACK, dalam px, default 12"},
-        "padding": {"type": "integer", "description": "padding dalam ROW/STACK (dipakai kalau ROW/STACK juga berfungsi sebagai card berwarna, mis. baris transaksi), dalam px, default 0"},
+        "itemSpacing": {"type": "integer", "description": "jarak antar elemen di dalam ROW/STACK, atau jarak antar KOLOM di dalam GRID, dalam px, default 12 (GRID: 16)"},
+        "rowSpacing": {"type": "integer", "description": "khusus GRID: jarak antar BARIS, dalam px, default sama dengan itemSpacing"},
+        "columns": {"type": "integer", "description": "khusus GRID (WAJIB): jumlah kolom, mis. 2 atau 3. Baris ditambah otomatis sesuai jumlah children."},
+        "padding": {"type": "integer", "description": "padding dalam ROW/STACK/GRID (dipakai kalau juga berfungsi sebagai card berwarna, mis. baris transaksi), dalam px, default 0"},
         "children": {
             "type": "array",
-            "description": "Elemen di dalam ROW/STACK, urut sesuai arahnya (ROW=kiri ke kanan, STACK=atas ke bawah). Hanya dipakai bila type=ROW atau STACK.",
+            "description": "Elemen di dalam ROW/STACK/GRID. ROW=kiri ke kanan, STACK=atas ke bawah, GRID=urutan baca normal kiri-ke-kanan lalu atas-ke-bawah (backend yang mengatur ulang untuk penataan grid Figma). Hanya dipakai bila type=ROW, STACK, atau GRID.",
             "items": _figma_child_item_schema(container_depth - 1),
         },
     }}
