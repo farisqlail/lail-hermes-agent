@@ -530,12 +530,33 @@ throughout (no new unit test for the browser-automation logic itself,
 matching the established precedent that `fix_figma_photo` also has none
 — this class of function is proven live, not unit-tested).
 
-**Still not done:** SIZE (width/height) fixes, and color fixes for
-non-TEXT node types (BUTTON/RECTANGLE/INPUT fills) — those don't
-auto-name from content the way TEXT does, so they'd need the same
-build-time stable-rename treatment `photo_nodes` already gets for
-HEADER_IMAGE/AVATAR, extended to more types. A real next slice, not
-started this session.
+**Broadened further to size + non-TEXT color — ✅ DONE (2026-08-16, same
+follow-up session).** New tool `figma_web_fix_property` +
+`figma_browser.fix_figma_property` patches a BUTTON/INPUT/CHECKBOX/
+RECTANGLE node's fill color, width, or height — the node types that
+DON'T auto-name from their own content the way TEXT does, so this needed
+exactly the stable-rename extension flagged as the real next slice: every
+`_add_composite` call for BUTTON/INPUT/CHECKBOX (a new `rename` param,
+applied BEFORE `fill_children` runs since that call moves the live
+selection away from the composite) and every `_add_shape` call for a
+plain RECTANGLE now gets a stable `hermes:node:{n}:{kind}` name the same
+way `photo_nodes` already does for HEADER_IMAGE/AVATAR — threaded through
+the SAME `photo_registry` object (two new keys, `node_n`/`fixable_nodes`,
+alongside the existing photo-specific ones, so no new parameter needed
+through the whole recursive `_place_items`/`_fill_box`/`_fill_grid`
+call chain) and returned as a new `fixable_nodes` list in
+`_build_frame_via_ui`'s result, alongside (not replacing) `photo_nodes`.
+The fix mechanism itself needed nothing new: `_set_fill_hex` and
+`_set_number` are the exact same helpers every original build already
+uses for these fields, just re-targeted at a reselected existing node.
+
+Live-verified end to end: built a frame with a BUTTON and a RECTANGLE,
+fixed the BUTTON's color (blue → green) and the RECTANGLE's width
+(100px → 200px) as two chained fixes in the same reopened session — both
+applied correctly, visually confirmed via screenshot, no corruption to
+the other node. 807 unit tests still green throughout (same "proven live,
+not unit-tested" precedent as every other fix-in-place tool in this
+file).
 
 **Multi-frame self-check — ✅ DONE (2026-08-16, follow-up session).**
 `figma_web_design_flow` gets the same close-the-loop treatment as a single
@@ -582,7 +603,15 @@ extended to `figma_web_design_flow` with the variant prompt),
 broadening): `hermes/figma_browser.py` (new `fix_figma_text`),
 `hermes/chat_engine.py` (new `figma_web_fix_text` tool schema + dispatch),
 `hermes/main.py` (`_figma_selfcheck_message` extended to include it),
-`tests/test_web_ui.py` (tool-registry list updated).
+`tests/test_web_ui.py` (tool-registry list updated). Files touched
+(size + non-TEXT color broadening): `hermes/figma_browser.py`
+(`_add_composite`'s `rename` param, `photo_registry`'s `node_n`/
+`fixable_nodes` keys, BUTTON/INPUT/CHECKBOX/RECTANGLE dispatch branches
+in `_place_items` renaming their own node, `_build_frame_via_ui`'s
+`fixable_nodes` result, new `fix_figma_property`), `hermes/chat_engine.py`
+(new `figma_web_fix_property` tool schema + dispatch), `hermes/main.py`
+(`_figma_selfcheck_message` extended to include it), `tests/test_web_ui.py`
+(tool-registry list updated).
 
 ## Phase 4 — Multi-frame output — ✅ DONE (2026-08-16)
 
@@ -685,10 +714,12 @@ height-keeps-growing cosmetic residual (own section above — content
 nests correctly, but a Grid frame with `rows` on "Auto" keeps growing
 taller than requested, which an unsized-generously outer parent's `Clip
 content` can cut off; a same-session fix attempt was tried and reverted,
-see that section), Phase 3 Step 2 broadened further to SIZE fixes and
-color fixes on non-TEXT node types if wanted (own section above — needs
-extending the stable-rename treatment beyond HEADER_IMAGE/AVATAR/TEXT),
-and the ROW-of-cards-of-STACKs-inside-another-composite depth beyond
-what's been live-tested. Multi-frame self-check for `figma_web_design_flow`,
-the undersized-container residual (Phase 2), and Phase 3 Step 2 broadened
-to text content/color are now all fixed — see their own sections above.
+see that section) and the ROW-of-cards-of-STACKs-inside-another-composite
+depth beyond what's been live-tested. Multi-frame self-check for
+`figma_web_design_flow`, the undersized-container residual (Phase 2), and
+Phase 3 Step 2 broadened to text content/color AND to size + non-TEXT
+color (`figma_web_fix_property`) are now all fixed — see their own
+sections above. Phase 3 Step 2's delta-fix family now covers photo, text
+content/color, and BUTTON/INPUT/CHECKBOX/RECTANGLE color/width/height —
+the main remaining gap is deeper properties (border, shadow, corner
+radius) if ever wanted, not started.

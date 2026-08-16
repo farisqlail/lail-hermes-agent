@@ -476,6 +476,23 @@ CHAT_TOOLS = [
             "color": {"type": "string", "description": "warna hex baru untuk teks ini, misal '#0F172A'. Kosongkan kalau hanya mau ganti isi teks."}},
             "required": ["file_url", "current_text"]}}},
     {"type": "function", "function": {
+        "name": "figma_web_fix_property",
+        "description": ("Ubah WARNA, LEBAR, atau TINGGI satu elemen BUTTON/INPUT/"
+                        "CHECKBOX/RECTANGLE pada frame Figma yang sudah pernah dibuat "
+                        "figma_web_design/figma_web_design_flow, TANPA membuat ulang "
+                        "seluruh frame. Untuk mengubah TEKS pakai figma_web_fix_text, "
+                        "untuk mengganti FOTO pakai figma_web_fix_photo — tool ini "
+                        "khusus elemen non-teks non-foto. WAJIB pakai `file_url` dari "
+                        "hasil build sebelumnya (BUKAN `url`) dan `node_name` dari "
+                        "salah satu entri `fixable_nodes` pada hasil build itu — "
+                        "jangan menebak nilainya."),
+        "parameters": {"type": "object", "properties": {
+            "file_url": {"type": "string", "description": "field `file_url` dari hasil figma_web_design/figma_web_design_flow sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
+            "node_name": {"type": "string", "description": "field `node_name` dari salah satu entri `fixable_nodes` pada hasil build sebelumnya, misal 'hermes:node:0:button'"},
+            "property": {"type": "string", "enum": ["color", "width", "height"], "description": "properti yang mau diubah"},
+            "value": {"type": "string", "description": "nilai baru — warna hex (misal '#16A34A') untuk property=color, atau angka px (misal '48') untuk property=width/height"}},
+            "required": ["file_url", "node_name", "property", "value"]}}},
+    {"type": "function", "function": {
         "name": "figma_login",
         "description": ("Buka browser visual Chrome/Edge agar pengguna bisa login "
                         "ke akun Figma secara manual. Browser akan tetap terbuka "
@@ -806,6 +823,25 @@ class ChatEngine:
                                 await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
                             except Exception as e:
                                 print(f"Could not send Figma text fix screenshot to Telegram: {e}")
+                        return json.dumps({**res, "url": url, "markdown": f"![Figma Fix Preview]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_web_fix_property":
+                    res = await figma_browser.fix_figma_property(
+                        file_url=str(args.get("file_url") or ""),
+                        node_name=str(args.get("node_name") or ""),
+                        property=str(args.get("property") or ""),
+                        value=str(args.get("value") or ""),
+                        out_dir=paths.artifacts_dir() / "figma",
+                    )
+                    if res.get("ok") and res.get("screenshot_path"):
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
+                            except Exception as e:
+                                print(f"Could not send Figma property fix screenshot to Telegram: {e}")
                         return json.dumps({**res, "url": url, "markdown": f"![Figma Fix Preview]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
 

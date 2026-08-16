@@ -817,10 +817,16 @@ async def _add_composite(
     shadow: bool = False, elevation: str = "subtle",
     align_start: bool = False,
     columns: int | None = None, gap_row: float | None = None,
+    rename: str | None = None,
 ) -> None:
     """Create a nested auto-layout sub-frame (button/input/checkbox row) and
     fill it via `fill_children(inner_cx, inner_cy)`. Always sets a real fill
     (even if just white) since an empty-fill frame can't be clicked into.
+
+    `rename`, when given, is applied BEFORE `fill_children` runs (mirrors
+    `_add_shape`'s own `rename` timing, for the same reason: `fill_children`
+    navigates INTO this composite and moves the live selection away from
+    it, so renaming has to happen while this node is still selected).
 
     `align_start`: True only for a ROW/STACK's own composite (see
     `_apply_auto_layout`'s docstring) -- every other caller (BUTTON, INPUT,
@@ -848,6 +854,8 @@ async def _add_composite(
         await _set_stroke(page, border_color, border_width)
     if shadow:
         await _add_shadow(page, elevation)
+    if rename:
+        await _rename_layer(page, rename)
     inner_cx, inner_cy = await _zoom_to_selection(page)
     await fill_children(inner_cx, inner_cy)
 
@@ -1007,7 +1015,7 @@ async def _place_items(
     mechanism.
     """
     if photo_registry is None:
-        photo_registry = {"n": 0, "nodes": []}
+        photo_registry = {"n": 0, "nodes": [], "node_n": 0, "fixable_nodes": []}
     created = 0
     used = 0.0
     parent_extent = parent_w if parent_direction == "HORIZONTAL" else parent_h
@@ -1066,6 +1074,9 @@ async def _place_items(
                         "photo_query": photo_query, "photo_placed": placed,
                     })
             elif itype == "INPUT":
+                input_name = f"hermes:node:{photo_registry['node_n']}:input"
+                photo_registry["node_n"] += 1
+
                 async def _fill_input(icx: float, icy: float, _item=item) -> None:
                     await _add_text(
                         page, icx, icy, _item.get("placeholder") or _item.get("content") or "",
@@ -1082,7 +1093,9 @@ async def _place_items(
                     border_width=item.get("borderWidth"),
                     shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
                     direction="HORIZONTAL", gap=8, padding=20, fill_children=_fill_input,
+                    rename=input_name,
                 )
+                photo_registry["fixable_nodes"].append({"node_name": input_name, "type": "INPUT"})
             elif itype == "BUTTON":
                 # `backgroundColor`, when present, is unambiguously the button's
                 # own fill. `color` is ambiguous — models often use it for the
@@ -1091,6 +1104,8 @@ async def _place_items(
                 # here only as a fallback for BOTH fill and label color.
                 fill = item.get("backgroundColor") or item.get("color") or item.get("fill") or "#0070F3"
                 label_color = item.get("textColor") or (item.get("color") if item.get("backgroundColor") else None) or "#FFFFFF"
+                button_name = f"hermes:node:{photo_registry['node_n']}:button"
+                photo_registry["node_n"] += 1
 
                 async def _fill_button(icx: float, icy: float, _item=item, _label_color=label_color) -> None:
                     await _add_text(
@@ -1104,8 +1119,13 @@ async def _place_items(
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
                     shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
                     direction="HORIZONTAL", gap=8, padding=16, fill_children=_fill_button,
+                    rename=button_name,
                 )
+                photo_registry["fixable_nodes"].append({"node_name": button_name, "type": "BUTTON"})
             elif itype == "CHECKBOX":
+                checkbox_name = f"hermes:node:{photo_registry['node_n']}:checkbox"
+                photo_registry["node_n"] += 1
+
                 async def _fill_checkbox(icx: float, icy: float, _item=item) -> None:
                     await _add_shape(page, "r", icx, icy, 20, 20, color="#FFFFFF", corner_radius=4)
                     await _add_text(
@@ -1115,8 +1135,9 @@ async def _place_items(
                 await _add_composite(
                     page, cx, cy, item.get("width") or content_w, item.get("height") or 28,
                     color="#FFFFFF", direction="HORIZONTAL", gap=10, padding=0,
-                    fill_children=_fill_checkbox,
+                    fill_children=_fill_checkbox, rename=checkbox_name,
                 )
+                photo_registry["fixable_nodes"].append({"node_name": checkbox_name, "type": "CHECKBOX"})
             elif itype in ("ROW", "STACK"):
                 # ROW and STACK share one composite pattern — only the
                 # stacking axis and the child default-sizing rule differ.
@@ -1238,13 +1259,17 @@ async def _place_items(
                     fill_children=_fill_grid, columns=columns,
                 )
             else:
+                rect_name = f"hermes:node:{photo_registry['node_n']}:rectangle"
+                photo_registry["node_n"] += 1
                 await _add_shape(
                     page, "r", cx, cy, item.get("width") or 100, item.get("height") or 40,
                     color=item.get("backgroundColor") or item.get("color") or item.get("fill"),
                     corner_radius=item.get("borderRadius"),
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
                     shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
+                    rename=rect_name,
                 )
+                photo_registry["fixable_nodes"].append({"node_name": rect_name, "type": "RECTANGLE"})
             created += 1
             item_w, item_h = _item_size(
                 item, itype, content_w,
@@ -1382,7 +1407,7 @@ async def _build_frame_via_ui(page, spec: dict[str, Any], unsplash_key: str | No
     root_row_selector = await _current_row_selector(page)
 
     children = spec.get("children") or []
-    photo_registry = {"n": 0, "nodes": []}
+    photo_registry = {"n": 0, "nodes": [], "node_n": 0, "fixable_nodes": []}
     cx, cy, created = await _place_items(
         page, cx, cy, children, content_w, root_row_selector,
         parent_direction=direction, unsplash_key=unsplash_key,
@@ -1413,6 +1438,17 @@ async def _build_frame_via_ui(page, spec: dict[str, Any], unsplash_key: str | No
         # reload) to patch a missing/wrong photo without rebuilding the
         # whole frame.
         "photo_nodes": photo_registry["nodes"],
+        # Every BUTTON/INPUT/CHECKBOX/RECTANGLE node built, each given a
+        # stable, predictable name (`hermes:node:{n}:{kind}`) the same way
+        # `photo_nodes` already does for HEADER_IMAGE/AVATAR — `fix_figma_
+        # property` (Phase 3 Step 2, broadened further) reselects one of
+        # these BY NAME in a fresh session to patch its color/width/height
+        # without rebuilding the whole frame. TEXT nodes are deliberately
+        # NOT in this list — they don't need a registry entry at all, since
+        # `fix_figma_text` finds them by their own current content instead
+        # (a plain TEXT node already auto-names its Layers-panel row after
+        # its content, live-confirmed).
+        "fixable_nodes": photo_registry["fixable_nodes"],
     }
 
 
@@ -2108,6 +2144,133 @@ async def fix_figma_text(
 
     except Exception as e:
         logger.exception("Error fixing Figma text in browser")
+        return {
+            "ok": False,
+            "error": f"Figma Web browser error: {e}",
+            "url": file_url,
+        }
+
+
+_FIXABLE_PROPERTIES = ("color", "width", "height")
+
+
+async def fix_figma_property(
+    file_url: str,
+    node_name: str,
+    property: str,
+    value: str,
+    out_dir: Path | None = None,
+    headless: bool = False,
+    timeout_s: int = 120,
+) -> dict[str, Any]:
+    """Phase 3 Step 2, broadened further (docs/figma-uiux-roadmap.md):
+    patch a BUTTON/INPUT/CHECKBOX/RECTANGLE node's fill color or size on
+    an already-built frame, in a fresh browser session — same shape as
+    `fix_figma_photo`/`fix_figma_text`, for the node types that DON'T
+    auto-name from their own content the way TEXT does.
+
+    `node_name` must be one of the `node_name` values in that build's
+    `fixable_nodes` result list (`hermes:node:{n}:{kind}`, assigned to
+    every BUTTON/INPUT/CHECKBOX/RECTANGLE at build time the same way
+    `photo_nodes` already does for HEADER_IMAGE/AVATAR — see
+    `_build_frame_via_ui`'s result). `property` is `"color"`, `"width"`,
+    or `"height"`; `value` is a hex color (for `color`) or a plain number
+    in px (for `width`/`height`) — both as strings, matching every other
+    Figma-facing tool in this file.
+
+    Reuses `fix_figma_photo`'s exact collapsed-tree-panel handling (a
+    reopened file's Layers panel starts fully collapsed) and re-find-by-
+    exact-name mechanism unchanged; only the actual fix step is new, and
+    it's not new at all in isolation — `_set_fill_hex` and `_set_number`
+    are the SAME helpers every original build already uses for these same
+    fields, just re-targeted at a reselected existing node instead of a
+    freshly-drawn one.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
+        }
+
+    if property not in _FIXABLE_PROPERTIES:
+        return {
+            "ok": False,
+            "error": f"property harus salah satu dari {_FIXABLE_PROPERTIES}, dapat '{property}'.",
+        }
+
+    out_dir = out_dir or paths.artifacts_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shot_filename = f"figma_fix_{uuid.uuid4().hex[:8]}.png"
+    shot_path = out_dir / shot_filename
+
+    try:
+        async with async_playwright() as p:
+            session = await _open_figma_session(p, file_url, headless)
+            if isinstance(session, dict):
+                return session
+            context, page = session
+
+            # Same collapsed-tree handling as `fix_figma_photo`/`fix_figma_text`.
+            row = page.get_by_text(node_name, exact=True)
+            for _ in range(5):
+                if await row.count() > 0:
+                    break
+                carets = page.locator('[data-testid="layers-panel-expand-caret"]')
+                n = await carets.count()
+                if n == 0:
+                    break
+                for i in range(n):
+                    await carets.nth(i).click(force=True)
+                    await page.wait_for_timeout(150)
+            if await row.count() == 0:
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Node '{node_name}' tidak ditemukan di file ini — mungkin sudah "
+                             f"diganti nama atau dihapus.",
+                    "url": file_url,
+                }
+            await row.first.click()
+            await page.wait_for_timeout(200)
+
+            if property == "color":
+                await _set_fill_hex(page, value)
+            else:
+                try:
+                    numeric = float(value)
+                except ValueError:
+                    await context.close()
+                    return {
+                        "ok": False,
+                        "error": f"value '{value}' bukan angka valid untuk property '{property}'.",
+                        "url": file_url,
+                    }
+                key = "scrubbable-control-width" if property == "width" else "scrubbable-control-height"
+                await _set_number(page, key, numeric)
+
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(150)
+            await page.keyboard.press("Shift+2")
+            await page.wait_for_timeout(500)
+            await page.screenshot(path=str(shot_path), full_page=False)
+
+            await context.close()
+
+            md_image = f"![Figma Fix Preview](file:///{shot_path.as_posix()})"
+            detail = f"Node '{node_name}' berhasil diubah: {property} jadi {value}."
+            return {
+                "ok": True,
+                "node_name": node_name,
+                "screenshot_path": str(shot_path),
+                "markdown": md_image,
+                "detail": detail,
+                "url": file_url,
+            }
+
+    except Exception as e:
+        logger.exception("Error fixing Figma property in browser")
         return {
             "ok": False,
             "error": f"Figma Web browser error: {e}",

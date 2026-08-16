@@ -180,7 +180,7 @@ def _figma_selfcheck_message(tool_name: str, result_content: str) -> dict | None
     the first one.
     """
     if tool_name not in ("figma_web_design", "figma_web_fix_photo", "figma_web_design_flow",
-                         "figma_web_fix_text"):
+                         "figma_web_fix_text", "figma_web_fix_property"):
         return None
     try:
         data = json.loads(result_content)
