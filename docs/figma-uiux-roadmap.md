@@ -781,11 +781,37 @@ Files touched: `hermes/figma_browser.py` (`_set_gradient_fill`,
 dispatch branches in `_place_items`), `hermes/chat_engine.py`
 (`fontFamily`/`gradientColors` schema fields in `_FIGMA_CHILD_LEAF_PROPS`).
 
-**Remaining open items for this phase, not started:** gradient on other
-node types (HEADER_IMAGE/INPUT/AVATAR/ROW/STACK/GRID backgrounds), Radial/
-Angular/Diamond gradient types, 3+ gradient stops, gradient angle control,
-and font family on BUTTON/INPUT/CHECKBOX labels (currently TEXT/
-FOOTER_LINK only).
+**Follow-up (2026-08-16, same day) — Radial gradient + BUTTON label font
+— ✅ DONE.** Two of the four open items above shipped same-day:
+
+- **Radial gradient.** There's only ONE outer radio value for gradients
+  (`GRADIENT_LINEAR` — no separate `GRADIENT_RADIAL`); Radial/Angular/
+  Diamond turn out to be a SEPARATE in-editor dropdown next to the
+  gradient bar, found via its own stable class prefix
+  (`gradient_editor--paintTypeSelect-...`, distinct from the Fill row's
+  own "Linear" text label sitting OUTSIDE the popover — `get_by_text
+  ("Linear")` matches both, and clicking the wrong one does nothing
+  useful). Opening it reveals plain `role="option"` entries "Linear"/
+  "Radial"/"Angular"/"Diamond". `_set_gradient_fill` gained a
+  `gradient_type` param (`"LINEAR"` default or `"RADIAL"`), threaded
+  through `_add_shape`/`_add_composite` and a new `gradientType` schema
+  field. Live-verified: a RECTANGLE with `gradientType: "RADIAL"`
+  rendered as a genuine center-out radial glow, visually distinct from
+  linear.
+- **Font family on BUTTON labels.** Nearly free — `_fill_button`'s own
+  `_add_text` call just needed `font_family=_item.get("fontFamily")`
+  threaded through (the same `_set_font_family` mechanism Phase 5 already
+  proved for TEXT). Live-verified: a BUTTON labeled "Get Started" with
+  `fontFamily: "Montserrat"` rendered in that geometric sans, visibly
+  different from Inter.
+
+Both live-verified together in one build (radial-glow RECTANGLE +
+Montserrat-labeled BUTTON, screenshot-confirmed). 807 unit tests still
+green.
+
+**Still open:** gradient on other node types (HEADER_IMAGE/INPUT/AVATAR/
+ROW/STACK/GRID backgrounds), Angular/Diamond gradient types, 3+ gradient
+stops, gradient angle control, and font family on INPUT/CHECKBOX labels.
 
 ## Verification (every phase)
 

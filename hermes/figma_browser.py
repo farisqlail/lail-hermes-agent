@@ -184,8 +184,10 @@ async def _set_fill_hex(page, hex_color: str | None) -> None:
     await page.wait_for_timeout(150)
 
 
-async def _set_gradient_fill(page, color_start: str, color_end: str) -> None:
-    """Set the selected node's fill to a 2-stop LINEAR gradient.
+async def _set_gradient_fill(
+    page, color_start: str, color_end: str, gradient_type: str = "LINEAR",
+) -> None:
+    """Set the selected node's fill to a 2-stop gradient.
 
     Mechanism, live-confirmed: click the Fill swatch (same one
     `_set_fill_hex` types a hex into for a solid fill) to open the
@@ -201,15 +203,23 @@ async def _set_gradient_fill(page, color_start: str, color_end: str) -> None:
     default stops (0%/100%, an auto-generated color pair) already present
     at `input[aria-label="Gradient Stop Color"]`; this overwrites both.
 
+    `gradient_type`: `"LINEAR"` (default) or `"RADIAL"`. There is only
+    ONE outer radio value for gradients (`GRADIENT_LINEAR` — Figma doesn't
+    expose a separate `GRADIENT_RADIAL` radio in that group); Radial/
+    Angular/Diamond are chosen via a SEPARATE in-editor dropdown next to
+    the gradient bar, live-confirmed via its own stable class prefix
+    (`gradient_editor--paintTypeSelect-...`, distinct from the Fill row's
+    OWN "Linear" text label which sits outside the popover and isn't the
+    right element to click) — opening it reveals plain `role="option"`
+    entries named "Linear"/"Radial"/"Angular"/"Diamond", selected by exact
+    name. Only Radial is wired up here (Angular/Diamond untested, same
+    "narrow first cut" reasoning throughout this file).
+
     Only ever produces exactly 2 stops (start/end) — a real limitation,
     not an oversight: Figma's "Add gradient stop" control inserts a stop
     by ITS OWN position logic (not necessarily DOM-appended at the end),
     which wasn't live-tested this session, so a 3+-stop gradient isn't
-    attempted here rather than guessing at ordering. Radial/Angular/
-    Diamond sub-types are ALSO not covered — Figma's own "Linear" text
-    next to the gradient bar is a separate in-editor dropdown for that,
-    not explored this session — same "narrow first cut" scoping
-    `fix_figma_photo`/`fix_figma_text` used.
+    attempted here rather than guessing at ordering.
     """
     swatch = page.locator('[data-onboarding-key="paint-panel-row-paint-1-0"] button').first
     if await swatch.count() == 0:
@@ -237,6 +247,16 @@ async def _set_gradient_fill(page, color_start: str, color_end: str) -> None:
         await page.wait_for_timeout(300)
     await linear_radio.click(force=True, timeout=8000)
     await page.wait_for_timeout(300)
+
+    if gradient_type == "RADIAL":
+        type_select = page.locator('[class*="gradient_editor--paintTypeSelect"]').first
+        if await type_select.count() > 0:
+            await type_select.click()
+            await page.wait_for_timeout(300)
+            radial_option = page.get_by_role("option", name="Radial", exact=True)
+            if await radial_option.count() > 0:
+                await radial_option.click()
+                await page.wait_for_timeout(300)
 
     stop_inputs = page.locator('input[aria-label="Gradient Stop Color"]')
     for i, hexval in enumerate((color_start, color_end)):
@@ -682,7 +702,7 @@ async def _add_shape(
     border_color: str | None = None, border_width: float | None = None,
     shadow: bool = False, elevation: str = "subtle",
     rename: str | None = None,
-    gradient: tuple[str, str] | None = None,
+    gradient: tuple[str, str] | None = None, gradient_type: str = "LINEAR",
 ) -> None:
     await _draw(page, tool_key, cx, cy)
     await _set_number(page, "scrubbable-control-width", w)
@@ -690,7 +710,7 @@ async def _add_shape(
     if corner_radius:
         await _set_number(page, "scrubbable-control-corner-radius", corner_radius)
     if gradient:
-        await _set_gradient_fill(page, gradient[0], gradient[1])
+        await _set_gradient_fill(page, gradient[0], gradient[1], gradient_type)
     elif color:
         await _set_fill_hex(page, color)
     if border_color:
@@ -920,7 +940,7 @@ async def _add_composite(
     align_start: bool = False,
     columns: int | None = None, gap_row: float | None = None,
     rename: str | None = None,
-    gradient: tuple[str, str] | None = None,
+    gradient: tuple[str, str] | None = None, gradient_type: str = "LINEAR",
 ) -> None:
     """Create a nested auto-layout sub-frame (button/input/checkbox row) and
     fill it via `fill_children(inner_cx, inner_cy)`. Always sets a real fill
@@ -953,7 +973,7 @@ async def _add_composite(
         await _apply_auto_layout(page, direction, padding, padding, gap, centered=True, align_start=align_start)
     await _lock_fixed_size(page, w, h)
     if gradient:
-        await _set_gradient_fill(page, gradient[0], gradient[1])
+        await _set_gradient_fill(page, gradient[0], gradient[1], gradient_type)
     else:
         await _set_fill_hex(page, color)
     if border_color:
@@ -1214,12 +1234,13 @@ async def _place_items(
                 photo_registry["node_n"] += 1
                 button_gradient = item.get("gradientColors")
                 button_gradient = tuple(button_gradient[:2]) if button_gradient and len(button_gradient) >= 2 else None
+                button_gradient_type = str(item.get("gradientType") or "LINEAR").upper()
 
                 async def _fill_button(icx: float, icy: float, _item=item, _label_color=label_color) -> None:
                     await _add_text(
                         page, icx, icy, _item.get("text") or _item.get("content") or "Create account",
                         font_size=_item.get("fontSize") or 16, color=_label_color,
-                        bold=bool(_item.get("bold")),
+                        bold=bool(_item.get("bold")), font_family=_item.get("fontFamily"),
                     )
                 await _add_composite(
                     page, cx, cy, item.get("width") or content_w, item.get("height") or 50,
@@ -1227,7 +1248,7 @@ async def _place_items(
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
                     shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
                     direction="HORIZONTAL", gap=8, padding=16, fill_children=_fill_button,
-                    rename=button_name, gradient=button_gradient,
+                    rename=button_name, gradient=button_gradient, gradient_type=button_gradient_type,
                 )
                 photo_registry["fixable_nodes"].append({"node_name": button_name, "type": "BUTTON"})
             elif itype == "CHECKBOX":
@@ -1371,13 +1392,14 @@ async def _place_items(
                 photo_registry["node_n"] += 1
                 rect_gradient = item.get("gradientColors")
                 rect_gradient = tuple(rect_gradient[:2]) if rect_gradient and len(rect_gradient) >= 2 else None
+                rect_gradient_type = str(item.get("gradientType") or "LINEAR").upper()
                 await _add_shape(
                     page, "r", cx, cy, item.get("width") or 100, item.get("height") or 40,
                     color=item.get("backgroundColor") or item.get("color") or item.get("fill"),
                     corner_radius=item.get("borderRadius"),
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
                     shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
-                    rename=rect_name, gradient=rect_gradient,
+                    rename=rect_name, gradient=rect_gradient, gradient_type=rect_gradient_type,
                 )
                 photo_registry["fixable_nodes"].append({"node_name": rect_name, "type": "RECTANGLE"})
             created += 1
