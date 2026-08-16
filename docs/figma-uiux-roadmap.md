@@ -916,6 +916,65 @@ MULTIPLE nodes in one call, and reading back which styles already exist
 in a file (a caller currently has to remember the exact name it used at
 create time).
 
+## Phase 7 — Senior UI/UX reference study (Gojek Asphalt) — ✅ DONE (2026-08-16)
+
+User asked to study `https://asphalt.gojek.io/` (Gojek's public design-system
+site, framed as a "how to be a senior UI/UX" guide) and apply the learnings
+to this agent's skills. Researched the site's Principles page and 5
+Foundations sub-pages (colors, typography, motion, spacing, shadows) via
+`WebFetch` (real paths are under `pages/*.html`, e.g. `pages/foundations.html`
+— clean URLs like `/foundations` 404, it's a static-export SPA).
+
+**Findings that were genuinely new/actionable vs. what this repo's guide
+already had:**
+- 4 named principles (Consistency, Usability, Accessibility, Aesthetics) —
+  Asphalt states these as prose philosophy, not enforceable rules on their
+  own.
+- WCAG 2.0 AA numeric contrast targets: 4.5:1 for normal text, 3:1 for large
+  text (≥18px, or ≥14px bold) — Asphalt's own accessibility page cites this
+  standard directly.
+- Proximity as an explicit spacing heuristic: near = related, far = distinct
+  group — stated as a design principle, not a numeric rule.
+- Type scale via a fixed ratio (Asphalt: 1.3x per step off a 12pt base) and
+  line-height = fontSize × 1.3 rounded to nearest 4px — this repo's own type
+  scale (12/14/16/20/24/28/32-40) is already a fixed, non-arbitrary scale
+  (roughly 1.15-1.3x per step), so no change needed there; line-height is
+  not a settable field in `figma_browser.py` today (Figma defaults TEXT
+  nodes to "Auto"), so the ratio itself isn't actionable yet — noted as a
+  possible future field, not built this pass.
+- Only 2 shadow elevation tiers (High/Low) vs. this repo's existing 3
+  (subtle/medium/strong) — repo's system is already more granular than
+  Asphalt's public docs show (Asphalt's own "Implementation" sections are
+  placeholder/"coming soon" everywhere), so kept as-is, no downgrade.
+- Motion (3 named qualities, no numeric specs) — not applicable, this agent
+  builds static frames only, no animation/prototyping capability exists.
+
+**Applied to `hermes/chat_engine.py`'s `_FIGMA_DESIGN_SYSTEM_GUIDE`** (the
+system prompt text prepended to every `figma_web_design` call — pure prompt
+change, no new browser automation, so no live Playwright recon needed for
+this phase):
+1. Opening line now states the 4 principles as an explicit decision
+   framework (Consistency/Usability/Accessibility/Aesthetics) instead of
+   diving straight into numeric rules with no "why".
+2. WARNA section's existing vague "kontras wajib terbaca" replaced with the
+   concrete WCAG AA ratios (4.5:1 / 3:1) plus a concrete tie-breaker
+   (pick from the already-specified neutral palette instead of guessing two
+   arbitrary mid-tones).
+3. WHITESPACE section gained the proximity heuristic explicitly: gap size
+   should communicate grouping (small gap = related items, larger gap =
+   separate groups), not just "space to look neat".
+
+`pytest tests/ -q` — 807 passed (prompt-text-only change, no schema/behavior
+change, so no test updates needed).
+
+**Not applied / explicitly deferred:** line-height control (would need new
+`figma_browser.py` automation + live recon to find and verify Figma's
+"Line height" field — a real new mechanism, not requested this pass and
+skipped per this session's pattern of not self-directing into new scope
+without the user picking it), a live automation around Figma's own
+"Check color contrast" UI (incidentally discovered during earlier gradient
+recon, still unused) — flagged as a candidate future phase, not started.
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of
@@ -957,4 +1016,7 @@ above) — open items there are gradient on more node types, 3+ stops,
 gradient angle, and font family on INPUT/CHECKBOX labels. Phase 6 (design
 system: Color & Text Styles) is done too — see its own section above;
 open items there are Variables, Effect styles, multi-node style apply,
-and reading back existing style names from a file.
+and reading back existing style names from a file. Phase 7 (Asphalt
+design-system study applied to `_FIGMA_DESIGN_SYSTEM_GUIDE`) is done too —
+see its own section above; open items there are line-height control and a
+live-contrast-checker automation, neither started.

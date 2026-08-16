@@ -94,7 +94,13 @@ RESUME_NUDGE = (
 # shares a system instead of each being independently "close enough".
 _FIGMA_DESIGN_SYSTEM_GUIDE = (
     "ATURAN DESAIN SENIOR UI/UX — pakai untuk SETIAP desain, termasuk yang "
-    "dibuat dari nol (tanpa gambar referensi):\n"
+    "dibuat dari nol (tanpa gambar referensi). Pegang 4 prinsip tiap "
+    "keputusan visual: CONSISTENCY (satu sistem spacing/warna/tipe dipakai "
+    "berulang, bukan nilai unik tiap elemen), USABILITY (kejelasan fungsi "
+    "user diutamakan di atas dekorasi), ACCESSIBILITY (kontras & ukuran "
+    "teks harus terbaca semua orang, bukan cuma di layar desainer), "
+    "AESTHETICS (rapi & enak dilihat TANPA mengorbankan 3 prinsip di "
+    "atas).\n"
     "- SPACING (8pt grid): semua padding/gap/itemSpacing HARUS salah satu "
     "dari 4/8/12/16/24/32/48/64px. Jangan pakai angka acak (mis. 18, 22, "
     "35) — itu ciri khas desain AI yang terlihat berantakan.\n"
@@ -120,7 +126,12 @@ _FIGMA_DESIGN_SYSTEM_GUIDE = (
     "untuk teks yang penting dibaca, hanya untuk placeholder/caption yang "
     "memang boleh redup. Warna semantik (hijau=sukses, merah=bahaya, "
     "kuning=peringatan) HANYA untuk status/badge yang benar-benar makna "
-    "itu — jangan dipakai sebagai dekorasi.\n"
+    "itu — jangan dipakai sebagai dekorasi. Standar kontras WCAG AA: rasio "
+    "teks-latar minimal 4.5:1 untuk teks biasa (<18px, atau <14px bold), "
+    "minimal 3:1 untuk teks besar (≥18px, atau ≥14px bold) — kalau ragu, "
+    "pilih pasangan warna dari palet netral di atas yang sudah dijamin "
+    "gelap-vs-terang, jangan campur dua warna medium yang mirip tingkat "
+    "terangnya.\n"
     "- SHADOW/ELEVATION: field `shadow`+`elevation` ('subtle'/'medium'/"
     "'strong', default 'subtle'). 'subtle' = card biasa yang istirahat di "
     "atas background-nya sendiri (list item, product card — PALING SERING "
@@ -150,7 +161,13 @@ _FIGMA_DESIGN_SYSTEM_GUIDE = (
     "kekecilan untuk isinya bikin proses pembuatannya gagal menata elemen "
     "dengan benar.\n"
     "- WHITESPACE konsisten: satu `itemSpacing` dan satu `padding` per "
-    "frame/composite, bukan beda-beda tiap anak tanpa alasan visual."
+    "frame/composite, bukan beda-beda tiap anak tanpa alasan visual. "
+    "Prinsip proximity: elemen yang jaraknya dekat otomatis terbaca "
+    "sebagai satu kelompok terkait; elemen yang perlu dibaca sebagai "
+    "kelompok BERBEDA harus dipisah gap lebih besar (mis. antar-section) "
+    "daripada gap di dalam satu kelompok (mis. antar-item dalam satu "
+    "card) — pakai selisih ini untuk komunikasikan hubungan antar elemen, "
+    "bukan cuma \"space biar rapi\"."
 )
 
 # Leaf-level figma_web_design child item — the bottom of the nesting depth
