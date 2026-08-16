@@ -547,6 +547,22 @@ CHAT_TOOLS = [
             "style_name": {"type": "string", "description": "nama style yang sudah dibuat sebelumnya lewat figma_web_create_style, mis. 'Brand/Primary'"}},
             "required": ["file_url", "node_name", "style_type", "style_name"]}}},
     {"type": "function", "function": {
+        "name": "figma_web_check_contrast",
+        "description": ("Cek rasio kontras warna teks/elemen SUNGGUH-SUNGGUH lewat "
+                        "fitur bawaan Figma sendiri (bukan tebakan model) — dibanding "
+                        "background NYATA yang benar-benar dirender di belakangnya "
+                        "(warna frame/card di belakangnya, bukan cuma warna canvas "
+                        "kosong). Pakai ini kalau pengguna minta 'cek aksesibilitas', "
+                        "'cek kontras', 'apakah teks ini kebaca', atau sebelum "
+                        "mengklaim sebuah warna 'sudah kontras cukup'. Cuma untuk "
+                        "elemen dengan Fill warna solid (bukan gradient/foto). WAJIB "
+                        "`file_url` dari hasil build sebelumnya (BUKAN `url`) dan "
+                        "`node_name` (aturan sama dengan figma_web_create_style)."),
+        "parameters": {"type": "object", "properties": {
+            "file_url": {"type": "string", "description": "field `file_url` dari hasil build sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
+            "node_name": {"type": "string", "description": "node yang mau dicek warnanya — `node_name` dari fixable_nodes/photo_nodes, atau isi teks persis sebuah TEXT"}},
+            "required": ["file_url", "node_name"]}}},
+    {"type": "function", "function": {
         "name": "figma_login",
         "description": ("Buka browser visual Chrome/Edge agar pengguna bisa login "
                         "ke akun Figma secara manual. Browser akan tetap terbuka "
@@ -935,6 +951,23 @@ class ChatEngine:
                             except Exception as e:
                                 print(f"Could not send Figma style screenshot to Telegram: {e}")
                         return json.dumps({**res, "url": url, "markdown": f"![Figma Style Preview]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_web_check_contrast":
+                    res = await figma_browser.check_figma_contrast(
+                        file_url=str(args.get("file_url") or ""),
+                        node_name=str(args.get("node_name") or ""),
+                        out_dir=paths.artifacts_dir() / "figma",
+                    )
+                    if res.get("ok") and res.get("screenshot_path"):
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
+                            except Exception as e:
+                                print(f"Could not send Figma contrast screenshot to Telegram: {e}")
+                        return json.dumps({**res, "url": url, "markdown": f"![Figma Contrast Check]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
 
                 if name == "figma_login":

@@ -2934,3 +2934,123 @@ async def apply_figma_style(
             "error": f"Figma Web browser error: {e}",
             "url": file_url,
         }
+
+
+async def check_figma_contrast(
+    file_url: str,
+    node_name: str,
+    out_dir: Path | None = None,
+    headless: bool = False,
+    timeout_s: int = 120,
+) -> dict[str, Any]:
+    """Read Figma's own built-in contrast checker for a node's Fill color
+    against whatever's REALLY rendered behind it (the parent frame's fill,
+    a card behind it, etc — live-confirmed it's the actual composited
+    background, not just the page canvas color: a text node placed inside
+    a dark #0F172A frame reported its ratio against that frame's color).
+
+    Grounds the WCAG AA numbers already in `_FIGMA_DESIGN_SYSTEM_GUIDE`
+    (see docs/figma-uiux-roadmap.md Phase 7) in a real measurement instead
+    of trusting the model's own color choice was actually readable.
+
+    Mechanism, live-confirmed: opening the Fill swatch's full color-picker
+    popover (`button[aria-label^="Solid color hex"]` — same swatch
+    `_set_fill_hex` types a hex into, but clicking IT rather than the hex
+    text input opens the full picker) shows a "Color Contrast Menu" group
+    at the top unconditionally, no extra click needed:
+    `[aria-label^="Color contrast ratio"]` (e.g. "Color contrast ratio:
+    2.35:1. View details") and `[data-testid="contrast-standard-wrapper"]`
+    (aria-label "AA Contrast standard not met..." vs "...standard met.").
+    Only supports a solid Fill — a gradient/image fill's swatch has a
+    different aria-label prefix and isn't handled here.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
+        }
+
+    out_dir = out_dir or paths.artifacts_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shot_filename = f"figma_contrast_{uuid.uuid4().hex[:8]}.png"
+    shot_path = out_dir / shot_filename
+
+    try:
+        async with async_playwright() as p:
+            session = await _open_figma_session(p, file_url, headless)
+            if isinstance(session, dict):
+                return session
+            context, page = session
+
+            if not await _select_node_by_display_name(page, node_name):
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Node '{node_name}' tidak ditemukan di file ini — mungkin sudah "
+                             f"diganti nama atau dihapus.",
+                    "url": file_url,
+                }
+
+            swatch = page.locator('button[aria-label^="Solid color hex"]').first
+            if await swatch.count() == 0:
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Node '{node_name}' tidak punya solid Fill color (mungkin "
+                             f"gradient, image fill, atau tidak ada fill sama sekali) — "
+                             f"pengecekan kontras cuma didukung untuk warna solid.",
+                    "url": file_url,
+                }
+            await swatch.click(timeout=8000)
+            await page.wait_for_timeout(500)
+
+            ratio_btn = page.locator('[aria-label^="Color contrast ratio"]').first
+            standard_wrap = page.locator('[data-testid="contrast-standard-wrapper"]').first
+            if await ratio_btn.count() == 0 or await standard_wrap.count() == 0:
+                await page.keyboard.press("Escape")
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": "Panel color contrast Figma tidak muncul — kemungkinan UI Figma berubah.",
+                    "url": file_url,
+                }
+
+            ratio_label = await ratio_btn.get_attribute("aria-label") or ""
+            standard_label = await standard_wrap.get_attribute("aria-label") or ""
+            ratio_match = re.search(r"ratio:\s*([\d.]+)\s*:\s*1", ratio_label)
+            ratio = float(ratio_match.group(1)) if ratio_match else None
+            meets_standard = "not met" not in standard_label.lower()
+
+            await page.screenshot(path=str(shot_path), full_page=False)
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(150)
+            await context.close()
+
+            verdict = "MEMENUHI" if meets_standard else "TIDAK memenuhi"
+            detail = (
+                f"Kontras node '{node_name}': {ratio}:1 — {verdict} standar AA "
+                f"(WCAG AA butuh minimal 4.5:1 untuk teks biasa, 3:1 untuk teks besar)."
+                if ratio is not None else
+                f"Kontras node '{node_name}': gagal membaca rasio dari Figma."
+            )
+            md_image = f"![Figma Contrast Check](file:///{shot_path.as_posix()})"
+            return {
+                "ok": True,
+                "node_name": node_name,
+                "ratio": ratio,
+                "meets_aa": meets_standard,
+                "screenshot_path": str(shot_path),
+                "markdown": md_image,
+                "detail": detail,
+                "url": file_url,
+            }
+
+    except Exception as e:
+        logger.exception("Error checking Figma color contrast in browser")
+        return {
+            "ok": False,
+            "error": f"Figma Web browser error: {e}",
+            "url": file_url,
+        }

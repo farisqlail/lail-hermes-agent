@@ -1059,6 +1059,53 @@ now reads back as Regular weight (not carried-over Bold) and `W 342 × H 40
 Hug` — wrapped to 2 lines inside the frame's content width instead of
 overflowing past it. 807 unit tests pass.
 
+## Phase 10 — Live contrast-checker automation — ✅ DONE (2026-08-16)
+
+Last open item from Phase 7's Asphalt research: back the numeric WCAG AA
+guidance already in `_FIGMA_DESIGN_SYSTEM_GUIDE` with a REAL measurement
+instead of trusting the model's own color choice — Figma has a built-in
+contrast checker, incidentally spotted during Phase 5's gradient recon
+(mentioned in `_set_gradient_fill`'s own docstring as a tab landed on by
+accident), never wired up until now.
+
+Live recon: opening the Fill swatch's FULL color-picker popover
+(`button[aria-label^="Solid color hex"]` — clicking the swatch button
+itself, not the hex text input `_set_fill_hex` types into) shows a "Color
+Contrast Menu" group at the top UNCONDITIONALLY, no extra click needed —
+`[aria-label^="Color contrast ratio"]` (e.g. "Color contrast ratio:
+2.35:1. View details") and `[data-testid="contrast-standard-wrapper"]`
+(aria-label "AA Contrast standard not met..." vs "...standard met."). This
+is Figma's OWN computed value, confirmed live to reflect the REAL
+composited background — not just page canvas color: a text node placed
+inside a dark `#0F172A` auto-layout frame reported its ratio against that
+frame's actual fill (1.72:1 for a too-dark gray-on-navy pair, 17.85:1 for
+white-on-navy), not against Figma's white page background.
+
+New `check_figma_contrast(file_url, node_name, ...)` in `figma_browser.py`
+— reuses `_select_node_by_display_name` (same node-finding as every
+`fix_figma_*`/style function), returns `{ok, ratio, meets_aa, detail,
+screenshot_path}`. Only supports a solid Fill (a gradient/image fill's
+swatch has a different `aria-label` prefix, not handled). New
+`figma_web_check_contrast` tool in `chat_engine.py` (schema + dispatch,
+same file_url/node_name pattern as the style tools) — deliberately NOT
+added to `_figma_selfcheck_message`'s tuple in `main.py`: that flow asks
+the model to compare a screenshot against the user's original mockup/
+request, which doesn't apply to a read-only contrast report (its own
+`detail` string already states the verdict).
+
+Live-verified via 3 cases against a real build (dark `#0F172A` frame, one
+low-contrast gray text, one high-contrast white text): low-contrast node
+→ `1.72:1`, `meets_aa=False`; high-contrast node → `17.85:1`,
+`meets_aa=True`; a nonexistent node name → clean `ok=False` error instead
+of a crash. `tests/test_web_ui.py`'s tool-registry list updated. 807 unit
+tests pass.
+
+**Not built:** batch-checking multiple nodes in one call, checking a
+gradient/image fill's effective contrast (no single "color" to compare),
+and switching the standard from AA to AAA (the checker's own "Contrast
+settings" button, seen in recon but not used — always reads whatever
+standard Figma has selected, which defaults to AA).
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of
@@ -1104,5 +1151,6 @@ and reading back existing style names from a file. Phase 7 (Asphalt
 design-system study applied to `_FIGMA_DESIGN_SYSTEM_GUIDE`) is done too —
 see its own section above. Phase 8 (line-height control) is done too — see
 its own section above. Phase 9 (bold-carryover fix + TEXT wrap) is done
-too — see its own section above; the live-contrast-checker automation is
-still not started.
+too — see its own section above. Phase 10 (live contrast-checker
+automation) is done too — see its own section above; open items there
+(batch-check, gradient/image fill contrast, AAA standard) are not started.
