@@ -503,6 +503,40 @@ slice if a broader delta-edit tool is wanted later, now that the harder
 groundwork (real file URL, rename-and-refind, collapsed-tree handling) is
 proven.
 
+**Broadened to text content + text color — ✅ DONE (2026-08-16, follow-up
+session).** New tool `figma_web_fix_text` + `figma_browser.fix_figma_text`
+patches a TEXT node's content and/or fill color on an already-built
+frame, same shape as `fix_figma_photo` (real file URL, collapsed-tree
+handling reused as-is) but with a genuinely simpler find-by-name story: a
+plain TEXT node auto-names its own Layers-panel row after its CURRENT
+CONTENT (live-confirmed), so `current_text` — content the model already
+knows from the original spec or a self-check screenshot — works as the
+find key directly, no build-time rename/registry step needed the way
+HEADER_IMAGE/AVATAR require. New fix mechanism, live-confirmed: with the
+node reselected, `Enter` arms Figma's real text-EDIT mode (distinct from
+`_add_text`'s draw-a-new-node path), `Control+A` selects the node's
+EXISTING content (not "select all on page"), typing replaces it, `Escape`
+exits back to node-selected (font/weight/other color untouched) — the
+node stays selected afterward, so a `color` change chains directly onto
+the existing `_set_fill_hex` helper with no re-find needed.
+
+Live-verified end to end through the real, unmodified function in two
+separate cases: (1) a deliberate typo ("Craete your account" → "Create
+your account") in a freshly reopened session — fixed correctly, the
+frame's other text untouched, no stray shapes; (2) a color-only change
+(`color` given, `new_text` omitted) — text stayed exactly "Status:
+Pending", fill went from gray to green. 807 unit tests still green
+throughout (no new unit test for the browser-automation logic itself,
+matching the established precedent that `fix_figma_photo` also has none
+— this class of function is proven live, not unit-tested).
+
+**Still not done:** SIZE (width/height) fixes, and color fixes for
+non-TEXT node types (BUTTON/RECTANGLE/INPUT fills) — those don't
+auto-name from content the way TEXT does, so they'd need the same
+build-time stable-rename treatment `photo_nodes` already gets for
+HEADER_IMAGE/AVATAR, extended to more types. A real next slice, not
+started this session.
+
 **Multi-frame self-check — ✅ DONE (2026-08-16, follow-up session).**
 `figma_web_design_flow` gets the same close-the-loop treatment as a single
 build now — the mechanical wiring turned out trivial (`design_multi_frame_web`
@@ -544,7 +578,11 @@ both `chat()` and `stream()` tool-call rounds). Files touched (Step 2):
 (tool-registry list updated). Files touched (multi-frame self-check):
 `hermes/main.py` (`_FIGMA_SELFCHECK_FLOW_PROMPT`, `_figma_selfcheck_message`
 extended to `figma_web_design_flow` with the variant prompt),
-`tests/test_main_smoke.py` (new wiring test).
+`tests/test_main_smoke.py` (new wiring test). Files touched (text
+broadening): `hermes/figma_browser.py` (new `fix_figma_text`),
+`hermes/chat_engine.py` (new `figma_web_fix_text` tool schema + dispatch),
+`hermes/main.py` (`_figma_selfcheck_message` extended to include it),
+`tests/test_web_ui.py` (tool-registry list updated).
 
 ## Phase 4 — Multi-frame output — ✅ DONE (2026-08-16)
 
@@ -647,8 +685,10 @@ height-keeps-growing cosmetic residual (own section above — content
 nests correctly, but a Grid frame with `rows` on "Auto" keeps growing
 taller than requested, which an unsized-generously outer parent's `Clip
 content` can cut off; a same-session fix attempt was tried and reverted,
-see that section), Phase 3 Step 2 broadened to other properties (color,
-text, size) if wanted, and the ROW-of-cards-of-STACKs-inside-another-
-composite depth beyond what's been live-tested. Multi-frame self-check
-for `figma_web_design_flow` and the undersized-container residual
-(Phase 2) are now both fixed — see their own sections above.
+see that section), Phase 3 Step 2 broadened further to SIZE fixes and
+color fixes on non-TEXT node types if wanted (own section above — needs
+extending the stable-rename treatment beyond HEADER_IMAGE/AVATAR/TEXT),
+and the ROW-of-cards-of-STACKs-inside-another-composite depth beyond
+what's been live-tested. Multi-frame self-check for `figma_web_design_flow`,
+the undersized-container residual (Phase 2), and Phase 3 Step 2 broadened
+to text content/color are now all fixed — see their own sections above.

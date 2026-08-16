@@ -1981,3 +1981,135 @@ async def fix_figma_photo(
             "error": f"Figma Web browser error: {e}",
             "url": file_url,
         }
+
+
+async def fix_figma_text(
+    file_url: str,
+    current_text: str,
+    new_text: str | None = None,
+    color: str | None = None,
+    out_dir: Path | None = None,
+    headless: bool = False,
+    timeout_s: int = 120,
+) -> dict[str, Any]:
+    """Phase 3 Step 2, broadened (docs/figma-uiux-roadmap.md): patch a
+    TEXT node's content and/or color on an already-built frame, in a fresh
+    browser session — same shape as `fix_figma_photo`, but for text
+    instead of photos, and WITHOUT needing a build-time rename step.
+
+    A plain TEXT node auto-names its own Layers-panel row after its
+    CURRENT CONTENT (live-confirmed: creating a text "Original Text" and
+    reopening later, its row reads literally "Original Text", no explicit
+    rename needed) — unlike HEADER_IMAGE/AVATAR (shapes, not text, so
+    `fix_figma_photo` has to assign them a stable `hermes:photo:...` name
+    at build time to find them again). That means `current_text` (the
+    text's own current content, which the model already knows from the
+    original spec or from a self-check screenshot describing what's wrong)
+    IS the find-by-name key here, with no registry/rename machinery needed
+    — the "harder groundwork" `fix_figma_photo` proved (real file URL,
+    collapsed-tree handling) is reused as-is; only the find-key and the
+    actual fix mechanism are new.
+
+    Fix mechanism, live-confirmed: with the node reselected, `Enter` arms
+    Figma's own text-edit mode (not `_add_text`'s draw-a-new-node path),
+    `Control+A` selects the ALREADY-EXISTING content (not "select all on
+    page" the way it would on a plain canvas selection), typing replaces
+    it, and `Escape` exits edit mode back to node-selected (confirmed via
+    a live screenshot: font/weight/color all preserved, only the string
+    itself changed) — the node stays selected afterward, so a `color`
+    change can chain directly onto `_set_fill_hex` without re-finding it.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
+        }
+
+    if not new_text and not color:
+        return {
+            "ok": False,
+            "error": "Isi salah satu dari new_text atau color — tidak ada perubahan diminta.",
+        }
+
+    out_dir = out_dir or paths.artifacts_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shot_filename = f"figma_fix_{uuid.uuid4().hex[:8]}.png"
+    shot_path = out_dir / shot_filename
+
+    try:
+        async with async_playwright() as p:
+            session = await _open_figma_session(p, file_url, headless)
+            if isinstance(session, dict):
+                return session
+            context, page = session
+
+            # Same collapsed-tree handling as `fix_figma_photo`: a reopened
+            # file's Layers panel starts fully collapsed, so a nested
+            # node isn't in the DOM at all until every disclosure caret
+            # along its path has been expanded.
+            row = page.get_by_text(current_text, exact=True)
+            for _ in range(5):
+                if await row.count() > 0:
+                    break
+                carets = page.locator('[data-testid="layers-panel-expand-caret"]')
+                n = await carets.count()
+                if n == 0:
+                    break
+                for i in range(n):
+                    await carets.nth(i).click(force=True)
+                    await page.wait_for_timeout(150)
+            if await row.count() == 0:
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Teks '{current_text}' tidak ditemukan di file ini — mungkin "
+                             f"sudah diubah atau dihapus.",
+                    "url": file_url,
+                }
+            await row.first.click()
+            await page.wait_for_timeout(200)
+
+            if new_text:
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(300)
+                await page.keyboard.press("Control+A")
+                await page.wait_for_timeout(150)
+                await page.keyboard.type(new_text)
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(300)
+            if color:
+                await _set_fill_hex(page, color)
+
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(150)
+            await page.keyboard.press("Shift+2")
+            await page.wait_for_timeout(500)
+            await page.screenshot(path=str(shot_path), full_page=False)
+
+            await context.close()
+
+            md_image = f"![Figma Fix Preview](file:///{shot_path.as_posix()})"
+            changes = []
+            if new_text:
+                changes.append(f"teks jadi '{new_text}'")
+            if color:
+                changes.append(f"warna jadi {color}")
+            detail = f"Node '{current_text}' berhasil diubah: {', '.join(changes)}."
+            return {
+                "ok": True,
+                "node_text": new_text or current_text,
+                "screenshot_path": str(shot_path),
+                "markdown": md_image,
+                "detail": detail,
+                "url": file_url,
+            }
+
+    except Exception as e:
+        logger.exception("Error fixing Figma text in browser")
+        return {
+            "ok": False,
+            "error": f"Figma Web browser error: {e}",
+            "url": file_url,
+        }

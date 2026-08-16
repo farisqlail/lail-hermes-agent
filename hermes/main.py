@@ -168,17 +168,19 @@ def _figma_selfcheck_message(tool_name: str, result_content: str) -> dict | None
     """A followup user message carrying the build's own screenshot, or None
     for any other tool / a build that produced no usable screenshot.
 
-    `figma_web_fix_photo` (Phase 3 Step 2) and `figma_web_design_flow`
-    (Phase 4) are included so a delta fix or a multi-frame build get the
-    same close-the-loop treatment as a single full build — otherwise the
-    model would report success on faith, the exact blind confidence Step 1
+    `figma_web_fix_photo`/`figma_web_fix_text` (Phase 3 Step 2, the latter
+    a broadened follow-up) and `figma_web_design_flow` (Phase 4) are
+    included so a delta fix or a multi-frame build get the same
+    close-the-loop treatment as a single full build — otherwise the model
+    would report success on faith, the exact blind confidence Step 1
     exists to prevent. `figma_web_design_flow` gets its own prompt variant
     (`_FIGMA_SELFCHECK_FLOW_PROMPT`) rather than reusing the single-frame
     one — its screenshot shows several frames side by side in one image,
     and a prompt that doesn't say so risks the model only really checking
     the first one.
     """
-    if tool_name not in ("figma_web_design", "figma_web_fix_photo", "figma_web_design_flow"):
+    if tool_name not in ("figma_web_design", "figma_web_fix_photo", "figma_web_design_flow",
+                         "figma_web_fix_text"):
         return None
     try:
         data = json.loads(result_content)

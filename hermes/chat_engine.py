@@ -457,6 +457,25 @@ CHAT_TOOLS = [
             "photo_query": {"type": "string", "description": "kata kunci pencarian foto Unsplash, misal 'beach sunset'"}},
             "required": ["file_url", "node_name", "photo_query"]}}},
     {"type": "function", "function": {
+        "name": "figma_web_fix_text",
+        "description": ("Ubah ISI TEKS dan/atau WARNA satu elemen teks pada frame "
+                        "Figma yang sudah pernah dibuat figma_web_design/"
+                        "figma_web_design_flow, TANPA membuat ulang seluruh frame. "
+                        "Pakai ini bila hasil self-check menunjukkan ada teks yang "
+                        "salah/typo atau warna teks yang meleset. WAJIB pakai "
+                        "`file_url` dari hasil build sebelumnya (BUKAN `url`) dan "
+                        "`current_text` persis SAMA dengan teks yang sekarang "
+                        "tampil di frame (dari spec awal atau dari deskripsi "
+                        "screenshot self-check) — bukan tebakan, harus cocok persis "
+                        "agar elemennya ketemu. Isi minimal salah satu dari "
+                        "`new_text` atau `color`."),
+        "parameters": {"type": "object", "properties": {
+            "file_url": {"type": "string", "description": "field `file_url` dari hasil figma_web_design/figma_web_design_flow sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
+            "current_text": {"type": "string", "description": "isi teks SAAT INI persis seperti yang tampil di frame, misal 'Craete account' (typo yang mau diperbaiki)"},
+            "new_text": {"type": "string", "description": "isi teks baru pengganti, misal 'Create account'. Kosongkan kalau hanya mau ganti warna."},
+            "color": {"type": "string", "description": "warna hex baru untuk teks ini, misal '#0F172A'. Kosongkan kalau hanya mau ganti isi teks."}},
+            "required": ["file_url", "current_text"]}}},
+    {"type": "function", "function": {
         "name": "figma_login",
         "description": ("Buka browser visual Chrome/Edge agar pengguna bisa login "
                         "ke akun Figma secara manual. Browser akan tetap terbuka "
@@ -768,6 +787,25 @@ class ChatEngine:
                                 await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
                             except Exception as e:
                                 print(f"Could not send Figma fix screenshot to Telegram: {e}")
+                        return json.dumps({**res, "url": url, "markdown": f"![Figma Fix Preview]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_web_fix_text":
+                    res = await figma_browser.fix_figma_text(
+                        file_url=str(args.get("file_url") or ""),
+                        current_text=str(args.get("current_text") or ""),
+                        new_text=args.get("new_text") or None,
+                        color=args.get("color") or None,
+                        out_dir=paths.artifacts_dir() / "figma",
+                    )
+                    if res.get("ok") and res.get("screenshot_path"):
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
+                            except Exception as e:
+                                print(f"Could not send Figma text fix screenshot to Telegram: {e}")
                         return json.dumps({**res, "url": url, "markdown": f"![Figma Fix Preview]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
 
