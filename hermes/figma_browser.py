@@ -314,6 +314,39 @@ async def _set_font_family(page, family: str) -> bool:
     return True
 
 
+async def _set_line_height(page, value: float) -> None:
+    """Set the selected TEXT node's line-height to a fixed px value.
+
+    Live-confirmed: unlike Fill/stroke color inputs (under a
+    `data-onboarding-key` wrapper), the Line height field has no such
+    wrapper — it's a plain `input[aria-label="Line height"]`, alongside
+    X-position/Y-position which use the same bare-aria-label pattern. Its
+    `value` starts as the literal string "Auto" (not empty/numeric) with a
+    `placeholder` showing Figma's own computed auto value (e.g. "15" for a
+    12px font) — typing over it with Ctrl+A+type+Enter switches the field
+    from Auto to a Fixed px value, confirmed by the placeholder clearing
+    and `value` becoming the number typed.
+    """
+    loc = page.locator('input[aria-label="Line height"]').first
+    await loc.click(timeout=8000)
+    await page.keyboard.press("Control+A")
+    await loc.type(str(round(value)))
+    await page.keyboard.press("Enter")
+    await page.wait_for_timeout(150)
+
+
+def _line_height_for(font_size: float) -> float:
+    """Asphalt-derived type rule (see docs/figma-uiux-roadmap.md Phase 7 /
+    Phase 8): line-height = font-size * 1.3, rounded to the nearest 4px —
+    keeps every TEXT node's line-height on the same fixed grid the rest of
+    the design system (8pt spacing, fixed type scale) already commits to,
+    instead of leaving it at Figma's own per-font "Auto" (which varies
+    slightly by typeface and isn't a value this codebase controls or can
+    reason about consistently).
+    """
+    return max(4.0, round(font_size * 1.3 / 4.0) * 4.0)
+
+
 async def _draw(page, tool_key: str, cx: float, cy: float, w: float = 40, h: float = 30) -> None:
     """Select a tool and drag a small box centered at (cx, cy).
 
@@ -687,6 +720,7 @@ async def _add_text(
             await page.wait_for_timeout(150)
     if font_family:
         await _set_font_family(page, font_family)
+    await _set_line_height(page, _line_height_for(font_size or 12))
     if color:
         await _set_fill_hex(page, color)
     if bold:

@@ -975,6 +975,47 @@ without the user picking it), a live automation around Figma's own
 "Check color contrast" UI (incidentally discovered during earlier gradient
 recon, still unused) — flagged as a candidate future phase, not started.
 
+## Phase 8 — Line-height control — ✅ DONE (2026-08-16)
+
+Follow-up from Phase 7's Asphalt research: `figma_browser.py` never set
+TEXT line-height, leaving every node on Figma's own per-font "Auto" value
+(~1.2x, not controlled by this codebase). Live recon (new Page on the
+shared test file) found the field: `input[aria-label="Line height"]`, no
+`data-onboarding-key` wrapper (same bare-aria-label pattern as X/Y-position,
+not `_set_number`'s pattern). Its `value` starts as the literal string
+`"Auto"`, `placeholder` shows Figma's own live-computed auto px (confirmed:
+12px font → placeholder "15"; 20px font → placeholder "24"); typing a
+number via Ctrl+A+type+Enter switches it to Fixed px (confirmed: typed
+"32" → `value` becomes "32", placeholder clears).
+
+New `_set_line_height(page, value)` (same click/Ctrl+A/type/Enter shape as
+`_set_number`, just a bare-aria-label locator instead of an
+onboarding-key one) and `_line_height_for(font_size)` implementing the
+Asphalt formula from Phase 7 (`fontSize * 1.3`, rounded to nearest 4px, min
+4) — wired unconditionally into `_add_text` (the single choke point for
+ALL text-bearing node types: TEXT, BUTTON label, INPUT placeholder,
+CHECKBOX label, FOOTER_LINK — one edit covers all of them). No new schema
+field added — this mirrors the existing spacing/type-scale rules, which
+are also enforced as a fixed formula/scale rather than left to the model to
+pick per element, for the same consistency reason.
+
+Live-verified end-to-end via `design_figma_frame_web` (24px bold title +
+14px body + BUTTON in one frame), reopening the built file and reading the
+Line height field back via `_select_node_by_display_name`: 24px title read
+back as 32 (24×1.3=31.2→32), 14px body read back as 20 (14×1.3=18.2→20) —
+matches the formula exactly, and the screenshot shows correctly-spaced
+lines. 807 unit tests still pass.
+
+**Noticed but out of scope, not fixed this pass:** the same live-build
+screenshot showed the body TEXT node inheriting "Bold" font style from the
+previously-drawn bold title (Figma's text tool remembers the last-used
+style for newly drawn text; `_add_text` only calls `_set_bold` when
+`bold=True`, it never explicitly resets to Regular when `bold=False`), and
+long TEXT content overflowing its frame width instead of wrapping (no
+Fixed-width-with-wrap is set on TEXT nodes today, only Hug). Both are
+pre-existing gaps unrelated to line-height — flagged for a future phase if
+the user asks, not started.
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of
@@ -1018,5 +1059,7 @@ system: Color & Text Styles) is done too — see its own section above;
 open items there are Variables, Effect styles, multi-node style apply,
 and reading back existing style names from a file. Phase 7 (Asphalt
 design-system study applied to `_FIGMA_DESIGN_SYSTEM_GUIDE`) is done too —
-see its own section above; open items there are line-height control and a
-live-contrast-checker automation, neither started.
+see its own section above. Phase 8 (line-height control) is done too — see
+its own section above; open items surfaced there (bold-carryover on
+newly-drawn text, no width-fixed text wrapping) and the live-contrast-
+checker automation are still not started.
