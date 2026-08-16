@@ -1313,6 +1313,40 @@ components), detaching an instance back to a plain node, and reading back
 which components already exist in a file (same limitation Phase 6's Style
 functions have — caller has to remember the exact name used at creation).
 
+## Phase 16 — Effect (shadow) Styles — ✅ DONE (2026-08-16)
+
+Extends Phase 6's design-system Style mechanism to a 3rd type, closing
+one of its own "Not built" items. New `_create_effect_style`/
+`_apply_effect_style`, wired into the EXISTING `create_figma_style`/
+`apply_figma_style` public functions via `style_type="effect"` — no new
+public function needed, unlike Components (Phase 15), since this is
+exactly the same shape of primitive Phase 6 already built for Fill/
+Typography.
+
+Live recon confirmed the Effects section popover (`button[aria-label=
+"Effects, Apply styles"]`) is STRUCTURALLY IDENTICAL to `_create_text_
+style`'s mechanism — same "Create style" icon button, same `placeholder=
+"New effect style"` name field, same last-match "Create style" submit
+button pattern. The only real precondition, unlike Fill (every node
+already has SOME fill state) or Typography (every TEXT node has SOME
+font): the source node must already have an actual effect applied
+(`shadow=True` at build time, or `_add_shadow` directly) — there's
+nothing to save a style FROM otherwise.
+
+`_STYLE_TYPES`/`_STYLE_CREATE_FNS`/`_STYLE_APPLY_FNS` replaced the
+2-branch ternary dispatch (`X if style_type=="color" else Y`) with a dict
+lookup, cleaner for 3+ types than nesting more ternaries would have been.
+
+Live-verified: a shadowed RECTANGLE → `create_figma_style(..., "effect",
+"Elevation/Card")` → a SEPARATE flat RECTANGLE →
+`apply_figma_style(..., "effect", "Elevation/Card")` — the reopened
+file's screenshot shows BOTH rectangles with a visible drop shadow (the
+2nd one originally flat), and the page-level Styles panel lists "Card
+Shadow" under a real "Effect styles" section, not just a copied property.
+Applying a nonexistent effect style name fails cleanly. 807 unit tests
+pass (schema-only change — `style_type` enum widened, no new tool name,
+so no registry-list test update needed).
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of

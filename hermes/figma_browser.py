@@ -2699,7 +2699,83 @@ async def _apply_text_style(page, style_name: str) -> bool:
     return True
 
 
-_STYLE_TYPES = ("color", "text")
+async def _create_effect_style(page, name: str) -> bool:
+    """Save the currently-selected node's Effects (shadow, etc — whatever
+    `_add_shadow` already applied) as a reusable Figma Effect Style.
+
+    Mechanism, live-confirmed: SAME shape as `_create_text_style` —
+    `button[aria-label="Effects, Apply styles"]` opens an "Effect styles"
+    popover with its own `button[aria-label="Create style"]` (a "+" icon)
+    opening a "Create new effect style" form: a `placeholder="New effect
+    style"` name field and a submit button also named "Create style" (the
+    LAST match, same two-button-same-name pattern as color/text). Requires
+    the node to already HAVE at least one effect (e.g. `shadow=True` at
+    build time, or `_add_shadow` called directly) — there's nothing to
+    save a style FROM otherwise, same as Fill requiring a Fill to exist.
+    """
+    apply_btn = page.locator('button[aria-label="Effects, Apply styles"]').first
+    if await apply_btn.count() == 0:
+        return False
+    await apply_btn.click()
+    await page.wait_for_timeout(400)
+    create_icon = page.locator('button[aria-label="Create style"]').first
+    if await create_icon.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await create_icon.click()
+    await page.wait_for_timeout(400)
+    name_field = page.get_by_placeholder("New effect style")
+    if await name_field.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await name_field.click()
+    await name_field.type(name)
+    await page.wait_for_timeout(200)
+    confirm_btn = page.get_by_role("button", name="Create style", exact=True)
+    await confirm_btn.last.click()
+    await page.wait_for_timeout(400)
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(150)
+    return True
+
+
+async def _apply_effect_style(page, style_name: str) -> bool:
+    """Apply an EXISTING Effect Style (by name) to the currently-selected
+    node, replacing whatever effects (shadow, etc) it had.
+
+    Same search-and-click mechanism as `_apply_color_style`/
+    `_apply_text_style` (leaf-name matching for a hierarchical style
+    name), triggered from `button[aria-label="Effects, Apply styles"]`.
+    """
+    apply_btn = page.locator('button[aria-label="Effects, Apply styles"]').first
+    if await apply_btn.count() == 0:
+        return False
+    await apply_btn.click()
+    await page.wait_for_timeout(400)
+    search_box = page.get_by_placeholder("Search", exact=True)
+    if await search_box.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await search_box.click()
+    await search_box.type(style_name)
+    await page.wait_for_timeout(500)
+    leaf = style_name.rsplit("/", 1)[-1]
+    option = page.get_by_text(leaf, exact=True)
+    if await option.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return False
+    await option.first.click()
+    await page.wait_for_timeout(300)
+    return True
+
+
+_STYLE_TYPES = ("color", "text", "effect")
+_STYLE_CREATE_FNS = {"color": _create_color_style, "text": _create_text_style, "effect": _create_effect_style}
+_STYLE_APPLY_FNS = {"color": _apply_color_style, "text": _apply_text_style, "effect": _apply_effect_style}
 
 
 async def create_figma_style(
@@ -2759,8 +2835,7 @@ async def create_figma_style(
                     "url": file_url,
                 }
 
-            created = (await _create_color_style(page, style_name) if style_type == "color"
-                       else await _create_text_style(page, style_name))
+            created = await _STYLE_CREATE_FNS[style_type](page, style_name)
             if not created:
                 await context.close()
                 return {
@@ -2853,8 +2928,7 @@ async def apply_figma_style(
                     "url": file_url,
                 }
 
-            applied = (await _apply_color_style(page, style_name) if style_type == "color"
-                       else await _apply_text_style(page, style_name))
+            applied = await _STYLE_APPLY_FNS[style_type](page, style_name)
             if not applied:
                 await context.close()
                 return {

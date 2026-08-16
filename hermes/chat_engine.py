@@ -514,36 +514,40 @@ CHAT_TOOLS = [
             "required": ["file_url", "node_name", "property", "value"]}}},
     {"type": "function", "function": {
         "name": "figma_web_create_style",
-        "description": ("Simpan warna atau tipografi elemen yang SUDAH ADA di frame "
-                        "Figma sebagai STYLE reusable (design system) — bagian dari "
-                        "'Color styles'/'Text styles' Figma, bukan sekadar hex/font "
-                        "hardcode. Pakai ini kalau pengguna minta bikin palette/design "
-                        "system, atau minta beberapa elemen pakai warna/font yang SAMA "
-                        "dan konsisten (ubah satu style nanti otomatis ikut semua "
-                        "elemen yang pakai). WAJIB `file_url` dari hasil build "
-                        "sebelumnya (BUKAN `url`) dan `node_name` — untuk style_type "
-                        "'color' boleh dari `fixable_nodes`/`photo_nodes` ATAU isi teks "
-                        "persis sebuah TEXT; untuk style_type 'text' WAJIB isi teks "
-                        "persis sebuah elemen TEXT (bukan BUTTON/RECTANGLE)."),
+        "description": ("Simpan warna, tipografi, atau efek (shadow) elemen yang "
+                        "SUDAH ADA di frame Figma sebagai STYLE reusable (design "
+                        "system) — bagian dari 'Color styles'/'Text styles'/'Effect "
+                        "styles' Figma, bukan sekadar hex/font/shadow hardcode. Pakai "
+                        "ini kalau pengguna minta bikin palette/design system, atau "
+                        "minta beberapa elemen pakai warna/font/shadow yang SAMA dan "
+                        "konsisten (ubah satu style nanti otomatis ikut semua elemen "
+                        "yang pakai). WAJIB `file_url` dari hasil build sebelumnya "
+                        "(BUKAN `url`) dan `node_name` — untuk style_type 'color' "
+                        "boleh dari `fixable_nodes`/`photo_nodes` ATAU isi teks persis "
+                        "sebuah TEXT; untuk style_type 'text' WAJIB isi teks persis "
+                        "sebuah elemen TEXT (bukan BUTTON/RECTANGLE); untuk style_type "
+                        "'effect' node-nya WAJIB sudah punya shadow (`shadow`=true "
+                        "saat dibuat) — tidak ada apa-apa untuk disimpan kalau belum "
+                        "ada efek sama sekali."),
         "parameters": {"type": "object", "properties": {
             "file_url": {"type": "string", "description": "field `file_url` dari hasil build sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
-            "node_name": {"type": "string", "description": "node sumber warna/font — `node_name` dari fixable_nodes/photo_nodes, atau isi teks persis sebuah TEXT"},
-            "style_type": {"type": "string", "enum": ["color", "text"], "description": "'color' = simpan Fill node sebagai Color Style. 'text' = simpan font/ukuran/berat node TEXT sebagai Text Style."},
-            "style_name": {"type": "string", "description": "nama style baru, boleh berjenjang pakai '/', mis. 'Brand/Primary' atau 'Display/H1' — dipakai lagi nanti di figma_web_apply_style"}},
+            "node_name": {"type": "string", "description": "node sumber warna/font/shadow — `node_name` dari fixable_nodes/photo_nodes, atau isi teks persis sebuah TEXT"},
+            "style_type": {"type": "string", "enum": ["color", "text", "effect"], "description": "'color' = simpan Fill node sebagai Color Style. 'text' = simpan font/ukuran/berat node TEXT sebagai Text Style. 'effect' = simpan shadow node sebagai Effect Style (node harus sudah punya shadow)."},
+            "style_name": {"type": "string", "description": "nama style baru, boleh berjenjang pakai '/', mis. 'Brand/Primary' atau 'Elevation/Card' — dipakai lagi nanti di figma_web_apply_style"}},
             "required": ["file_url", "node_name", "style_type", "style_name"]}}},
     {"type": "function", "function": {
         "name": "figma_web_apply_style",
-        "description": ("Terapkan STYLE (warna/tipografi) yang SUDAH DIBUAT lewat "
-                        "figma_web_create_style ke elemen lain, agar konsisten satu "
-                        "sama lain sebagai bagian design system — bukan menyalin nilai "
-                        "hex/font secara manual. WAJIB `file_url` dari hasil build "
-                        "sebelumnya (BUKAN `url`), `node_name` target (sama aturan "
-                        "dengan figma_web_create_style), dan `style_name` PERSIS sama "
-                        "seperti saat dibuat."),
+        "description": ("Terapkan STYLE (warna/tipografi/efek) yang SUDAH DIBUAT "
+                        "lewat figma_web_create_style ke elemen lain, agar konsisten "
+                        "satu sama lain sebagai bagian design system — bukan "
+                        "menyalin nilai hex/font/shadow secara manual. WAJIB "
+                        "`file_url` dari hasil build sebelumnya (BUKAN `url`), "
+                        "`node_name` target (sama aturan dengan figma_web_create_"
+                        "style), dan `style_name` PERSIS sama seperti saat dibuat."),
         "parameters": {"type": "object", "properties": {
             "file_url": {"type": "string", "description": "field `file_url` dari hasil build sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
             "node_name": {"type": "string", "description": "node target — `node_name` dari fixable_nodes/photo_nodes, atau isi teks persis sebuah TEXT"},
-            "style_type": {"type": "string", "enum": ["color", "text"], "description": "'color' = terapkan ke Fill node. 'text' = terapkan ke tipografi node TEXT (harus node TEXT)."},
+            "style_type": {"type": "string", "enum": ["color", "text", "effect"], "description": "'color' = terapkan ke Fill node. 'text' = terapkan ke tipografi node TEXT (harus node TEXT). 'effect' = terapkan shadow ke node."},
             "style_name": {"type": "string", "description": "nama style yang sudah dibuat sebelumnya lewat figma_web_create_style, mis. 'Brand/Primary'"}},
             "required": ["file_url", "node_name", "style_type", "style_name"]}}},
     {"type": "function", "function": {
