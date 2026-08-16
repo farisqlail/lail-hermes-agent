@@ -561,7 +561,9 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
     expected += ["figma_web_design", "figma_web_design_flow", "figma_web_fix_photo",
                  "figma_web_fix_text", "figma_web_fix_property",
                  "figma_web_create_style", "figma_web_apply_style",
-                 "figma_web_check_contrast", "figma_web_check_contrast_batch", "figma_login"]
+                 "figma_web_check_contrast", "figma_web_check_contrast_batch",
+                 "figma_web_create_component", "figma_web_insert_component_instance",
+                 "figma_login"]
     assert out["tool_names"] == expected
     assert out["projects"] == [{"name": "myprofit", "path": str(proj_dir), "exists": True}]
     assert any(t["task_id"] == "seed1" for t in out["recent"])

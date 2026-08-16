@@ -3215,3 +3215,271 @@ async def check_figma_contrast_batch(
         "detail": detail,
         "url": file_url,
     }
+
+
+async def _create_component(page, name: str) -> bool:
+    """Convert the CURRENTLY selected node into a reusable Main Component
+    (Figma's own "Create component" mechanism, not a style — a component
+    keeps the node's full structure, not just one color/typography value)
+    and rename it.
+
+    Live-confirmed mechanism: `Control+Alt+K` (Figma's own keyboard
+    shortcut) converts the selected node in place — same node, same
+    children, just gains a purple diamond icon and a new "Properties"
+    section in its own panel (checked here as the success signal, since
+    the shortcut gives no other feedback if it silently no-ops on an
+    invalid selection). A first-time NUX tooltip ("Drag and drop
+    components from your assets panel to reuse them in this file") can
+    appear with a "Got it" dismiss button — the conversion itself already
+    succeeded before this shows, but it's dismissed anyway so it doesn't
+    intercept a LATER click in the same session (the same class of hazard
+    every other popover-closing call in this file guards against).
+    """
+    await page.keyboard.press("Control+Alt+K")
+    await page.wait_for_timeout(600)
+    got_it = page.get_by_role("button", name="Got it")
+    if await got_it.count():
+        await got_it.click()
+        await page.wait_for_timeout(200)
+    if await page.get_by_text("Properties", exact=True).count() == 0:
+        return False
+    await _rename_layer(page, name)
+    await page.wait_for_timeout(300)
+    return True
+
+
+async def _insert_component_instance(page, component_name: str, target_x: float, target_y: float) -> bool:
+    """Drag a named component from the Assets panel onto the canvas at
+    (`target_x`, `target_y`), creating a linked INSTANCE there — editing
+    the ORIGINAL component later propagates to every instance made this
+    way, the actual point of Components over copy-pasting a node.
+
+    Live-confirmed mechanism, the real trap found only by testing (not
+    assumed from the first thing that looked plausible): asset tiles use
+    CUSTOM pointer-based dragging, not native HTML5 `draggable=""`. A
+    naive mousedown/up on the tile's own TEXT LABEL was read as a plain
+    selection CLICK, not a drag — confirmed live: the first attempt just
+    highlighted the tile in the Assets panel, no instance ever appeared on
+    canvas. Two things were needed together: (1) start the drag from the
+    tile's THUMBNAIL area, not its label — the label is a short, separate
+    element sitting BELOW the actual draggable square, found by walking up
+    2 ancestor `<div>`s from the label text and targeting ~35% down that
+    container's height; (2) a multi-step `mouse.move` sequence (a small
+    first nudge, then a midpoint, then the real target) rather than one
+    big jump straight to the destination — Figma's own drag-start
+    detection needs an initial small movement to commit to "this is a
+    drag" before a bigger jump is honored as continuing that same drag,
+    not starting a new gesture.
+    """
+    assets_btn = page.locator('[data-onboarding-key="ASSETS_PANEL_ONBOARDING_KEY"]')
+    if await assets_btn.count() == 0:
+        return False
+    await assets_btn.first.click()
+    await page.wait_for_timeout(500)
+    search = page.locator('input[placeholder="Search all libraries"]')
+    if await search.count() == 0:
+        return False
+    await search.click()
+    await search.type(component_name)
+    await page.wait_for_timeout(2500)
+
+    label = page.get_by_text(component_name, exact=True).first
+    if await label.count() == 0:
+        return False
+    tile = label.locator("xpath=ancestor::div[2]")
+    box = await tile.bounding_box()
+    if not box:
+        return False
+    sx, sy = box["x"] + box["width"] / 2, box["y"] + box["height"] * 0.35
+
+    await page.mouse.move(sx, sy)
+    await page.mouse.down()
+    await page.wait_for_timeout(100)
+    await page.mouse.move(sx + 15, sy + 10, steps=5)
+    await page.wait_for_timeout(150)
+    await page.mouse.move((sx + target_x) / 2, (sy + target_y) / 2, steps=10)
+    await page.wait_for_timeout(100)
+    await page.mouse.move(target_x, target_y, steps=15)
+    await page.wait_for_timeout(300)
+    await page.mouse.up()
+    await page.wait_for_timeout(600)
+    return True
+
+
+async def create_figma_component(
+    file_url: str,
+    node_name: str,
+    component_name: str,
+    out_dir: Path | None = None,
+    headless: bool = False,
+    timeout_s: int = 120,
+) -> dict[str, Any]:
+    """Turn an existing node into a reusable Figma Component — a bigger
+    consistency primitive than `create_figma_style` (Phase 6): a Style
+    only carries one Fill/typography value, a Component carries the
+    node's ENTIRE structure (nesting, all its own fills/text/sizing), and
+    every INSTANCE made from it (`insert_figma_component_instance`)
+    updates together when the ORIGINAL is edited later.
+
+    `node_name` uses the same find-by-name rules as every other
+    `fix_figma_*`/style function (a `fixable_nodes`/`photo_nodes` registry
+    name, or a TEXT node's own current content).
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
+        }
+
+    out_dir = out_dir or paths.artifacts_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shot_path = out_dir / f"figma_component_{uuid.uuid4().hex[:8]}.png"
+
+    try:
+        async with async_playwright() as p:
+            session = await _open_figma_session(p, file_url, headless)
+            if isinstance(session, dict):
+                return session
+            context, page = session
+
+            if not await _select_node_by_display_name(page, node_name):
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Node '{node_name}' tidak ditemukan di file ini — mungkin sudah "
+                             f"diganti nama atau dihapus.",
+                    "url": file_url,
+                }
+
+            if not await _create_component(page, component_name):
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Gagal membuat component dari node '{node_name}' — kemungkinan "
+                             f"node ini sudah jadi component/instance, atau UI Figma berubah.",
+                    "url": file_url,
+                }
+
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(150)
+            await page.keyboard.press("Shift+2")
+            await page.wait_for_timeout(500)
+            await page.screenshot(path=str(shot_path), full_page=False)
+
+            await context.close()
+
+            md_image = f"![Figma Component Preview](file:///{shot_path.as_posix()})"
+            detail = f"Component '{component_name}' berhasil dibuat dari node '{node_name}'."
+            return {
+                "ok": True,
+                "component_name": component_name,
+                "node_name": node_name,
+                "screenshot_path": str(shot_path),
+                "markdown": md_image,
+                "detail": detail,
+                "url": file_url,
+            }
+
+    except Exception as e:
+        logger.exception("Error creating Figma component in browser")
+        return {
+            "ok": False,
+            "error": f"Figma Web browser error: {e}",
+            "url": file_url,
+        }
+
+
+async def insert_figma_component_instance(
+    file_url: str,
+    component_name: str,
+    target_frame_name: str,
+    out_dir: Path | None = None,
+    headless: bool = False,
+    timeout_s: int = 120,
+) -> dict[str, Any]:
+    """Place a linked INSTANCE of an existing Component (made via
+    `create_figma_component`) inside a target frame/composite already in
+    the file — the reuse half of the Components workflow.
+
+    `target_frame_name` uses the same find-by-name rules as `node_name`
+    elsewhere (a `fixable_nodes` registry name, the root frame's own
+    layer name, etc) — it's zoomed to first (`_zoom_to_selection`) to get
+    a real click point inside its rendered bounds, the same mechanism
+    `_place_items` uses to click a new element into an existing Auto
+    Layout container. Bias is pushed toward the END of the frame (0.5,
+    0.85) so a drop lands appended after existing content instead of
+    mid-stack, matching how new elements are placed during a normal build
+    — not verified against every layout direction (a ROW target might
+    want a horizontal-toward-the-end bias instead; only a VERTICAL/STACK
+    target's append behavior was live-confirmed).
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
+        }
+
+    out_dir = out_dir or paths.artifacts_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shot_path = out_dir / f"figma_instance_{uuid.uuid4().hex[:8]}.png"
+
+    try:
+        async with async_playwright() as p:
+            session = await _open_figma_session(p, file_url, headless)
+            if isinstance(session, dict):
+                return session
+            context, page = session
+
+            if not await _select_node_by_display_name(page, target_frame_name):
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Frame target '{target_frame_name}' tidak ditemukan di file ini.",
+                    "url": file_url,
+                }
+            cx, cy = await _zoom_to_selection(page, 0.5, 0.85)
+
+            if not await _insert_component_instance(page, component_name, cx, cy):
+                await context.close()
+                return {
+                    "ok": False,
+                    "error": f"Gagal menempatkan instance component '{component_name}' — "
+                             f"kemungkinan nama component salah atau belum pernah dibuat lewat "
+                             f"figma_web_create_component.",
+                    "url": file_url,
+                }
+
+            await page.keyboard.press("Shift+2")
+            await page.wait_for_timeout(500)
+            await page.screenshot(path=str(shot_path), full_page=False)
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(150)
+
+            await context.close()
+
+            md_image = f"![Figma Instance Preview](file:///{shot_path.as_posix()})"
+            detail = (
+                f"Instance component '{component_name}' berhasil ditempatkan di dalam "
+                f"'{target_frame_name}'."
+            )
+            return {
+                "ok": True,
+                "component_name": component_name,
+                "target_frame_name": target_frame_name,
+                "screenshot_path": str(shot_path),
+                "markdown": md_image,
+                "detail": detail,
+                "url": file_url,
+            }
+
+    except Exception as e:
+        logger.exception("Error inserting Figma component instance in browser")
+        return {
+            "ok": False,
+            "error": f"Figma Web browser error: {e}",
+            "url": file_url,
+        }

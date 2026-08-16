@@ -1253,6 +1253,66 @@ correctly; a deliberately nonexistent text node now fails in under a
 couple seconds with the correct "tidak ditemukan" error instead of hanging
 30s. 807 unit tests pass.
 
+## Phase 15 — Figma Components & Instances — ✅ DONE (2026-08-16)
+
+A bigger consistency primitive than Phase 6's Color/Text Styles: a Style
+only carries one Fill/typography value, a Component carries a node's
+ENTIRE structure (nesting, every fill/text/size inside it), and every
+INSTANCE made from it updates together when the original is edited later
+— the real building block for "this button/card gets reused across many
+screens" requests, which Styles alone can't express.
+
+**`create_figma_component`** (new `_create_component` helper): selects
+the source node, presses `Control+Alt+K` (Figma's own "Create component"
+shortcut — converts the node in place, gains a purple diamond icon and a
+new "Properties" section, checked here as the success signal since the
+shortcut gives no other feedback on failure), dismisses a first-time NUX
+tooltip ("Drag and drop components from your assets panel...") if it
+appears, then renames via the existing `_rename_layer`.
+
+**`insert_figma_component_instance`** (new `_insert_component_instance`
+helper) — the harder half, found only through live trial and error, not
+assumed from the first plausible approach:
+- Asset tiles in the Assets panel use CUSTOM pointer-based dragging, NOT
+  native HTML5 `draggable=""`. A naive mousedown/up on the tile's own text
+  LABEL was read as a plain selection click, not a drag — confirmed live:
+  the first attempt just highlighted the tile in the panel, no instance
+  ever appeared on canvas.
+- Fix required TWO things together: (1) start the drag from the tile's
+  THUMBNAIL area, not its label — the label is a short, separate element
+  sitting BELOW the actual draggable square (found by walking up 2
+  ancestor `<div>`s from the label text, targeting ~35% down that
+  container's height); (2) a multi-step `mouse.move` sequence (small first
+  nudge → midpoint → real target) instead of one big jump — Figma's drag-
+  start detection needs an initial small movement to commit to "this is a
+  drag" before a bigger jump is honored as continuing it.
+- Drop target is computed via `_zoom_to_selection(page, 0.5, 0.85)` on the
+  target frame — the SAME mechanism `_place_items` uses to click a new
+  element into an existing Auto Layout container, biased toward the end so
+  a drop appends rather than landing mid-stack (only live-confirmed for a
+  VERTICAL/STACK target; a ROW target's ideal bias direction is untested).
+
+Live-verified end-to-end: a BUTTON converted to component "API Primary
+Button", then an instance inserted into "Frame 1" — reopened file's right
+panel confirmed a REAL instance (header shows the component name + "From
+this file" badge, distinct from a plain copy), landed with `X` matching
+the frame's own padding and `W` matching its content width — proof it was
+actually auto-layout-appended as a real child, not just floated nearby.
+Also verified: inserting a nonexistent component name fails cleanly with
+a specific error instead of a silent no-op. New `figma_web_create_
+component`/`figma_web_insert_component_instance` tools, added to `main.py`'s
+`_figma_selfcheck_message` tuple (same self-check treatment as the style
+tools — both visibly change the design, worth a screenshot compare). 807
+unit tests pass.
+
+**Not built:** component VARIANTS (a component with multiple named
+states, e.g. Default/Hover/Disabled, switchable per-instance — this cut
+only supports one plain component per `create_figma_component` call),
+component properties (boolean/text/instance-swap props Figma supports on
+components), detaching an instance back to a plain node, and reading back
+which components already exist in a file (same limitation Phase 6's Style
+functions have — caller has to remember the exact name used at creation).
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of

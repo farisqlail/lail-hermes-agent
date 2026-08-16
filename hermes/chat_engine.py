@@ -579,6 +579,40 @@ CHAT_TOOLS = [
             "standard": {"type": "string", "enum": ["AA", "AAA"], "description": "standar WCAG yang dipakai untuk SEMUA node dalam daftar, default 'AA'. 'AAA' HANYA kalau pengguna eksplisit minta level tertinggi."}},
             "required": ["file_url", "node_names"]}}},
     {"type": "function", "function": {
+        "name": "figma_web_create_component",
+        "description": ("Ubah elemen yang SUDAH ADA di frame Figma jadi COMPONENT "
+                        "reusable — beda dengan figma_web_create_style: Style cuma "
+                        "simpan SATU nilai warna/tipografi, Component simpan SELURUH "
+                        "struktur elemen (nesting, semua fill/teks/ukuran di "
+                        "dalamnya). Pakai ini kalau pengguna minta bikin komponen, "
+                        "atau elemen (mis. tombol/card) yang bakal dipakai ULANG di "
+                        "banyak tempat dan harus update bareng-bareng kalau desain "
+                        "aslinya diubah nanti. WAJIB `file_url` dari hasil build "
+                        "sebelumnya (BUKAN `url`) dan `node_name` (aturan sama "
+                        "dengan figma_web_create_style)."),
+        "parameters": {"type": "object", "properties": {
+            "file_url": {"type": "string", "description": "field `file_url` dari hasil build sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
+            "node_name": {"type": "string", "description": "node sumber yang mau dijadikan component — `node_name` dari fixable_nodes/photo_nodes, atau isi teks persis sebuah TEXT"},
+            "component_name": {"type": "string", "description": "nama component baru, mis. 'Primary Button' — dipakai lagi nanti di figma_web_insert_component_instance"}},
+            "required": ["file_url", "node_name", "component_name"]}}},
+    {"type": "function", "function": {
+        "name": "figma_web_insert_component_instance",
+        "description": ("Taruh SALINAN TERHUBUNG (instance) dari component yang "
+                        "SUDAH DIBUAT lewat figma_web_create_component ke dalam "
+                        "frame/composite lain — bukan copy-paste manual, instance "
+                        "ini otomatis ikut berubah kalau component ASLINYA diedit "
+                        "nanti. Pakai ini untuk reuse elemen (mis. tombol yang sama "
+                        "muncul di banyak layar). WAJIB `file_url` dari hasil build "
+                        "sebelumnya (BUKAN `url`), `component_name` PERSIS sama "
+                        "seperti saat dibuat, dan `target_frame_name` (frame/"
+                        "composite tujuan tempat instance ditaruh — nama layer frame "
+                        "itu, atau `node_name` dari fixable_nodes kalau composite)."),
+        "parameters": {"type": "object", "properties": {
+            "file_url": {"type": "string", "description": "field `file_url` dari hasil build sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
+            "component_name": {"type": "string", "description": "nama component yang sudah dibuat sebelumnya lewat figma_web_create_component"},
+            "target_frame_name": {"type": "string", "description": "nama frame/composite tujuan tempat instance akan ditaruh sebagai child baru"}},
+            "required": ["file_url", "component_name", "target_frame_name"]}}},
+    {"type": "function", "function": {
         "name": "figma_login",
         "description": ("Buka browser visual Chrome/Edge agar pengguna bisa login "
                         "ke akun Figma secara manual. Browser akan tetap terbuka "
@@ -1004,6 +1038,42 @@ class ChatEngine:
                             except Exception as e:
                                 print(f"Could not send Figma contrast batch screenshot to Telegram: {e}")
                         return json.dumps({**res, "url": url, "markdown": f"![Figma Contrast Batch Check]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_web_create_component":
+                    res = await figma_browser.create_figma_component(
+                        file_url=str(args.get("file_url") or ""),
+                        node_name=str(args.get("node_name") or ""),
+                        component_name=str(args.get("component_name") or ""),
+                        out_dir=paths.artifacts_dir() / "figma",
+                    )
+                    if res.get("ok") and res.get("screenshot_path"):
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
+                            except Exception as e:
+                                print(f"Could not send Figma component screenshot to Telegram: {e}")
+                        return json.dumps({**res, "url": url, "markdown": f"![Figma Component Preview]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_web_insert_component_instance":
+                    res = await figma_browser.insert_figma_component_instance(
+                        file_url=str(args.get("file_url") or ""),
+                        component_name=str(args.get("component_name") or ""),
+                        target_frame_name=str(args.get("target_frame_name") or ""),
+                        out_dir=paths.artifacts_dir() / "figma",
+                    )
+                    if res.get("ok") and res.get("screenshot_path"):
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
+                            except Exception as e:
+                                print(f"Could not send Figma instance screenshot to Telegram: {e}")
+                        return json.dumps({**res, "url": url, "markdown": f"![Figma Instance Preview]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
 
                 if name == "figma_login":
