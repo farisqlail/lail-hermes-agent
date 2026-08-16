@@ -1347,6 +1347,42 @@ Applying a nonexistent effect style name fails cleanly. 807 unit tests
 pass (schema-only change — `style_type` enum widened, no new tool name,
 so no registry-list test update needed).
 
+## Phase 17 — Multi-node style apply — ✅ DONE (2026-08-16)
+
+Last item of this batch, closing Phase 6's own "Not built" note. New
+`apply_figma_style_batch(file_url, node_names, style_type, style_name,
+...)` — same session-reuse shape as `check_figma_contrast_batch` (Phase
+11), the precedent this directly follows: one shared browser session
+loops `_select_node_by_display_name` + `_STYLE_APPLY_FNS[style_type]` per
+node, keeps going past a single node's failure instead of aborting the
+whole batch, final screenshot uses `Shift+1` (fit whole page) instead of
+`Shift+2` (zoom to last selection) since a multi-node rollout's affected
+elements can be scattered across the frame, not clustered where the last
+one happened to be. New `figma_web_apply_style_batch` tool, added to
+`main.py`'s self-check tuple (visibly changes the design, same as the
+single-node version).
+
+Live-verified against 3 BUTTONs + 1 deliberately nonexistent name: 2
+applied successfully, 1 failed with a clean per-node error (missing
+node), and — a genuinely useful thing to find by testing rather than
+assuming success — **the 4th case surfaced a real, honest limitation**:
+applying a style to a node that's already governed by that EXACT style
+fails, because once a Fill is style-governed Figma's own Fill row UI
+changes shape entirely (a single style-name "chip" replaces the swatch +
+hex input + separate "Apply styles and variables" button this mechanism
+depends on) — confirmed live via a focused repro (a node styled at
+creation time, immediately re-selected: `button[aria-label="Fill, Apply
+styles and variables"]` count is 0, matching a screenshot showing the
+Fill row as a plain style-name pill instead). Not fixed — the real use
+case for a batch apply is rolling a style out to nodes that DON'T have it
+yet (which works correctly), and "re-apply the same style to its own
+already-styled source node" is a low-value edge case; documented here
+rather than adding more mechanism for it. 807 unit tests pass.
+
+**With this, all 4 items requested in this batch (backport reliability
+fix, Components/Instances, Effect Styles, multi-node style apply) are
+done — Phases 14 through 17.**
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of

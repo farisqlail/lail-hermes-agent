@@ -2968,6 +2968,113 @@ async def apply_figma_style(
         }
 
 
+async def apply_figma_style_batch(
+    file_url: str,
+    node_names: list[str],
+    style_type: str,
+    style_name: str,
+    out_dir: Path | None = None,
+    headless: bool = False,
+    timeout_s: int = 180,
+) -> dict[str, Any]:
+    """Apply ONE existing style to MULTIPLE nodes in ONE shared browser
+    session — `apply_figma_style` opens/closes a fresh session per call,
+    and reopening a file isn't free (`_select_node_by_display_name`'s own
+    canvas-visible wait, see Phase 6/14); worth avoiding when rolling a
+    style out across a whole screen's worth of elements at once instead of
+    one at a time. Same session-reuse shape as `check_figma_contrast_batch`
+    (Phase 11) — the precedent this follows, not a new pattern invented
+    fresh.
+
+    Keeps going past a single node's failure (not found / apply itself
+    failed) — one bad name in the list shouldn't block applying to the
+    rest; that node's own `results` entry just carries its own `ok: False`
+    + `error` instead of aborting the whole batch.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
+        }
+
+    if not node_names:
+        return {"ok": False, "error": "node_names kosong — sebutkan minimal satu node."}
+    if style_type not in _STYLE_TYPES:
+        return {
+            "ok": False,
+            "error": f"style_type harus salah satu dari {_STYLE_TYPES}, dapat '{style_type}'.",
+        }
+
+    out_dir = out_dir or paths.artifacts_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shot_path = out_dir / f"figma_style_batch_{uuid.uuid4().hex[:8]}.png"
+
+    results: list[dict[str, Any]] = []
+    try:
+        async with async_playwright() as p:
+            session = await _open_figma_session(p, file_url, headless)
+            if isinstance(session, dict):
+                return session
+            context, page = session
+
+            for node_name in node_names:
+                if not await _select_node_by_display_name(page, node_name):
+                    results.append({
+                        "node_name": node_name, "ok": False,
+                        "error": f"Node '{node_name}' tidak ditemukan di file ini.",
+                    })
+                    continue
+                applied = await _STYLE_APPLY_FNS[style_type](page, style_name)
+                if not applied:
+                    results.append({
+                        "node_name": node_name, "ok": False,
+                        "error": f"Gagal menerapkan style '{style_name}' ke node '{node_name}'.",
+                    })
+                    continue
+                results.append({"node_name": node_name, "ok": True})
+
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(200)
+            await page.keyboard.press("Shift+1")
+            await page.wait_for_timeout(500)
+            await page.screenshot(path=str(shot_path), full_page=False)
+            await context.close()
+
+    except Exception as e:
+        logger.exception("Error batch-applying Figma style in browser")
+        return {
+            "ok": False,
+            "error": f"Figma Web browser error: {e}",
+            "url": file_url,
+        }
+
+    applied_ok = [r for r in results if r.get("ok")]
+    failed = [r for r in results if not r.get("ok")]
+    lines = [
+        f"- {r['node_name']}: OK" if r.get("ok") else f"- {r['node_name']}: gagal — {r.get('error')}"
+        for r in results
+    ]
+    detail = (
+        f"Style '{style_name}' ({style_type}) diterapkan ke {len(applied_ok)}/{len(node_names)} "
+        f"node, {len(failed)} gagal.\n" + "\n".join(lines)
+    )
+    md_image = f"![Figma Style Batch Apply](file:///{shot_path.as_posix()})"
+    return {
+        "ok": True,
+        "results": results,
+        "applied_count": len(applied_ok),
+        "failed_count": len(failed),
+        "style_name": style_name,
+        "style_type": style_type,
+        "screenshot_path": str(shot_path),
+        "markdown": md_image,
+        "detail": detail,
+        "url": file_url,
+    }
+
+
 _CONTRAST_STANDARDS = ("AA", "AAA")
 _CONTRAST_THRESHOLD_HINT = {
     "AA": "4.5:1 untuk teks biasa, 3:1 untuk teks besar",

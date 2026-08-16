@@ -551,6 +551,23 @@ CHAT_TOOLS = [
             "style_name": {"type": "string", "description": "nama style yang sudah dibuat sebelumnya lewat figma_web_create_style, mis. 'Brand/Primary'"}},
             "required": ["file_url", "node_name", "style_type", "style_name"]}}},
     {"type": "function", "function": {
+        "name": "figma_web_apply_style_batch",
+        "description": ("Sama seperti figma_web_apply_style, tapi terapkan SATU "
+                        "style ke BEBERAPA elemen sekaligus dalam SATU panggilan "
+                        "(satu sesi browser, bukan buka-tutup file berkali-kali) — "
+                        "pakai ini kalau pengguna minta rollout satu warna/font/"
+                        "shadow ke BANYAK elemen sekaligus (mis. \"jadikan semua "
+                        "tombol pakai warna brand ini\"), bukan satu elemen tunggal. "
+                        "WAJIB `file_url` dari hasil build sebelumnya (BUKAN `url`) "
+                        "dan `node_names` (daftar, aturan penamaan sama dengan "
+                        "figma_web_apply_style)."),
+        "parameters": {"type": "object", "properties": {
+            "file_url": {"type": "string", "description": "field `file_url` dari hasil build sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
+            "node_names": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "daftar node target, masing-masing dengan aturan penamaan sama seperti figma_web_apply_style"},
+            "style_type": {"type": "string", "enum": ["color", "text", "effect"], "description": "'color' = terapkan ke Fill tiap node. 'text' = terapkan ke tipografi tiap node TEXT. 'effect' = terapkan shadow ke tiap node."},
+            "style_name": {"type": "string", "description": "nama style yang sudah dibuat sebelumnya lewat figma_web_create_style, dipakai untuk SEMUA node dalam daftar"}},
+            "required": ["file_url", "node_names", "style_type", "style_name"]}}},
+    {"type": "function", "function": {
         "name": "figma_web_check_contrast",
         "description": ("Cek rasio kontras warna teks/elemen SUNGGUH-SUNGGUH lewat "
                         "fitur bawaan Figma sendiri (bukan tebakan model) — dibanding "
@@ -1005,6 +1022,26 @@ class ChatEngine:
                             except Exception as e:
                                 print(f"Could not send Figma style screenshot to Telegram: {e}")
                         return json.dumps({**res, "url": url, "markdown": f"![Figma Style Preview]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_web_apply_style_batch":
+                    node_names = args.get("node_names")
+                    res = await figma_browser.apply_figma_style_batch(
+                        file_url=str(args.get("file_url") or ""),
+                        node_names=[str(n) for n in node_names] if isinstance(node_names, list) else [],
+                        style_type=str(args.get("style_type") or ""),
+                        style_name=str(args.get("style_name") or ""),
+                        out_dir=paths.artifacts_dir() / "figma",
+                    )
+                    if res.get("ok") and res.get("screenshot_path"):
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
+                            except Exception as e:
+                                print(f"Could not send Figma style batch screenshot to Telegram: {e}")
+                        return json.dumps({**res, "url": url, "markdown": f"![Figma Style Batch Apply]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
 
                 if name == "figma_web_check_contrast":
