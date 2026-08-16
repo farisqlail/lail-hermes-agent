@@ -1383,6 +1383,62 @@ rather than adding more mechanism for it. 807 unit tests pass.
 fix, Components/Instances, Effect Styles, multi-node style apply) are
 done — Phases 14 through 17.**
 
+## Phase 18 — Rate-limit detection for `design/new` — ✅ DONE (2026-08-16)
+
+Triggered by a direct question about a DIFFERENT capability ("can the
+agent build a design from an image uploaded in chat?") — the honest
+answer required checking whether that already-built capability (image→
+`figma_web_design` reasoning, wired since before this roadmap started —
+see the Context section's "Confirmed working end-to-end against a real
+uploaded mockup") still actually worked after 17 phases of additions,
+through the REAL production chat pipeline, not another synthetic
+`figma_browser.py`-only test like every other phase this session.
+
+**Real test performed:** generated a synthetic login-mockup PNG (title,
+subtitle, 2 inputs, purple CTA, link), uploaded it via the actual running
+Hermes instance's `POST /api/uploads`, then sent a real chat turn via
+`POST /api/tasks` asking the agent to reproduce it in Figma — exercising
+the full stack (web upload → vision input → LLM tool-call reasoning →
+`figma_web_design` → Playwright), not a hand-written spec.
+
+**Result: the vision→understanding half is completely solid** — the
+model's reply correctly listed every element (title, subtitle, both input
+labels, button color and label, the link text) with no misses. **The
+build half failed twice in a row** with a bare `Locator.wait_for: Timeout
+30000ms exceeded` on `_build_frame_via_ui`'s canvas wait — an unhelpful,
+generic error with no indication of the real cause.
+
+**Root cause, found via direct live recon (not guessed):** `figma.com/
+design/new` was showing Figma's OWN rate-limit banner ("You're creating
+too many new files too quickly. Please wait a few minutes or contact
+support") — confirmed by screenshot, and confirmed the URL never advances
+past `design/new` no matter how long you wait (tested up to 45s in 5
+polling steps). This is the SAME rate limit documented in the
+[[figma-testing-no-new-files]] memory from earlier in this session — but
+`_open_figma_session` had no detection for it, so every caller just paid
+the full 30s `canvas.wait_for` timeout and surfaced a confusing generic
+error instead of the real, specific, actionable one.
+
+**Fix:** `_open_figma_session` now checks for the rate-limit banner text
+right after the login-check block (same place, same shape as that
+existing check) and returns a specific `{"ok": False, "rate_limited":
+True, "error": "..."}"` immediately — propagates automatically to EVERY
+function that opens a session (`design_figma_frame_web`,
+`design_multi_frame_web`, every `fix_figma_*`/style/component/contrast
+function), since they all already do `if isinstance(session, dict):
+return session`. No per-function changes needed.
+
+Live-verified: re-running the same `design/new` recon now fails in ~2s
+with the specific rate-limit message instead of hanging 45s+ with a raw
+timeout. Since the rate limit itself is an ACCOUNT-level Figma constraint
+(not something this codebase can bypass, nor should try to), separately
+verified the actual BUILD mechanism is still fully correct by reproducing
+the exact same mockup spec through the existing shared test file instead
+of `design/new` — screenshot is a near-exact visual match of the original
+PNG (title, subtitle, both inputs with correct placeholders, purple pill
+button, link), proving Phases 1-17's accumulated features didn't regress
+the base fidelity this whole capability depends on. 807 unit tests pass.
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of

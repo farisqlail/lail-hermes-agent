@@ -1868,6 +1868,38 @@ async def _open_figma_session(p, target_url: str, headless: bool) -> tuple[Any, 
                 "url": target_url,
             }
 
+    # Figma's own rate limit on `design/new` ("You're creating too many new
+    # files too quickly") renders as a bare line of text — no canvas, no
+    # navigation, the URL stays on `design/new` forever. Live-confirmed:
+    # without this check, every caller downstream (`_build_frame_via_ui`'s
+    # `canvas.wait_for(timeout=30000)`) just hangs the full 30s and then
+    # raises a raw Playwright TimeoutError with no indication of the real
+    # cause — a real production failure, not hypothetical: reproduced twice
+    # in a row via the actual chat pipeline (not a synthetic test), and
+    # confirmed via direct recon that the URL never advances past
+    # `design/new` while this banner is showing, however long you wait.
+    # Checked here (unconditionally, cheap) rather than only reachable
+    # after every caller's own timeout, so ANY `figma_browser.py` function
+    # opening a session gets the SAME fast, specific error instead of each
+    # needing its own copy of this detection.
+    try:
+        rate_limited = await page.get_by_text("too many new files", exact=False).count() > 0
+    except Exception:
+        rate_limited = False
+    if rate_limited:
+        await context.close()
+        return {
+            "ok": False,
+            "rate_limited": True,
+            "error": (
+                "Figma membatasi pembuatan file baru sementara ('You're creating too many "
+                "new files too quickly') — bukan bug, ini rate limit asli dari Figma sendiri. "
+                "Tunggu beberapa menit lalu coba lagi, atau pakai file_url dari sebuah file "
+                "yang sudah ada (bukan file baru) untuk menghindarinya sama sekali."
+            ),
+            "url": target_url,
+        }
+
     # Dismiss any popup dialogs or overlays blocking the canvas
     try:
         await page.evaluate("""
