@@ -563,6 +563,20 @@ CHAT_TOOLS = [
             "node_name": {"type": "string", "description": "node yang mau dicek warnanya — `node_name` dari fixable_nodes/photo_nodes, atau isi teks persis sebuah TEXT"}},
             "required": ["file_url", "node_name"]}}},
     {"type": "function", "function": {
+        "name": "figma_web_check_contrast_batch",
+        "description": ("Sama seperti figma_web_check_contrast, tapi cek BEBERAPA "
+                        "elemen sekaligus dalam SATU panggilan (satu sesi browser, "
+                        "bukan buka-tutup file berkali-kali) — pakai ini kalau "
+                        "pengguna minta audit kontras SATU LAYAR/frame penuh (semua "
+                        "teks/tombol sekaligus), bukan satu elemen tunggal. WAJIB "
+                        "`file_url` dari hasil build sebelumnya (BUKAN `url`) dan "
+                        "`node_names` (daftar, aturan penamaan sama dengan "
+                        "figma_web_check_contrast)."),
+        "parameters": {"type": "object", "properties": {
+            "file_url": {"type": "string", "description": "field `file_url` dari hasil build sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
+            "node_names": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "daftar node yang mau dicek warnanya, masing-masing dengan aturan penamaan sama seperti figma_web_check_contrast"}},
+            "required": ["file_url", "node_names"]}}},
+    {"type": "function", "function": {
         "name": "figma_login",
         "description": ("Buka browser visual Chrome/Edge agar pengguna bisa login "
                         "ke akun Figma secara manual. Browser akan tetap terbuka "
@@ -968,6 +982,24 @@ class ChatEngine:
                             except Exception as e:
                                 print(f"Could not send Figma contrast screenshot to Telegram: {e}")
                         return json.dumps({**res, "url": url, "markdown": f"![Figma Contrast Check]({url})"}, ensure_ascii=False)
+                    return json.dumps(res, ensure_ascii=False)
+
+                if name == "figma_web_check_contrast_batch":
+                    node_names = args.get("node_names")
+                    res = await figma_browser.check_figma_contrast_batch(
+                        file_url=str(args.get("file_url") or ""),
+                        node_names=[str(n) for n in node_names] if isinstance(node_names, list) else [],
+                        out_dir=paths.artifacts_dir() / "figma",
+                    )
+                    if res.get("ok") and res.get("screenshot_path"):
+                        from urllib.parse import quote
+                        url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
+                            try:
+                                await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
+                            except Exception as e:
+                                print(f"Could not send Figma contrast batch screenshot to Telegram: {e}")
+                        return json.dumps({**res, "url": url, "markdown": f"![Figma Contrast Batch Check]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
 
                 if name == "figma_login":

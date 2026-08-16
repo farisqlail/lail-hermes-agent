@@ -1100,11 +1100,41 @@ low-contrast gray text, one high-contrast white text): low-contrast node
 of a crash. `tests/test_web_ui.py`'s tool-registry list updated. 807 unit
 tests pass.
 
-**Not built:** batch-checking multiple nodes in one call, checking a
-gradient/image fill's effective contrast (no single "color" to compare),
-and switching the standard from AA to AAA (the checker's own "Contrast
-settings" button, seen in recon but not used — always reads whatever
-standard Figma has selected, which defaults to AA).
+**Not built:** checking a gradient/image fill's effective contrast (no
+single "color" to compare), and switching the standard from AA to AAA (the
+checker's own "Contrast settings" button, seen in recon but not used —
+always reads whatever standard Figma has selected, which defaults to AA).
+
+## Phase 11 — Batch contrast-check — ✅ DONE (2026-08-16)
+
+Follow-up to Phase 10's own "not built" list, requested next: check
+several nodes' contrast in one call, sharing one browser session instead
+of Phase 10's one-session-per-node cost (`_select_node_by_display_name`'s
+own canvas-visible wait, see Phase 6, isn't free to pay repeatedly).
+
+Refactored `check_figma_contrast`'s popover-open/read/close body out into
+a shared `_read_contrast_for_selected_node(page)` (assumes the node is
+already selected, returns `{ok, ratio, meets_aa}` or `{ok: False, error}`)
+and a shared `_contrast_detail(node_name, result)` formatter — both the
+single-node and new batch function call these instead of duplicating the
+selector logic. New `check_figma_contrast_batch(file_url, node_names,
+...)` loops `_select_node_by_display_name` + `_read_contrast_for_selected_
+node` per name inside ONE session, keeps going past a single node's
+failure (missing name / non-solid fill) instead of aborting the whole
+batch, and returns `{results: [...], checked_count, failing_count,
+detail}` — one combined summary line per node rather than a photo/gradient-
+style per-node screenshot (this is a report tool, the ratio numbers ARE
+the payload). New `figma_web_check_contrast_batch` tool in `chat_engine.py`
+mirrors `figma_web_check_contrast`'s dispatch shape with a `node_names`
+array param.
+
+Live-verified: 4-node batch (3 real TEXT nodes on a dark `#0F172A` frame +
+1 deliberately nonexistent name) — `1.72:1` fail, `17.85:1` pass, `6.96:1`
+pass, and the missing node reported its own error without aborting the
+other 3. Took 13.8s total for 4 nodes, vs. ~7-8s each if called one at a
+time via `check_figma_contrast` — confirms the shared-session approach is
+actually faster, not just less redundant code. `tests/test_web_ui.py`
+tool-registry list updated. 807 unit tests pass.
 
 ## Verification (every phase)
 
@@ -1152,5 +1182,6 @@ design-system study applied to `_FIGMA_DESIGN_SYSTEM_GUIDE`) is done too —
 see its own section above. Phase 8 (line-height control) is done too — see
 its own section above. Phase 9 (bold-carryover fix + TEXT wrap) is done
 too — see its own section above. Phase 10 (live contrast-checker
-automation) is done too — see its own section above; open items there
-(batch-check, gradient/image fill contrast, AAA standard) are not started.
+automation) is done too — see its own section above. Phase 11 (batch
+contrast-check) is done too — see its own section above; open items
+across both (gradient/image fill contrast, AAA standard) are not started.

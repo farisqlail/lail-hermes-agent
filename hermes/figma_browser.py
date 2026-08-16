@@ -2936,22 +2936,20 @@ async def apply_figma_style(
         }
 
 
-async def check_figma_contrast(
-    file_url: str,
-    node_name: str,
-    out_dir: Path | None = None,
-    headless: bool = False,
-    timeout_s: int = 120,
-) -> dict[str, Any]:
-    """Read Figma's own built-in contrast checker for a node's Fill color
-    against whatever's REALLY rendered behind it (the parent frame's fill,
-    a card behind it, etc — live-confirmed it's the actual composited
-    background, not just the page canvas color: a text node placed inside
-    a dark #0F172A frame reported its ratio against that frame's color).
+async def _read_contrast_for_selected_node(page) -> dict[str, Any]:
+    """Read Figma's own built-in contrast checker for the CURRENTLY
+    selected node's Fill color against whatever's REALLY rendered behind
+    it — live-confirmed it's the actual composited background (a parent
+    frame's own fill, a card behind it, etc), not just the page canvas
+    color: a text node placed inside a dark #0F172A frame reported its
+    ratio against that frame's color.
 
-    Grounds the WCAG AA numbers already in `_FIGMA_DESIGN_SYSTEM_GUIDE`
-    (see docs/figma-uiux-roadmap.md Phase 7) in a real measurement instead
-    of trusting the model's own color choice was actually readable.
+    Shared by `check_figma_contrast` (one node, own session) and
+    `check_figma_contrast_batch` (many nodes, one shared session — reusing
+    this instead of duplicating the popover-open/read/close dance per
+    node). Caller is responsible for selecting the node first (via
+    `_select_node_by_display_name`) and for closing the session/context
+    afterward.
 
     Mechanism, live-confirmed: opening the Fill swatch's full color-picker
     popover (`button[aria-label^="Solid color hex"]` — same swatch
@@ -2962,7 +2960,63 @@ async def check_figma_contrast(
     2.35:1. View details") and `[data-testid="contrast-standard-wrapper"]`
     (aria-label "AA Contrast standard not met..." vs "...standard met.").
     Only supports a solid Fill — a gradient/image fill's swatch has a
-    different aria-label prefix and isn't handled here.
+    different aria-label prefix and isn't handled here. Always leaves the
+    popover closed (Escape) before returning, whether it succeeded or not,
+    so the caller can immediately select the next node.
+    """
+    swatch = page.locator('button[aria-label^="Solid color hex"]').first
+    if await swatch.count() == 0:
+        return {
+            "ok": False,
+            "error": "Node ini tidak punya solid Fill color (mungkin gradient, "
+                     "image fill, atau tidak ada fill sama sekali) — pengecekan "
+                     "kontras cuma didukung untuk warna solid.",
+        }
+    await swatch.click(timeout=8000)
+    await page.wait_for_timeout(500)
+
+    ratio_btn = page.locator('[aria-label^="Color contrast ratio"]').first
+    standard_wrap = page.locator('[data-testid="contrast-standard-wrapper"]').first
+    if await ratio_btn.count() == 0 or await standard_wrap.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return {"ok": False, "error": "Panel color contrast Figma tidak muncul — kemungkinan UI Figma berubah."}
+
+    ratio_label = await ratio_btn.get_attribute("aria-label") or ""
+    standard_label = await standard_wrap.get_attribute("aria-label") or ""
+    ratio_match = re.search(r"ratio:\s*([\d.]+)\s*:\s*1", ratio_label)
+    ratio = float(ratio_match.group(1)) if ratio_match else None
+    meets_standard = "not met" not in standard_label.lower()
+
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(150)
+
+    if ratio is None:
+        return {"ok": False, "error": "Gagal membaca rasio kontras dari Figma."}
+    return {"ok": True, "ratio": ratio, "meets_aa": meets_standard}
+
+
+def _contrast_detail(node_name: str, result: dict[str, Any]) -> str:
+    if not result.get("ok"):
+        return f"Kontras node '{node_name}': gagal — {result.get('error')}"
+    verdict = "MEMENUHI" if result.get("meets_aa") else "TIDAK memenuhi"
+    return (
+        f"Kontras node '{node_name}': {result['ratio']}:1 — {verdict} standar AA "
+        f"(WCAG AA butuh minimal 4.5:1 untuk teks biasa, 3:1 untuk teks besar)."
+    )
+
+
+async def check_figma_contrast(
+    file_url: str,
+    node_name: str,
+    out_dir: Path | None = None,
+    headless: bool = False,
+    timeout_s: int = 120,
+) -> dict[str, Any]:
+    """Grounds the WCAG AA numbers already in `_FIGMA_DESIGN_SYSTEM_GUIDE`
+    (see docs/figma-uiux-roadmap.md Phase 7) in a real measurement instead
+    of trusting the model's own color choice was actually readable. See
+    `_read_contrast_for_selected_node` for the actual selector mechanism.
     """
     try:
         from playwright.async_api import async_playwright
@@ -2974,8 +3028,7 @@ async def check_figma_contrast(
 
     out_dir = out_dir or paths.artifacts_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
-    shot_filename = f"figma_contrast_{uuid.uuid4().hex[:8]}.png"
-    shot_path = out_dir / shot_filename
+    shot_path = out_dir / f"figma_contrast_{uuid.uuid4().hex[:8]}.png"
 
     try:
         async with async_playwright() as p:
@@ -2993,57 +3046,23 @@ async def check_figma_contrast(
                     "url": file_url,
                 }
 
-            swatch = page.locator('button[aria-label^="Solid color hex"]').first
-            if await swatch.count() == 0:
+            result = await _read_contrast_for_selected_node(page)
+            if not result.get("ok"):
                 await context.close()
-                return {
-                    "ok": False,
-                    "error": f"Node '{node_name}' tidak punya solid Fill color (mungkin "
-                             f"gradient, image fill, atau tidak ada fill sama sekali) — "
-                             f"pengecekan kontras cuma didukung untuk warna solid.",
-                    "url": file_url,
-                }
-            await swatch.click(timeout=8000)
-            await page.wait_for_timeout(500)
-
-            ratio_btn = page.locator('[aria-label^="Color contrast ratio"]').first
-            standard_wrap = page.locator('[data-testid="contrast-standard-wrapper"]').first
-            if await ratio_btn.count() == 0 or await standard_wrap.count() == 0:
-                await page.keyboard.press("Escape")
-                await context.close()
-                return {
-                    "ok": False,
-                    "error": "Panel color contrast Figma tidak muncul — kemungkinan UI Figma berubah.",
-                    "url": file_url,
-                }
-
-            ratio_label = await ratio_btn.get_attribute("aria-label") or ""
-            standard_label = await standard_wrap.get_attribute("aria-label") or ""
-            ratio_match = re.search(r"ratio:\s*([\d.]+)\s*:\s*1", ratio_label)
-            ratio = float(ratio_match.group(1)) if ratio_match else None
-            meets_standard = "not met" not in standard_label.lower()
+                return {**result, "url": file_url}
 
             await page.screenshot(path=str(shot_path), full_page=False)
-            await page.keyboard.press("Escape")
-            await page.wait_for_timeout(150)
             await context.close()
 
-            verdict = "MEMENUHI" if meets_standard else "TIDAK memenuhi"
-            detail = (
-                f"Kontras node '{node_name}': {ratio}:1 — {verdict} standar AA "
-                f"(WCAG AA butuh minimal 4.5:1 untuk teks biasa, 3:1 untuk teks besar)."
-                if ratio is not None else
-                f"Kontras node '{node_name}': gagal membaca rasio dari Figma."
-            )
             md_image = f"![Figma Contrast Check](file:///{shot_path.as_posix()})"
             return {
                 "ok": True,
                 "node_name": node_name,
-                "ratio": ratio,
-                "meets_aa": meets_standard,
+                "ratio": result["ratio"],
+                "meets_aa": result["meets_aa"],
                 "screenshot_path": str(shot_path),
                 "markdown": md_image,
-                "detail": detail,
+                "detail": _contrast_detail(node_name, result),
                 "url": file_url,
             }
 
@@ -3054,3 +3073,88 @@ async def check_figma_contrast(
             "error": f"Figma Web browser error: {e}",
             "url": file_url,
         }
+
+
+async def check_figma_contrast_batch(
+    file_url: str,
+    node_names: list[str],
+    out_dir: Path | None = None,
+    headless: bool = False,
+    timeout_s: int = 180,
+) -> dict[str, Any]:
+    """Check contrast for MULTIPLE nodes in ONE shared browser session —
+    `check_figma_contrast` opens/closes a fresh session per call, and
+    reopening a file isn't free (`_select_node_by_display_name`'s own
+    canvas-visible wait, see docs/figma-uiux-roadmap.md Phase 6's node-
+    search gap) — worth avoiding when a caller wants a whole screen's
+    palette audited at once instead of one node at a time.
+
+    Keeps going past a single node's failure (not found / no solid fill /
+    panel didn't render) — one bad name in the list shouldn't block
+    reading the rest; that node's own `results` entry just carries its own
+    `ok: False` + `error` instead of aborting the whole batch.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
+        }
+
+    if not node_names:
+        return {"ok": False, "error": "node_names kosong — sebutkan minimal satu node."}
+
+    out_dir = out_dir or paths.artifacts_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shot_path = out_dir / f"figma_contrast_batch_{uuid.uuid4().hex[:8]}.png"
+
+    results: list[dict[str, Any]] = []
+    try:
+        async with async_playwright() as p:
+            session = await _open_figma_session(p, file_url, headless)
+            if isinstance(session, dict):
+                return session
+            context, page = session
+
+            for node_name in node_names:
+                if not await _select_node_by_display_name(page, node_name):
+                    results.append({
+                        "node_name": node_name, "ok": False,
+                        "error": f"Node '{node_name}' tidak ditemukan di file ini.",
+                    })
+                    continue
+                result = await _read_contrast_for_selected_node(page)
+                results.append({"node_name": node_name, **result})
+
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(200)
+            await page.screenshot(path=str(shot_path), full_page=False)
+            await context.close()
+
+    except Exception as e:
+        logger.exception("Error batch-checking Figma color contrast in browser")
+        return {
+            "ok": False,
+            "error": f"Figma Web browser error: {e}",
+            "url": file_url,
+        }
+
+    checked = [r for r in results if r.get("ok")]
+    failing = [r for r in checked if not r.get("meets_aa")]
+    lines = [_contrast_detail(r["node_name"], r) for r in results]
+    detail = (
+        f"{len(checked)}/{len(node_names)} node berhasil dicek, "
+        f"{len(failing)} TIDAK memenuhi standar AA.\n" + "\n".join(lines)
+    )
+    md_image = f"![Figma Contrast Batch Check](file:///{shot_path.as_posix()})"
+    return {
+        "ok": True,
+        "results": results,
+        "checked_count": len(checked),
+        "failing_count": len(failing),
+        "screenshot_path": str(shot_path),
+        "markdown": md_image,
+        "detail": detail,
+        "url": file_url,
+    }
