@@ -2202,28 +2202,7 @@ async def fix_figma_photo(
                 return session
             context, page = session
 
-            # The Layers panel reopens fully COLLAPSED — a renamed child
-            # node isn't in the DOM at all yet, not just visually hidden,
-            # so `get_by_text` can't find it until the tree is expanded.
-            # `layers-panel-expand-caret` is the disclosure control's own
-            # stable testid (live-confirmed via DOM dump; the row's
-            # `data-fpl-tree-active` attribute lives on a DIFFERENT inner
-            # element and isn't itself clickable for this). Click every
-            # visible caret, repeatedly — each round can reveal further
-            # nested carets — until the target shows up or nothing new
-            # expands.
-            row = page.get_by_text(node_name, exact=True)
-            for _ in range(5):
-                if await row.count() > 0:
-                    break
-                carets = page.locator('[data-testid="layers-panel-expand-caret"]')
-                n = await carets.count()
-                if n == 0:
-                    break
-                for i in range(n):
-                    await carets.nth(i).click(force=True)
-                    await page.wait_for_timeout(150)
-            if await row.count() == 0:
+            if not await _select_node_by_display_name(page, node_name):
                 await context.close()
                 return {
                     "ok": False,
@@ -2231,8 +2210,6 @@ async def fix_figma_photo(
                              f"diganti nama atau dihapus.",
                     "url": file_url,
                 }
-            await row.first.click()
-            await page.wait_for_timeout(200)
             cx, cy = await _zoom_to_selection(page)
 
             photo = await _fetch_stock_photo(photo_query, unsplash_key, orientation=orientation)
@@ -2338,22 +2315,7 @@ async def fix_figma_text(
                 return session
             context, page = session
 
-            # Same collapsed-tree handling as `fix_figma_photo`: a reopened
-            # file's Layers panel starts fully collapsed, so a nested
-            # node isn't in the DOM at all until every disclosure caret
-            # along its path has been expanded.
-            row = page.get_by_text(current_text, exact=True)
-            for _ in range(5):
-                if await row.count() > 0:
-                    break
-                carets = page.locator('[data-testid="layers-panel-expand-caret"]')
-                n = await carets.count()
-                if n == 0:
-                    break
-                for i in range(n):
-                    await carets.nth(i).click(force=True)
-                    await page.wait_for_timeout(150)
-            if await row.count() == 0:
+            if not await _select_node_by_display_name(page, current_text):
                 await context.close()
                 return {
                     "ok": False,
@@ -2361,8 +2323,6 @@ async def fix_figma_text(
                              f"sudah diubah atau dihapus.",
                     "url": file_url,
                 }
-            await row.first.click()
-            await page.wait_for_timeout(200)
 
             if new_text:
                 await page.keyboard.press("Enter")
@@ -2469,19 +2429,7 @@ async def fix_figma_property(
                 return session
             context, page = session
 
-            # Same collapsed-tree handling as `fix_figma_photo`/`fix_figma_text`.
-            row = page.get_by_text(node_name, exact=True)
-            for _ in range(5):
-                if await row.count() > 0:
-                    break
-                carets = page.locator('[data-testid="layers-panel-expand-caret"]')
-                n = await carets.count()
-                if n == 0:
-                    break
-                for i in range(n):
-                    await carets.nth(i).click(force=True)
-                    await page.wait_for_timeout(150)
-            if await row.count() == 0:
+            if not await _select_node_by_display_name(page, node_name):
                 await context.close()
                 return {
                     "ok": False,
@@ -2489,8 +2437,6 @@ async def fix_figma_property(
                              f"diganti nama atau dihapus.",
                     "url": file_url,
                 }
-            await row.first.click()
-            await page.wait_for_timeout(200)
 
             if property == "color":
                 await _set_fill_hex(page, value)
@@ -2571,7 +2517,19 @@ async def _select_node_by_display_name(page, node_name: str) -> bool:
             await page.wait_for_timeout(500)
             continue
         for i in range(n):
-            await carets.nth(i).click(force=True)
+            # Expanding one caret can shift/remove LATER carets already
+            # counted this round (a just-expanded row's own caret can
+            # change state or disappear) — `.nth(i)` re-queries live, so an
+            # index that no longer exists just hangs waiting for it to
+            # appear. Live-confirmed: a genuinely-missing `node_name` (more
+            # expand rounds = more chances to hit this) hung the WHOLE
+            # function for Playwright's default 30s instead of failing
+            # fast. A short per-click timeout + catch turns a vanished
+            # index into a harmless skip instead of a multi-second stall.
+            try:
+                await carets.nth(i).click(force=True, timeout=2000)
+            except Exception:
+                pass
             await page.wait_for_timeout(150)
     if await row.count() == 0:
         return False

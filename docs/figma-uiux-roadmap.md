@@ -1221,6 +1221,38 @@ understood limitation, not an open gap** — Phases 10-13 together cover
 every case Figma's own contrast checker supports, with clear, accurate
 rejection for the cases it doesn't.
 
+## Phase 14 — Backport node-search reliability fix — ✅ DONE (2026-08-16)
+
+`fix_figma_photo`/`fix_figma_text`/`fix_figma_property` still carried
+their own ORIGINAL inline collapsed-tree-expand loop from before Phase 6
+existed — a real, previously-flagged gap (see Phase 6's own section and
+[[figma-design-system-styles]] memory): no canvas-visible wait, and a
+tighter 5-round cap, both of which Phase 6's `_select_node_by_display_name`
+already fixed for the style functions but never backported to these three.
+
+All three now call `_select_node_by_display_name` directly instead of
+duplicating the inline block — a straight consolidation (3 copies of the
+same ~15-line loop → 1), not just a reliability fix.
+
+**Second real bug found while live-verifying, not part of the original
+ask but directly in the code path just touched:** `_select_node_by_display_
+name`'s own caret-clicking loop (`for i in range(n): carets.nth(i).click
+(...)`) has a latent index-shift race — expanding one caret can
+shift/remove LATER carets already counted that round, and Playwright's
+`.nth(i)` re-queries live, so a now-nonexistent index just hangs waiting
+for an element that will never appear. This existed in all 3 ORIGINAL
+inline copies too (identical inner loop), just rarely triggered — a
+genuinely-missing node name (more expand rounds = more chances to hit the
+race) reliably hit Playwright's full 30s default timeout instead of
+failing fast. Fixed with a bounded per-click timeout (2000ms) + catch, so
+a vanished caret index is a harmless skip instead of a multi-second stall.
+
+Live-verified 3 cases against a real build: `fix_figma_text` (content +
+color change) and `fix_figma_property` (color change) both still work
+correctly; a deliberately nonexistent text node now fails in under a
+couple seconds with the correct "tidak ditemukan" error instead of hanging
+30s. 807 unit tests pass.
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of
