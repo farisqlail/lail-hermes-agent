@@ -335,6 +335,53 @@ async def _set_line_height(page, value: float) -> None:
     await page.wait_for_timeout(150)
 
 
+async def _set_text_wrap_width(page, width: float) -> None:
+    """Switch a selected TEXT node from Figma's default "Auto width" (grows
+    horizontally forever, never wraps) to "Auto height" (fixed width, height
+    grows to fit wrapped lines) and set that fixed width.
+
+    Live-confirmed selectors: the resize-mode control is a `role="radiogroup"`
+    with 3 `input[type=radio]`, distinguished by `data-tooltip` ("Auto width"
+    / "Auto height" / "Fixed size") rather than any `data-onboarding-key` —
+    clicking the "Auto height" radio switches Width from a disabled/grayed
+    field to an editable one (Height stays auto), at which point the
+    existing `scrubbable-control-width` onboarding-key (also present on TEXT
+    nodes, confirmed live) becomes usable via the normal `_set_number` path.
+    `force=True` because the radio `<input>` itself is visually replaced by
+    an icon+label overlay, same class of hazard as the layers-panel expand
+    caret elsewhere in this file.
+    """
+    radio = page.locator('input[data-tooltip="Auto height"]').first
+    if await radio.count() == 0:
+        return
+    await radio.click(force=True)
+    await page.wait_for_timeout(300)
+    # A TEXT node placed inside an auto-layout parent (every real call site —
+    # `_add_text` only ever runs inside `_place_items`, itself only ever
+    # called for a frame/composite's children) shows a DIFFERENT width
+    # control than a bare page-level text node: not the plain
+    # `scrubbable-control-width` input `_set_number` elsewhere assumes, but
+    # a combobox-styled "Fixed width (N)" label under `transform-width`,
+    # confirmed live to switch straight into an editable numeric field on
+    # click (no dropdown/options list opens) — `scrubbable-control-width`
+    # simply never appears in the DOM in this case, which is what made an
+    # earlier version of this function hang until Playwright's own 8s
+    # actionability timeout. Falls back to the plain input for the
+    # (untested in practice) case of a TEXT node with no auto-layout parent.
+    combo = page.locator('[data-onboarding-key="transform-width"]').first
+    if await combo.count():
+        await combo.click()
+        await page.wait_for_timeout(150)
+        await page.keyboard.press("Control+A")
+        await page.keyboard.type(str(round(width)))
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(150)
+    else:
+        plain = page.locator('[data-onboarding-key="scrubbable-control-width"] input')
+        if await plain.count():
+            await _set_number(page, "scrubbable-control-width", width)
+
+
 def _line_height_for(font_size: float) -> float:
     """Asphalt-derived type rule (see docs/figma-uiux-roadmap.md Phase 7 /
     Phase 8): line-height = font-size * 1.3, rounded to the nearest 4px —
@@ -612,11 +659,32 @@ def _grid_column_major_order(items: list, columns: int) -> list:
     return ordered
 
 
-async def _set_bold(page) -> None:
+async def _set_bold(page, bold: bool = True) -> None:
+    """Explicitly set Font style to Bold or Regular — always called
+    unconditionally by `_add_text` (not skipped when `bold=False`).
+
+    Figma's text tool remembers the LAST-used style for newly drawn text
+    (confirmed live: a plain node typed right after a bold one inherited
+    "Bold" with no explicit request for it), so leaving this a no-op for
+    `bold=False` silently carries a previous item's weight forward onto
+    every text item after it. Calling it every time, picking the target
+    name from `bold` instead of skipping, is the fix.
+    """
+    target = "Bold" if bold else "Regular"
     combo = page.get_by_role("combobox", name="Font style")
+    if await combo.count() == 0:
+        return
     await combo.click()
     await page.wait_for_timeout(300)
-    await page.get_by_role("option", name="Bold", exact=True).click()
+    option = page.get_by_role("option", name=target, exact=True)
+    if await option.count() == 0:
+        # Font has no exact "Regular"/"Bold" option (e.g. a family whose
+        # base weight is named differently) — leave it as Figma's own
+        # default rather than guess a wrong option name.
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return
+    await option.first.click()
     await page.wait_for_timeout(200)
     # Belt and suspenders: force the dropdown closed and focus off it. Left
     # open (or focus stuck in it), the NEXT item's tool-shortcut keypresses
@@ -701,7 +769,7 @@ async def _add_shadow(page, elevation: str = "subtle") -> None:
 async def _add_text(
     page, cx: float, cy: float, content: str,
     font_size: float | None = None, color: str | None = None, bold: bool = False,
-    font_family: str | None = None,
+    font_family: str | None = None, max_width: float | None = None,
 ) -> None:
     await page.keyboard.press("t")
     await page.wait_for_timeout(150)
@@ -720,11 +788,19 @@ async def _add_text(
             await page.wait_for_timeout(150)
     if font_family:
         await _set_font_family(page, font_family)
-    await _set_line_height(page, _line_height_for(font_size or 12))
+    effective_size = font_size or 12
+    await _set_line_height(page, _line_height_for(effective_size))
+    if content and max_width and len(content) * effective_size * 0.55 > max_width:
+        # Figma's default "Auto width" never wraps — a long single-line
+        # node just keeps growing past its parent's bounds instead of
+        # breaking into multiple lines. Only switch modes when the rough
+        # single-line-width estimate actually exceeds `max_width`; short
+        # text stays Auto-width so it isn't force-stretched to a fixed box
+        # it doesn't need (e.g. a short centered title).
+        await _set_text_wrap_width(page, max_width)
     if color:
         await _set_fill_hex(page, color)
-    if bold:
-        await _set_bold(page)
+    await _set_bold(page, bold)
     # `_set_fill_hex`'s Enter commits the hex value but does not close the
     # color-picker popover it opened (unlike `_set_bold`, which already
     # presses Escape for the same reason). Left open, the NEXT item's
@@ -1201,6 +1277,7 @@ async def _place_items(
                     page, cx, cy, item.get("content") or item.get("text") or "",
                     font_size=item.get("fontSize"), color=item.get("color"),
                     bold=bool(item.get("bold")), font_family=item.get("fontFamily"),
+                    max_width=item.get("width") or content_w,
                 )
             elif itype in ("HEADER_IMAGE", "HEADER"):
                 photo_name = f"hermes:photo:{photo_registry['n']}:header"

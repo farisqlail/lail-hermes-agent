@@ -1016,6 +1016,49 @@ Fixed-width-with-wrap is set on TEXT nodes today, only Hug). Both are
 pre-existing gaps unrelated to line-height — flagged for a future phase if
 the user asks, not started.
 
+## Phase 9 — Bold-carryover + TEXT wrap fix — ✅ DONE (2026-08-16)
+
+Follow-up to Phase 8's 2 noticed-but-deferred gaps, requested next by the
+user.
+
+**Bold carryover:** `_set_bold` changed to accept `bold: bool` and always
+run (was: only called when `bold=True`), picking target option "Bold" or
+"Regular" from the Font style combobox either way instead of silently
+leaving whatever weight Figma's text tool remembered from the last-drawn
+node. `_add_text` now calls `await _set_bold(page, bold)` unconditionally
+instead of `if bold: await _set_bold(page)`.
+
+**TEXT wrap:** new `_set_text_wrap_width(page, width)`, wired into
+`_add_text` via a new `max_width` param (only TEXT/FOOTER_LINK dispatch in
+`_place_items` passes it, as `item.get("width") or content_w`) — only
+switches modes when a rough single-line-width estimate
+(`len(content) * font_size * 0.55`) actually exceeds `max_width`, so short
+text stays Auto-width instead of being force-stretched to a fixed box.
+
+Live recon found the resize-mode control: a `role="radiogroup"` of 3
+`input[type=radio]` distinguished by `data-tooltip` ("Auto width"/"Auto
+height"/"Fixed size", no `data-onboarding-key`) — clicking "Auto height"
+switches a TEXT node to fixed-width/auto-height (i.e. wraps). **The real
+trap, found only by reproducing the crash inside the actual build pipeline
+after an isolated standalone repro passed clean:** a bare page-level TEXT
+node exposes the width field as the plain `scrubbable-control-width` input
+`_set_number` already handles — but every REAL call site places TEXT as a
+child of an auto-layout frame (`_add_text` only ever runs inside
+`_place_items`), and an auto-layout CHILD's width control is a completely
+different DOM shape: a combobox-styled "Fixed width (N)" label under
+`data-onboarding-key="transform-width"` that turns into a plain editable
+field on click (no dropdown opens). `scrubbable-control-width` simply isn't
+in the DOM for an auto-layout child at all, which is what made the first
+version of this fix hang until Playwright's own 8s actionability timeout
+instead of doing anything. Fixed by trying `transform-width` first (the
+path every real call actually takes) with a fallback to the plain input.
+
+Live-verified against the same 24px-bold-title + 14px-body + BUTTON spec
+that surfaced both bugs in Phase 8: reopening the built file, the body node
+now reads back as Regular weight (not carried-over Bold) and `W 342 × H 40
+Hug` — wrapped to 2 lines inside the frame's content width instead of
+overflowing past it. 807 unit tests pass.
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of
@@ -1060,6 +1103,6 @@ open items there are Variables, Effect styles, multi-node style apply,
 and reading back existing style names from a file. Phase 7 (Asphalt
 design-system study applied to `_FIGMA_DESIGN_SYSTEM_GUIDE`) is done too —
 see its own section above. Phase 8 (line-height control) is done too — see
-its own section above; open items surfaced there (bold-carryover on
-newly-drawn text, no width-fixed text wrapping) and the live-contrast-
-checker automation are still not started.
+its own section above. Phase 9 (bold-carryover fix + TEXT wrap) is done
+too — see its own section above; the live-contrast-checker automation is
+still not started.
