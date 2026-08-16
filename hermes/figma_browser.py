@@ -3019,18 +3019,41 @@ async def _read_contrast_for_selected_node(page, standard: str = "AA") -> dict[s
     BEFORE reading — the raw ratio itself doesn't change between
     standards (it's the same two colors), only whether it clears the
     threshold does, so the standard has to be set first, not corrected
-    after the fact. Only supports a solid Fill — a gradient/image fill's
-    swatch has a different aria-label prefix and isn't handled here.
-    Always leaves the popover closed (Escape) before returning, whether it
-    succeeded or not, so the caller can immediately select the next node.
+    after the fact. Only supports a solid Fill — Figma's OWN contrast
+    checker shows NO contrast UI at all for a gradient or image fill's
+    popover (live-confirmed: opening a gradient swatch's popover has zero
+    matches for the ratio/standard elements this function reads) — not a
+    gap in this automation, a real absence in Figma's own feature.
+
+    The Fill swatch is scoped to `[data-onboarding-key="paint-panel-row-
+    paint-1-0"]` (the node's OWN primary Fill row — same scoping
+    `_set_gradient_fill` already uses) rather than a bare page-wide
+    `button[aria-label^="Solid color hex"]` search. That bare search has a
+    real bug it doesn't accidentally dodge: selecting a COMPOSITE with
+    nested children of different colors (e.g. a gradient BUTTON with a
+    white TEXT label) makes Figma's Fill section show an EXTRA "Selection
+    colors" swatch per distinct color found anywhere in the selection —
+    live-confirmed a gradient BUTTON's own Fill is "Linear gradient", but
+    the page-wide search still matched the white label's "Solid color hex:
+    FFFFFF" selection-colors swatch instead, silently checking the WRONG
+    color's contrast (or, since that swatch's popover has no contrast UI
+    either, failing with a generic error that didn't say why). Scoping to
+    the node's own Fill row's `.first` button avoids this ambiguity
+    entirely — always reads the row for THIS node's own Fill, never a
+    selection-colors aggregate.
     """
-    swatch = page.locator('button[aria-label^="Solid color hex"]').first
-    if await swatch.count() == 0:
+    paint_row = page.locator('[data-onboarding-key="paint-panel-row-paint-1-0"]').first
+    if await paint_row.count() == 0:
+        return {"ok": False, "error": "Node ini tidak punya Fill sama sekali — pengecekan kontras butuh minimal satu Fill."}
+    swatch = paint_row.locator("button").first
+    swatch_label = (await swatch.get_attribute("aria-label") or "").lower()
+    if not swatch_label.startswith("solid color hex"):
+        kind = "gradient" if "gradient" in swatch_label else "image/pattern atau tipe fill lain"
         return {
             "ok": False,
-            "error": "Node ini tidak punya solid Fill color (mungkin gradient, "
-                     "image fill, atau tidak ada fill sama sekali) — pengecekan "
-                     "kontras cuma didukung untuk warna solid.",
+            "error": f"Node ini tidak punya solid Fill color (fill-nya {kind}) — "
+                     f"pengecekan kontras cuma didukung untuk warna solid (Figma "
+                     f"sendiri tidak punya fitur cek kontras untuk gradient/image fill).",
         }
     await swatch.click(timeout=8000)
     await page.wait_for_timeout(500)

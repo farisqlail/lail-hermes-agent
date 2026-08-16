@@ -1180,6 +1180,47 @@ back whatever was requested. Batch-checked both standards across 2 nodes
 in one session too. New `figma_web_check_contrast`/
 `figma_web_check_contrast_batch` schema field. 807 unit tests pass.
 
+## Phase 13 — Gradient/image fill contrast handling — ✅ DONE (2026-08-16)
+
+Last item across Phases 10-12's "not built" lists. Live recon confirmed
+Figma's OWN contrast checker shows ZERO contrast UI for a gradient or
+image fill's popover — opening a gradient swatch's popover has no matches
+at all for the ratio/standard elements `_read_contrast_for_selected_node`
+reads. This isn't a gap in the automation to work around — there's no
+Figma UI mechanism to read a value from, so there's nothing to compute
+without inventing our own contrast math independent of "read Figma's real
+value" (this whole feature's founding premise, see Phase 10). The correct
+scope here was making the REJECTION correct and specific, not simulating
+a check Figma itself doesn't offer.
+
+**Real bug found and fixed while verifying this:** the swatch lookup used
+a bare page-wide `button[aria-label^="Solid color hex"]` search. Live-
+confirmed this breaks for any COMPOSITE with nested children of different
+colors (e.g. a gradient BUTTON with a white TEXT label) — selecting the
+composite makes Figma's Fill section show an EXTRA "Selection colors"
+swatch per distinct color found ANYWHERE in the selection, and the
+page-wide search matched that stray swatch (the label's "Solid color hex:
+FFFFFF") instead of the node's own actual Fill ("Linear gradient"),
+silently reading the wrong color's popover and failing with a vague
+"panel didn't appear" error that didn't say why. Fixed by scoping the
+swatch to `[data-onboarding-key="paint-panel-row-paint-1-0"]` (the node's
+own primary Fill row — the same scoping `_set_gradient_fill` already used,
+confirmed correct there) and reading ITS swatch's `aria-label` to decide
+solid vs. gradient vs. unrecognized, instead of assuming absence-of-solid
+always meant a clean rejection path.
+
+Live-verified 3 cases: a plain gradient RECTANGLE (no nested children,
+worked correctly even before this fix) — clean "fill-nya gradient" error;
+a gradient BUTTON composite (the broken case) — now gives the SAME
+specific error instead of "panel color contrast tidak muncul"; a solid
+BUTTON composite in the same batch — still checks correctly (17.85:1,
+unaffected by the fix). 807 unit tests pass.
+
+**Conclusion: gradient/image fill contrast checking is now a closed,
+understood limitation, not an open gap** — Phases 10-13 together cover
+every case Figma's own contrast checker supports, with clear, accurate
+rejection for the cases it doesn't.
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of
@@ -1228,6 +1269,7 @@ its own section above. Phase 9 (bold-carryover fix + TEXT wrap) is done
 too — see its own section above. Phase 10 (live contrast-checker
 automation) is done too — see its own section above. Phase 11 (batch
 contrast-check) is done too — see its own section above. Phase 12 (AAA
-standard support) is done too — see its own section above; the only open
-item left across Phases 10-12 is gradient/image fill contrast, not
-started.
+standard support) is done too — see its own section above. Phase 13
+(gradient/image fill contrast handling) is done too — see its own section
+above; the contrast-checker feature (Phases 10-13) is now closed, no open
+items remain.
