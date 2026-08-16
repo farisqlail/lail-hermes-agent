@@ -2936,7 +2936,63 @@ async def apply_figma_style(
         }
 
 
-async def _read_contrast_for_selected_node(page) -> dict[str, Any]:
+_CONTRAST_STANDARDS = ("AA", "AAA")
+_CONTRAST_THRESHOLD_HINT = {
+    "AA": "4.5:1 untuk teks biasa, 3:1 untuk teks besar",
+    "AAA": "7:1 untuk teks biasa, 4.5:1 untuk teks besar",
+}
+
+
+async def _set_contrast_standard(page, standard: str) -> None:
+    """Switch the ALREADY-OPEN color-picker popover's contrast standard
+    between AA and AAA. No-op if it's already on the requested standard —
+    cheap to call unconditionally per node in a batch check rather than
+    tracking whether a prior node already switched it (Figma may or may
+    not persist the choice across popover opens; this way it's correct
+    either way, not something read-worthy of testing but not worth
+    depending on since a wrong assumption there fails silently, not loudly).
+
+    Live-confirmed mechanism: `[data-testid="contrast-standard-selected"]`
+    shows the CURRENT standard ("AA"/"AAA") without opening anything.
+    Clicking `[aria-label="Contrast settings"]` opens a menu with a
+    `role="menuitemcheckbox"` per option, `data-testid` prefixed
+    `dropdown-option-AA ` (a literal trailing space before "· Essential
+    (4.5:1)") or `dropdown-option-AAA` (no colliding prefix issue — "AAA"
+    is 3 chars, "AA " with the space is unambiguous against it). Clicking
+    the option applies it immediately and closes the menu on its own
+    (confirmed live: `contrast-standard-wrapper`'s aria-label updated to
+    reference the new standard right after the click, no extra Escape
+    needed) — the trailing Escape here is defensive, matching every other
+    popover-closing call in this file, not because it was observed stuck.
+    """
+    current = page.locator('[data-testid="contrast-standard-selected"]').first
+    if await current.count() and (await current.inner_text()).strip() == standard:
+        return
+    settings_btn = page.locator('[aria-label="Contrast settings"]').first
+    if await settings_btn.count() == 0:
+        return
+    await settings_btn.click()
+    await page.wait_for_timeout(400)
+    prefix = "dropdown-option-AA " if standard == "AA" else "dropdown-option-AAA"
+    option = page.locator(f'[data-testid^="{prefix}"]').first
+    if await option.count() == 0:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return
+    # NO trailing Escape here, unlike most popover-closing calls elsewhere
+    # in this file — live-confirmed clicking the option closes ONLY the
+    # settings dropdown on its own, leaving the color picker itself still
+    # open (needed: `_read_contrast_for_selected_node` reads the ratio/
+    # standard fields right after this returns). An Escape here closed the
+    # WHOLE color picker instead of just the already-closed dropdown,
+    # confirmed live: the very next read found zero matches for the ratio/
+    # standard-wrapper elements — this isn't a hypothetical guard, it broke
+    # every single-node call until removed.
+    await option.click()
+    await page.wait_for_timeout(400)
+
+
+async def _read_contrast_for_selected_node(page, standard: str = "AA") -> dict[str, Any]:
     """Read Figma's own built-in contrast checker for the CURRENTLY
     selected node's Fill color against whatever's REALLY rendered behind
     it — live-confirmed it's the actual composited background (a parent
@@ -2959,10 +3015,14 @@ async def _read_contrast_for_selected_node(page) -> dict[str, Any]:
     `[aria-label^="Color contrast ratio"]` (e.g. "Color contrast ratio:
     2.35:1. View details") and `[data-testid="contrast-standard-wrapper"]`
     (aria-label "AA Contrast standard not met..." vs "...standard met.").
-    Only supports a solid Fill — a gradient/image fill's swatch has a
-    different aria-label prefix and isn't handled here. Always leaves the
-    popover closed (Escape) before returning, whether it succeeded or not,
-    so the caller can immediately select the next node.
+    `standard` ("AA" or "AAA") is applied via `_set_contrast_standard`
+    BEFORE reading — the raw ratio itself doesn't change between
+    standards (it's the same two colors), only whether it clears the
+    threshold does, so the standard has to be set first, not corrected
+    after the fact. Only supports a solid Fill — a gradient/image fill's
+    swatch has a different aria-label prefix and isn't handled here.
+    Always leaves the popover closed (Escape) before returning, whether it
+    succeeded or not, so the caller can immediately select the next node.
     """
     swatch = page.locator('button[aria-label^="Solid color hex"]').first
     if await swatch.count() == 0:
@@ -2974,6 +3034,8 @@ async def _read_contrast_for_selected_node(page) -> dict[str, Any]:
         }
     await swatch.click(timeout=8000)
     await page.wait_for_timeout(500)
+
+    await _set_contrast_standard(page, standard)
 
     ratio_btn = page.locator('[aria-label^="Color contrast ratio"]').first
     standard_wrap = page.locator('[data-testid="contrast-standard-wrapper"]').first
@@ -2993,27 +3055,30 @@ async def _read_contrast_for_selected_node(page) -> dict[str, Any]:
 
     if ratio is None:
         return {"ok": False, "error": "Gagal membaca rasio kontras dari Figma."}
-    return {"ok": True, "ratio": ratio, "meets_aa": meets_standard}
+    return {"ok": True, "ratio": ratio, "standard": standard, "meets_standard": meets_standard}
 
 
 def _contrast_detail(node_name: str, result: dict[str, Any]) -> str:
     if not result.get("ok"):
         return f"Kontras node '{node_name}': gagal — {result.get('error')}"
-    verdict = "MEMENUHI" if result.get("meets_aa") else "TIDAK memenuhi"
+    standard = result.get("standard", "AA")
+    verdict = "MEMENUHI" if result.get("meets_standard") else "TIDAK memenuhi"
+    hint = _CONTRAST_THRESHOLD_HINT.get(standard, _CONTRAST_THRESHOLD_HINT["AA"])
     return (
-        f"Kontras node '{node_name}': {result['ratio']}:1 — {verdict} standar AA "
-        f"(WCAG AA butuh minimal 4.5:1 untuk teks biasa, 3:1 untuk teks besar)."
+        f"Kontras node '{node_name}': {result['ratio']}:1 — {verdict} standar "
+        f"{standard} (WCAG {standard} butuh minimal {hint})."
     )
 
 
 async def check_figma_contrast(
     file_url: str,
     node_name: str,
+    standard: str = "AA",
     out_dir: Path | None = None,
     headless: bool = False,
     timeout_s: int = 120,
 ) -> dict[str, Any]:
-    """Grounds the WCAG AA numbers already in `_FIGMA_DESIGN_SYSTEM_GUIDE`
+    """Grounds the WCAG AA/AAA numbers already in `_FIGMA_DESIGN_SYSTEM_GUIDE`
     (see docs/figma-uiux-roadmap.md Phase 7) in a real measurement instead
     of trusting the model's own color choice was actually readable. See
     `_read_contrast_for_selected_node` for the actual selector mechanism.
@@ -3025,6 +3090,9 @@ async def check_figma_contrast(
             "ok": False,
             "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
         }
+
+    if standard not in _CONTRAST_STANDARDS:
+        return {"ok": False, "error": f"standard harus salah satu dari {_CONTRAST_STANDARDS}, dapat '{standard}'."}
 
     out_dir = out_dir or paths.artifacts_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -3046,7 +3114,7 @@ async def check_figma_contrast(
                     "url": file_url,
                 }
 
-            result = await _read_contrast_for_selected_node(page)
+            result = await _read_contrast_for_selected_node(page, standard)
             if not result.get("ok"):
                 await context.close()
                 return {**result, "url": file_url}
@@ -3059,7 +3127,8 @@ async def check_figma_contrast(
                 "ok": True,
                 "node_name": node_name,
                 "ratio": result["ratio"],
-                "meets_aa": result["meets_aa"],
+                "standard": result["standard"],
+                "meets_standard": result["meets_standard"],
                 "screenshot_path": str(shot_path),
                 "markdown": md_image,
                 "detail": _contrast_detail(node_name, result),
@@ -3078,6 +3147,7 @@ async def check_figma_contrast(
 async def check_figma_contrast_batch(
     file_url: str,
     node_names: list[str],
+    standard: str = "AA",
     out_dir: Path | None = None,
     headless: bool = False,
     timeout_s: int = 180,
@@ -3092,7 +3162,11 @@ async def check_figma_contrast_batch(
     Keeps going past a single node's failure (not found / no solid fill /
     panel didn't render) — one bad name in the list shouldn't block
     reading the rest; that node's own `results` entry just carries its own
-    `ok: False` + `error` instead of aborting the whole batch.
+    `ok: False` + `error` instead of aborting the whole batch. `standard`
+    applies to every node in the list — `_set_contrast_standard` is a
+    cheap no-op once Figma is already on the requested standard, so
+    calling it fresh per node (rather than only once up front) is correct
+    regardless of whether the choice persists across popover opens.
     """
     try:
         from playwright.async_api import async_playwright
@@ -3104,6 +3178,8 @@ async def check_figma_contrast_batch(
 
     if not node_names:
         return {"ok": False, "error": "node_names kosong — sebutkan minimal satu node."}
+    if standard not in _CONTRAST_STANDARDS:
+        return {"ok": False, "error": f"standard harus salah satu dari {_CONTRAST_STANDARDS}, dapat '{standard}'."}
 
     out_dir = out_dir or paths.artifacts_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -3124,7 +3200,7 @@ async def check_figma_contrast_batch(
                         "error": f"Node '{node_name}' tidak ditemukan di file ini.",
                     })
                     continue
-                result = await _read_contrast_for_selected_node(page)
+                result = await _read_contrast_for_selected_node(page, standard)
                 results.append({"node_name": node_name, **result})
 
             await page.keyboard.press("Escape")
@@ -3141,11 +3217,11 @@ async def check_figma_contrast_batch(
         }
 
     checked = [r for r in results if r.get("ok")]
-    failing = [r for r in checked if not r.get("meets_aa")]
+    failing = [r for r in checked if not r.get("meets_standard")]
     lines = [_contrast_detail(r["node_name"], r) for r in results]
     detail = (
         f"{len(checked)}/{len(node_names)} node berhasil dicek, "
-        f"{len(failing)} TIDAK memenuhi standar AA.\n" + "\n".join(lines)
+        f"{len(failing)} TIDAK memenuhi standar {standard}.\n" + "\n".join(lines)
     )
     md_image = f"![Figma Contrast Batch Check](file:///{shot_path.as_posix()})"
     return {

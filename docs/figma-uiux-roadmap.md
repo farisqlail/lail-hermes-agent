@@ -1136,6 +1136,50 @@ time via `check_figma_contrast` — confirms the shared-session approach is
 actually faster, not just less redundant code. `tests/test_web_ui.py`
 tool-registry list updated. 807 unit tests pass.
 
+## Phase 12 — AAA standard support — ✅ DONE (2026-08-16)
+
+Last open item from Phase 10/11's "not built" list. Both
+`check_figma_contrast` and `check_figma_contrast_batch` gained a
+`standard: "AA" | "AAA"` param (default `"AA"`, unchanged behavior for
+existing callers).
+
+Live recon: the color-contrast area has a "Contrast settings" button
+(`[aria-label="Contrast settings"]`) opening a menu with `role=
+"menuitemcheckbox"` options, `data-testid` prefixed `dropdown-option-AA `
+(trailing space before "· Essential (4.5:1)") or `dropdown-option-AAA`
+("· Highest (7:1)") — unambiguous prefixes since "AAA" isn't matched by
+the "AA "-with-space prefix. New `_set_contrast_standard(page, standard)`
+reads the current standard from `[data-testid="contrast-standard-
+selected"]` first and no-ops if already correct, otherwise opens the menu
+and clicks the matching option. `_read_contrast_for_selected_node` now
+applies the standard BEFORE reading — the raw ratio between 2 colors is
+identical regardless of standard, only whether it clears the threshold
+changes, so switching after the fact would be reading a stale pass/fail.
+
+**Real bug found by testing all 3 return paths, not just the happy one:**
+a "defensive" trailing `Escape` after clicking the standard option
+(matching every other popover-closing call in this file) turned out to
+close the WHOLE color-picker popover, not just the already-self-closing
+settings dropdown — live-confirmed it broke every single-node
+`check_figma_contrast` call (batch happened to still work, since its
+per-node loop doesn't re-check after the standard switch the same way).
+Removed; no trailing Escape needed there at all.
+
+Fields renamed for clarity while only one caller of the old name existed
+(same-day feature, no external consumers): `meets_aa` → `meets_standard`
++ a new `standard` echo field, on both `check_figma_contrast`'s return and
+each entry in `check_figma_contrast_batch`'s `results` list.
+`_contrast_detail`'s WCAG hint text now varies by standard (AA: 4.5:1
+normal/3:1 large; AAA: 7:1 normal/4.5:1 large).
+
+Live-verified against the SAME borderline node (a real 6.96:1 ratio,
+`#94A3B8` text on `#0F172A`): `standard="AA"` → `meets_standard=True`
+(6.96 clears 4.5), `standard="AAA"` → `meets_standard=False` (6.96 misses
+7.0) — exactly the case that proves the switch is real, not just echoing
+back whatever was requested. Batch-checked both standards across 2 nodes
+in one session too. New `figma_web_check_contrast`/
+`figma_web_check_contrast_batch` schema field. 807 unit tests pass.
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of
@@ -1183,5 +1227,7 @@ see its own section above. Phase 8 (line-height control) is done too — see
 its own section above. Phase 9 (bold-carryover fix + TEXT wrap) is done
 too — see its own section above. Phase 10 (live contrast-checker
 automation) is done too — see its own section above. Phase 11 (batch
-contrast-check) is done too — see its own section above; open items
-across both (gradient/image fill contrast, AAA standard) are not started.
+contrast-check) is done too — see its own section above. Phase 12 (AAA
+standard support) is done too — see its own section above; the only open
+item left across Phases 10-12 is gradient/image fill contrast, not
+started.

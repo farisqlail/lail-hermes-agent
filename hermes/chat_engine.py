@@ -560,7 +560,8 @@ CHAT_TOOLS = [
                         "`node_name` (aturan sama dengan figma_web_create_style)."),
         "parameters": {"type": "object", "properties": {
             "file_url": {"type": "string", "description": "field `file_url` dari hasil build sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
-            "node_name": {"type": "string", "description": "node yang mau dicek warnanya — `node_name` dari fixable_nodes/photo_nodes, atau isi teks persis sebuah TEXT"}},
+            "node_name": {"type": "string", "description": "node yang mau dicek warnanya — `node_name` dari fixable_nodes/photo_nodes, atau isi teks persis sebuah TEXT"},
+            "standard": {"type": "string", "enum": ["AA", "AAA"], "description": "standar WCAG yang dipakai, default 'AA' (4.5:1 teks biasa/3:1 teks besar). 'AAA' (7:1/4.5:1) HANYA kalau pengguna eksplisit minta level tertinggi."}},
             "required": ["file_url", "node_name"]}}},
     {"type": "function", "function": {
         "name": "figma_web_check_contrast_batch",
@@ -574,7 +575,8 @@ CHAT_TOOLS = [
                         "figma_web_check_contrast)."),
         "parameters": {"type": "object", "properties": {
             "file_url": {"type": "string", "description": "field `file_url` dari hasil build sebelumnya (URL Figma yang nyata, bukan 'design/new')"},
-            "node_names": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "daftar node yang mau dicek warnanya, masing-masing dengan aturan penamaan sama seperti figma_web_check_contrast"}},
+            "node_names": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "daftar node yang mau dicek warnanya, masing-masing dengan aturan penamaan sama seperti figma_web_check_contrast"},
+            "standard": {"type": "string", "enum": ["AA", "AAA"], "description": "standar WCAG yang dipakai untuk SEMUA node dalam daftar, default 'AA'. 'AAA' HANYA kalau pengguna eksplisit minta level tertinggi."}},
             "required": ["file_url", "node_names"]}}},
     {"type": "function", "function": {
         "name": "figma_login",
@@ -971,6 +973,7 @@ class ChatEngine:
                     res = await figma_browser.check_figma_contrast(
                         file_url=str(args.get("file_url") or ""),
                         node_name=str(args.get("node_name") or ""),
+                        standard=str(args.get("standard") or "AA"),
                         out_dir=paths.artifacts_dir() / "figma",
                     )
                     if res.get("ok") and res.get("screenshot_path"):
@@ -989,6 +992,7 @@ class ChatEngine:
                     res = await figma_browser.check_figma_contrast_batch(
                         file_url=str(args.get("file_url") or ""),
                         node_names=[str(n) for n in node_names] if isinstance(node_names, list) else [],
+                        standard=str(args.get("standard") or "AA"),
                         out_dir=paths.artifacts_dir() / "figma",
                     )
                     if res.get("ok") and res.get("screenshot_path"):
