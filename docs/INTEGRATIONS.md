@@ -285,6 +285,37 @@ Token: Figma → avatar → **Settings → Security → Personal access tokens �
 Generate new token**, `File content: Read-only` scope is enough. Copy it once —
 it does not show again. All of its tools are reads, so they run ungated.
 
+## Stitch (AI UI generation)
+
+Generate UI screens from a text prompt via Google's Stitch, then hand the
+result straight to the Figma automation below through the
+`stitch_design_figma_frame` chat tool — Stitch draws the reference, Hermes
+reads it and rebuilds it as real Figma layers, in one call:
+
+```
+name:      stitch
+type:      http
+url:       https://stitch.googleapis.com/mcp
+transport: streamable-http
+headers:   { "X-Goog-Api-Key": "..." }
+```
+
+Key: [Google AI Studio](https://aistudio.google.com/) or Google Cloud Console
+→ enable the Stitch API for a project → generate an API key. Paste it into
+the `X-Goog-Api-Key` header value (not `env` — this is a real HTTP header,
+same field used by any other manual-header server).
+
+> [!NOTE]
+> Stitch generation can take a minute or two per screen — this is expected,
+> not a hang. The `stitch_design_figma_frame` tool polls automatically
+> instead of failing on the first timeout. Stitch itself is Google Labs
+> experimental (not an officially supported product), so behavior/limits can
+> change without much notice.
+
+Once connected, the raw `stitch__create_project`, `stitch__generate_screen_from_text`,
+`stitch__get_screen`, `stitch__edit_screens` tools are also available standalone
+for manual/advanced use, same as any other MCP server.
+
 ## Gmail (Legacy)
 
 Read, search, and (gated) send email.

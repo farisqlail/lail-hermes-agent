@@ -110,6 +110,19 @@ async def _read_position_y(page, default: float = 0.0) -> float:
         return default
 
 
+async def _read_position_x(page, default: float = 0.0) -> float:
+    """Read back the currently-selected node's X-position. Counterpart to
+    `_read_position_y` -- see that docstring for the frame-relative caveat.
+    """
+    loc = page.locator('input[aria-label="X-position"]').first
+    if await loc.count() == 0:
+        return default
+    try:
+        return float(await loc.input_value())
+    except Exception:
+        return default
+
+
 async def _set_position(page, x: float, y: float) -> None:
     """Set the currently-selected top-level node's absolute page position.
 
@@ -1073,6 +1086,150 @@ async def _place_image_fill(page, cx: float, cy: float, photo_bytes: bytes) -> b
         return False
 
 
+async def _open_unsplash_plugin(page, timeout_s: int = 20) -> Any | None:
+    """Open Figma's Unsplash plugin via Quick Actions and return its content
+    frame, switched to its Search tab -- or None on any failure (plugin not
+    installed on the logged-in account, network hiccup, etc). Every caller
+    treats None as "photos unavailable this run", not fatal -- the same
+    colored-rectangle placeholder that covers a missing Unsplash API key
+    already covers this.
+
+    Mechanism, live-confirmed 2026-08-19: the plugin's own UI does not
+    render in the `plugin-sandbox` iframe Figma nests it in -- it's a
+    SECOND, nested `data:text/html;...` iframe inside that one, locatable
+    only by its own text content (there is no stable selector Figma itself
+    assigns to plugin content). Right after the panel opens, a transient
+    overlay intercepts the first click on its tab bar, so that one click
+    needs `force=True`; nothing else here does.
+    """
+    try:
+        await page.keyboard.press("Control+K")
+        await page.wait_for_timeout(500)
+        await page.keyboard.type("Unsplash")
+        await page.wait_for_timeout(600)
+        result = page.get_by_text("Unsplash", exact=True).first
+        if await result.count() == 0:
+            await page.keyboard.press("Escape")
+            return None
+        await result.click(timeout=5000)
+    except Exception:
+        logger.info("Unsplash plugin not reachable via Quick Actions (not installed on this account?)")
+        return None
+
+    plugin_frame = None
+    for _ in range(timeout_s * 2):
+        await page.wait_for_timeout(500)
+        for fr in page.frames:
+            try:
+                body_text = await fr.locator("body").inner_text(timeout=800)
+            except Exception:
+                continue
+            if "Editorial" in body_text and "Search" in body_text:
+                plugin_frame = fr
+                break
+        if plugin_frame is not None:
+            break
+    if plugin_frame is None:
+        logger.warning("Unsplash plugin opened but its content frame never appeared")
+        return None
+
+    try:
+        await plugin_frame.get_by_text("Search", exact=True).first.click(force=True, timeout=5000)
+    except Exception:
+        logger.warning("Could not switch Unsplash plugin to its Search tab")
+        return None
+    return plugin_frame
+
+
+async def _close_unsplash_plugin(page) -> None:
+    """Best-effort close of the panel `_open_unsplash_plugin` opened.
+    Escape is Figma's universal panel-dismiss key. Never raises -- this
+    only ever runs during cleanup.
+
+    Also clicks the canvas afterward to force keyboard focus back onto the
+    main page: live-confirmed 2026-08-19 that right after Escape, the very
+    next `Control+Shift+K` (`_place_image_fill`'s "place image" shortcut)
+    can silently fail to open Figma's native file-chooser at all -- focus
+    was still effectively inside the just-closed plugin's iframe rather
+    than the page, so the global shortcut never reached Figma's own
+    handler. A neutral canvas click (not `_place_image_fill`'s own target
+    x/y, just anywhere safe) resolves it.
+    """
+    try:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(300)
+        canvas_box = await page.locator("canvas").first.bounding_box()
+        if canvas_box:
+            await page.mouse.click(canvas_box["x"] + 10, canvas_box["y"] + 10)
+        await page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+
+async def _fetch_stock_photo_via_plugin(plugin_frame, query: str) -> bytes | None:
+    """Search Unsplash from inside its Figma plugin (already open, on its
+    Search tab -- see `_open_unsplash_plugin`) and download the first
+    non-premium result's bytes. The plugin-based counterpart to
+    `_fetch_stock_photo`, for an account that has the plugin installed
+    instead of an Unsplash API key configured.
+
+    Free results load from `images.unsplash.com`; Unsplash+ (paid, locked)
+    results load from `plus.unsplash.com` -- live-confirmed this is a
+    reliable way to skip locked photos without parsing the "Unlock" badge.
+    """
+    try:
+        search_input = plugin_frame.locator("input").first
+        await search_input.click(timeout=5000)
+        await search_input.fill("")
+        await search_input.type(query)
+        await search_input.press("Enter")
+        await plugin_frame.page.wait_for_timeout(1500)
+        imgs = plugin_frame.locator("img")
+        n = await imgs.count()
+        src = None
+        for i in range(n):
+            candidate = await imgs.nth(i).get_attribute("src")
+            if candidate and "images.unsplash.com" in candidate:
+                src = candidate
+                break
+        if not src:
+            return None
+        import httpx
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(src)
+            resp.raise_for_status()
+            return resp.content
+    except Exception:
+        logger.exception("Failed to fetch Unsplash photo via plugin for query %r", query)
+        return None
+
+
+async def _fetch_stock_photo_any(
+    page, query: str, orientation: str, unsplash_key: str | None,
+) -> bytes | None:
+    """An Unsplash API key first, then the Figma plugin -- whichever is
+    actually configured/available this run. Neither present: no photo.
+
+    The plugin is opened and closed around just this one fetch, not left
+    open for the caller's whole build: its panel visually sits on top of
+    the canvas and swallows clicks meant for it, so anything else driven
+    through the canvas/properties panel (drawing shapes, setting a
+    width/height field, ...) breaks the moment it's left open across more
+    than this single search-and-grab-a-url step. Live-confirmed 2026-08-19
+    — leaving it open across a whole `_place_items` call made EVERY
+    element in that build fail, not just the photo ones.
+    """
+    if unsplash_key:
+        return await _fetch_stock_photo(query, unsplash_key, orientation=orientation)
+    plugin_frame = await _open_unsplash_plugin(page)
+    if plugin_frame is None:
+        return None
+    try:
+        return await _fetch_stock_photo_via_plugin(plugin_frame, query)
+    finally:
+        await _close_unsplash_plugin(page)
+
+
 async def _add_composite(
     page, cx: float, cy: float, w: float, h: float,
     color: str, direction: str, gap: float, padding: float,
@@ -1331,8 +1488,8 @@ async def _place_items(
                 )
                 photo_query = item.get("photoQuery")
                 placed = False
-                if photo_query and unsplash_key:
-                    photo = await _fetch_stock_photo(photo_query, unsplash_key, orientation="landscape")
+                if photo_query:
+                    photo = await _fetch_stock_photo_any(page, photo_query, "landscape", unsplash_key)
                     if photo:
                         placed = await _place_image_fill(page, cx, cy, photo)
                 photo_registry["nodes"].append({
@@ -1353,8 +1510,8 @@ async def _place_items(
                 )
                 photo_query = item.get("photoQuery")
                 placed = False
-                if photo_query and unsplash_key:
-                    photo = await _fetch_stock_photo(photo_query, unsplash_key, orientation="squarish")
+                if photo_query:
+                    photo = await _fetch_stock_photo_any(page, photo_query, "squarish", unsplash_key)
                     if photo:
                         placed = await _place_image_fill(page, cx, cy, photo)
                 if is_avatar:
@@ -1724,70 +1881,80 @@ async def _build_frame_via_ui(
         except Exception:
             is_existing_frame = False
 
+    restore_position: tuple[float, float] | None = None
     if is_existing_frame and root_row_selector:
-        # EDIT EXISTING FRAME IN-PLACE
-        logger.info("Editing existing frame in-place: %s", root_row_selector)
+        # REPLACE the existing frame outright (delete + recreate at the same
+        # position) rather than trying to clear its children in place.
+        #
+        # Two clear-in-place approaches were tried and abandoned, both
+        # live-confirmed broken (see docs/figma-uiux-roadmap.md and
+        # memory `figma-edit-frame-clear-children-bug`):
+        #  1. An Enter-based drill-in to select+delete children: Enter's
+        #     actual effect turned out to be selecting exactly ONE child
+        #     (not "all children" as Figma's own docs claim) and was even
+        #     inconsistent run to run (sometimes a no-op) depending on the
+        #     Layers panel's expand state — not reliable enough to loop on.
+        #  2. A canvas double-click (to "enter" the frame) + Ctrl+A + Delete:
+        #     when the double-click landed on a leaf child instead of truly
+        #     entering the frame, Ctrl+A silently widened to PAGE scope and
+        #     Delete wiped every top-level frame on the page — recovered
+        #     only via Figma's own Show version history.
+        #
+        # Deleting the frame's OWN row is not ambiguous: selecting exactly
+        # one row and pressing Delete has no scope question, live-confirmed
+        # to remove precisely that node (and its descendants) and nothing
+        # else. The cost: the frame gets a new node id (a bookmarked
+        # node-id link to the old one stops resolving) — smaller and more
+        # honest than silent duplication or a page-wide wipe.
+        logger.info("Replacing existing frame (delete + recreate at same position): %s",
+                    root_row_selector)
+        await page.locator(root_row_selector).click(force=True)
+        await page.wait_for_timeout(150)
         try:
-            # 1. Clean existing children if present
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(200)
-            cur_sel = await _current_row_selector(page)
-            if cur_sel != root_row_selector:
-                # Children layers were selected, select all and delete them
-                await page.keyboard.press("Control+A")
-                await page.wait_for_timeout(150)
-                await page.keyboard.press("Delete")
-                await page.wait_for_timeout(300)
-            # 2. Reselect the root frame row
-            await page.locator(root_row_selector).click(force=True)
-            await page.wait_for_timeout(200)
+            restore_position = (await _read_position_x(page), await _read_position_y(page))
         except Exception as e:
-            logger.warning("Notice while clearing existing frame children: %s", e)
+            logger.warning("Could not read old frame's position before replacing it: %s", e)
+        await page.keyboard.press("Delete")
+        await page.wait_for_timeout(300)
 
-        # 3. Update frame size, fill, and Auto Layout properties
+    # CREATE NEW FRAME — also how a replaced frame above gets rebuilt; this
+    # path was always reliable on its own, the bug only ever lived in the
+    # clear-in-place branch that used to precede it.
+    width_field = page.locator('[data-onboarding-key="scrubbable-control-width"] input').first
+    for attempt in range(4):
+        canvas_box = await canvas.bounding_box()
+        anchor_x, anchor_y = canvas_box["x"] + 80, canvas_box["y"] + 60
+        await _draw(page, "f", anchor_x, anchor_y, w=120, h=120)
         try:
-            await _set_number(page, "scrubbable-control-width", width)
-            await _set_number(page, "scrubbable-control-height", height)
+            await width_field.wait_for(state="visible", timeout=6000)
+            break
         except Exception:
-            await _lock_fixed_size(page, width, height)
+            if attempt == 3:
+                raise
+            logger.warning("Root frame draw attempt %d didn't register, retrying", attempt + 1)
+            # Pressing 'f' again while the frame tool's "Dimension Presets"
+            # side panel is already open (from the failed attempt) doesn't
+            # reliably re-arm the tool — Escape closes that panel first so
+            # the retry starts from a clean state instead of compounding.
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(1500)
+    await _set_number(page, "scrubbable-control-width", width)
+    await _set_number(page, "scrubbable-control-height", height)
+    await _set_fill_hex(page, bg)
+    await _apply_auto_layout(page, direction, pad_lr, pad_tb, gap, centered=False)
+    root_row_selector = await _current_row_selector(page)
+    if frame_name:
         try:
-            await _set_fill_hex(page, bg)
-            await _apply_auto_layout(page, direction, pad_lr, pad_tb, gap, centered=False)
-            await _lock_fixed_size(page, width, height)
-            if frame_name:
-                await _rename_layer(page, frame_name)
+            await _rename_layer(page, frame_name)
+        except Exception:
+            pass
+    if restore_position is not None:
+        try:
+            await page.locator(root_row_selector).click(force=True)
+            await page.wait_for_timeout(150)
+            await _set_position(page, *restore_position)
         except Exception as e:
-            logger.warning("Notice updating existing frame properties: %s", e)
-    else:
-        # CREATE NEW FRAME
-        width_field = page.locator('[data-onboarding-key="scrubbable-control-width"] input').first
-        for attempt in range(4):
-            canvas_box = await canvas.bounding_box()
-            anchor_x, anchor_y = canvas_box["x"] + 80, canvas_box["y"] + 60
-            await _draw(page, "f", anchor_x, anchor_y, w=120, h=120)
-            try:
-                await width_field.wait_for(state="visible", timeout=6000)
-                break
-            except Exception:
-                if attempt == 3:
-                    raise
-                logger.warning("Root frame draw attempt %d didn't register, retrying", attempt + 1)
-                # Pressing 'f' again while the frame tool's "Dimension Presets"
-                # side panel is already open (from the failed attempt) doesn't
-                # reliably re-arm the tool — Escape closes that panel first so
-                # the retry starts from a clean state instead of compounding.
-                await page.keyboard.press("Escape")
-                await page.wait_for_timeout(1500)
-        await _set_number(page, "scrubbable-control-width", width)
-        await _set_number(page, "scrubbable-control-height", height)
-        await _set_fill_hex(page, bg)
-        await _apply_auto_layout(page, direction, pad_lr, pad_tb, gap, centered=False)
-        root_row_selector = await _current_row_selector(page)
-        if frame_name:
-            try:
-                await _rename_layer(page, frame_name)
-            except Exception:
-                pass
+            logger.warning("Could not restore old frame's position: %s", e)
 
     # First click point, nothing placed yet: bias off `_append_bias` with
     # used=0 rather than jumping straight to a high fixed fraction — an
@@ -2382,13 +2549,6 @@ async def fix_figma_photo(
             "error": "Playwright is not installed. Run `pip install playwright` and `playwright install chromium`.",
         }
 
-    if not unsplash_key:
-        return {
-            "ok": False,
-            "error": "Unsplash API key belum diset — tidak bisa mengambil foto asli. "
-                     "Minta pengguna set Unsplash access key di Settings dulu.",
-        }
-
     out_dir = out_dir or paths.artifacts_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     shot_filename = f"figma_fix_{uuid.uuid4().hex[:8]}.png"
@@ -2412,12 +2572,17 @@ async def fix_figma_photo(
                 }
             cx, cy = await _zoom_to_selection(page)
 
-            photo = await _fetch_stock_photo(photo_query, unsplash_key, orientation=orientation)
+            photo = await _fetch_stock_photo_any(page, photo_query, orientation, unsplash_key)
             if not photo:
                 await context.close()
                 return {
                     "ok": False,
-                    "error": f"Gagal mengambil foto Unsplash untuk query '{photo_query}'.",
+                    "error": (
+                        f"Gagal mengambil foto Unsplash untuk query '{photo_query}'. "
+                        "Cek Unsplash access key di Settings, atau kalau tidak pakai key, "
+                        "pastikan plugin Unsplash terinstall di akun Figma yang dipakai "
+                        "sesi otomasi ini (lihat docs/INTEGRATIONS.md)."
+                    ),
                     "url": file_url,
                 }
             placed = await _place_image_fill(page, cx, cy, photo)

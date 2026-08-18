@@ -80,6 +80,14 @@ def _default_mcp_servers() -> list[McpServer]:
         McpServer(name="figma", type="stdio", command="npx",
                   args=["-y", "figma-developer-mcp", "--stdio"], enabled=False,
                   env={"FIGMA_API_KEY": ""}),
+        # Google Stitch: AI UI generation (text prompt -> screen + screenshot).
+        # Real MCP server (not a REST API) — streamable-HTTP, auth via a plain
+        # header. `stitch_design_figma_frame` (chat_engine.py) is the composite
+        # tool that drives this end-to-end; the raw `stitch__*` tools also show
+        # up standalone once connected. See docs/INTEGRATIONS.md for the key.
+        McpServer(name="stitch", type="http", url="https://stitch.googleapis.com/mcp",
+                  transport="streamable-http", enabled=False,
+                  headers={"X-Goog-Api-Key": ""}),
     ]
 
 class Settings(BaseModel):

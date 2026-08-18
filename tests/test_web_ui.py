@@ -558,7 +558,8 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
     import importlib.util
     if importlib.util.find_spec("yt_dlp") is not None:
         expected += ["youtube_clip", "viral_clip", "viral_clips"]
-    expected += ["figma_web_design", "figma_web_design_flow", "figma_web_fix_photo",
+    expected += ["figma_web_design", "figma_web_design_flow",
+                 "stitch_design_figma_frame", "figma_web_fix_photo",
                  "figma_web_fix_text", "figma_web_fix_property",
                  "figma_web_create_style", "figma_web_apply_style",
                  "figma_web_apply_style_batch",
