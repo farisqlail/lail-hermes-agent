@@ -1588,6 +1588,86 @@ button"]` (`aria-label="Add new page"`), not text-matching "Pages" — only
 appears once the canvas/editor UI has fully loaded, not right after
 `_open_figma_session` returns.
 
+## Phase 21 — Self-check auto-fix: report becomes act (2026-08-18)
+
+Closed the loop Phase 3 Step 1 left open: the self-check message already
+put the build's own screenshot back in front of the model with `tools`
+still available next round, but `_FIGMA_SELFCHECK_PROMPT`/
+`_FIGMA_SELFCHECK_FLOW_PROMPT` only ever asked the model to *describe* a
+mismatch ("Sebutkan SECARA KONKRET..."), never to act on it — so a model
+that found a fixable mismatch (wrong photo, wrong text, wrong
+BUTTON/INPUT/CHECKBOX/RECTANGLE color/width/height) would report it as a
+final answer and stop, even though `figma_web_fix_photo`/
+`figma_web_fix_text`/`figma_web_fix_property` were sitting right there in
+its own tool list. No new mechanism needed — `hermes/main.py`'s `chat()`/
+`stream()` loop, `_call_tool_once`'s exact-args dedup, and
+`MAX_TOOL_ROUNDS = 8`'s round budget already fully support a model calling
+a fix tool off the back of a self-check message; this was purely a prompt
+wording gap.
+
+Both prompt constants reworded to explicitly instruct: call the matching
+fix tool now (using `file_url`/`node_name`/`current_text` already in the
+conversation from the earlier build result — never guessed) when a
+mismatch falls in one of the three fix tools' scope, and only fall back to
+a plain text description when the mismatch is outside that scope (border,
+shadow, radius, layout/spacing/nesting/order) or a fix for the exact same
+issue was already tried and it's still wrong (avoids an endless
+retry-the-same-fix loop; bounded anyway by the existing round budget and
+dedup).
+
+**Live-verified end to end (2026-08-18), both cases, through the real,
+unmodified `chat()` loop / `_figma_selfcheck_message` / `CHAT_TOOLS`
+schemas and the real configured chat model:**
+
+- **Positive case:** built a frame (`Autofix Verify`, 375×200, white
+  background, "Konfirmasi" heading, a BUTTON labeled "Simpan") with the
+  BUTTON deliberately GREEN (`#16A34A`) against a request asking for a RED
+  (`#DC2626`) button. On seeing its own self-check screenshot, the model's
+  very next round was a `figma_web_fix_property` tool call
+  (`node_name: "hermes:node:0:button"`, `property: "color"`, `value:
+  "#DC2626"`) — not a prose description — using the exact `file_url`/
+  `node_name` from the original build result already in context, no
+  guessing. The fix applied successfully; the model's final answer was
+  "Sudah sesuai."
+- **Negative control:** same file, a second frame built with the button
+  already the correct red from the start. The model's response was a
+  correct per-field "sesuai" checklist ("Frame 375x200 px: pas... Tombol
+  'Simpan' merah (#DC2626): pas... Tidak ada perbaikan diperlukan.") and,
+  confirmed via a dispatch that raises if any fix tool is called, it did
+  NOT call any fix tool — the new wording didn't make the model fix things
+  that aren't broken.
+
+**A real, pre-existing bug found (not fixed) during this live run, unrelated
+to the self-check prompt change:** `_set_number`'s click on a
+`scrubbable-control-*` numeric field intermittently fails with
+`Locator.click: Timeout 8000ms exceeded` — `<label>` intercepts pointer
+events" — hit twice out of five live builds this session, once on
+`scrubbable-control-horizontal-padding` and once on
+`scrubbable-control-width`, both during the plain `_apply_auto_layout`/
+initial-size step of an otherwise ordinary single-BUTTON build (nothing to
+do with gradients, styles, or anything Phase 1-20 added). Looks like the
+same class of hover-tooltip-overlay flake this file has hit before (e.g.
+`_return_to_parent`'s `force=True` fix for an obscuring lock/visibility
+toggle) but on a different, more central control (Auto Layout's own
+padding/width fields) than any prior documented instance. Both failures
+self-recovered on a plain retry with no code change — not investigated
+further or fixed here (out of scope: this plan's own constraint was
+prompt-only, no `figma_browser.py` changes) — flagged for a dedicated
+live-recon session the same way this file already flags its other open
+residuals (Grid height, grid-of-cards reliability).
+
+**Process note:** the first live-verification attempt this session
+accidentally created a second brand-new Figma file (`file_url=None`) for a
+retry instead of reusing the first build's own `file_url` — burns the
+account's new-file rate limit for no reason once one reusable file exists.
+Corrected for the rest of the session (both the positive and negative-control
+runs above reused the SAME file, adding a new frame each time) — see agent
+memory `figma-live-testing-reuse-file` for the standing rule going forward.
+
+Files touched: `hermes/main.py` (`_FIGMA_SELFCHECK_PROMPT`,
+`_FIGMA_SELFCHECK_FLOW_PROMPT`), `tests/test_main_smoke.py` (fix-tool-
+chaining regression test + content-lock tests for both prompts).
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of
