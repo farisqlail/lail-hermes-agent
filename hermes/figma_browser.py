@@ -51,7 +51,14 @@ async def _set_number(page, onboarding_key: str, value: float, last: bool = Fals
     """
     base = page.locator(f'[data-onboarding-key="{onboarding_key}"] input')
     loc = base.last if last else base.first
-    await loc.click(timeout=8000)
+    # force=True: the wrapping `<label data-onboarding-key="scrubbable-control-*">`
+    # shows a hover tooltip that Playwright's actionability check treats as
+    # obscuring the input — re-armed by the hover Playwright itself performs
+    # before every retry, so it never settles within the timeout. Same
+    # hover-artifact shape as `_return_to_parent`'s own force=True fix; safe
+    # here too since a native <label> wrapping an <input> forwards
+    # click/focus to it regardless of exact pixel.
+    await loc.click(timeout=8000, force=True)
     await page.keyboard.press("Control+A")
     await loc.type(str(round(value)))
     await page.keyboard.press("Enter")

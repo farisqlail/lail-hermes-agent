@@ -1668,6 +1668,53 @@ Files touched: `hermes/main.py` (`_FIGMA_SELFCHECK_PROMPT`,
 `_FIGMA_SELFCHECK_FLOW_PROMPT`), `tests/test_main_smoke.py` (fix-tool-
 chaining regression test + content-lock tests for both prompts).
 
+## Phase 22 — `_set_number` click flake fixed (2026-08-18)
+
+Follow-up to Phase 21's own "found, not fixed" note: `_set_number`'s click
+on a `scrubbable-control-*` numeric field (padding, gap, width, height —
+every plain-number field in the properties panel) intermittently failed
+with `Locator.click: Timeout 8000ms exceeded ... <label>...</label>
+intercepts pointer events`, hit twice in five live builds the prior
+session.
+
+**Root cause:** this file's own standing comment on `_set_number`
+(`hermes/figma_browser.py:32-34`) already documents that the scrubbable
+`<input>` is wrapped in a `<label data-onboarding-key="scrubbable-control-*">`
+— the DOM dump in the crash showed that same label also carries
+`data-tooltip`/`data-tooltip-show-on-target-only` attributes, i.e. it shows
+a hover tooltip. Playwright's actionability check hovers the input before
+every click attempt, which keeps re-arming the label's own tooltip, so the
+"pointer target is the input or a descendant" check never settles inside
+the 8s timeout — a hover-artifact race, not a real interaction hazard.
+
+**Pattern match:** this exact shape of bug — a hover-revealed element that
+Playwright's strict actionability check refuses to click through — was
+already found and fixed once before in this same file, in
+`_return_to_parent` (Phase 2): "`force=True`: the Layers panel reveals a
+lock/visibility toggle checkbox on hover that Playwright's actionability
+check treats as obscuring the row... safe here — it's a hover-rendering
+artifact, not a real interaction hazard." Same reasoning applies to
+`_set_number`: a native `<label>` wrapping an `<input>` forwards
+click/focus to that input regardless of the exact pixel Playwright's
+synthetic click lands on, so skipping the strict check is safe.
+
+**Fix:** added `force=True` to `_set_number`'s click — one line, no other
+change, matching the plan's own root-cause (not symptom) rule: every
+`_set_number` call site (padding, gap, width, height, opacity, corner
+radius, stroke weight — every caller in this file) shares this exact fix
+instead of patching around it per call site.
+
+**Live-verified (2026-08-18):** 3 sequential builds in the same existing
+file (never mint a new file per attempt — see
+`figma-live-testing-reuse-file` agent memory), each with a TEXT + BUTTON +
+RECTANGLE (BUTTON alone already exercises `_set_number` for the root
+frame's padding/gap/width/height and the RECTANGLE's own width/height) —
+all 3 builds succeeded, 3/3 children each, zero
+label-intercepts-pointer-events failures, versus 2 failures out of 5 builds
+in the prior session before the fix.
+
+Files touched: `hermes/figma_browser.py` (`_set_number`).
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of
