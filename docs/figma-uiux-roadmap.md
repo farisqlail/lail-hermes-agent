@@ -1439,6 +1439,155 @@ PNG (title, subtitle, both inputs with correct placeholders, purple pill
 button, link), proving Phases 1-17's accumulated features didn't regress
 the base fidelity this whole capability depends on. 807 unit tests pass.
 
+## Phase 19 — Grid height residual: wrapper-clip attempt — ❌ TRIED AND REVERTED (2026-08-16)
+
+Picked up the Grid height residual flagged at the end of Phase 2 ("a
+dedicated session, not a quick follow-up"). Two things confirmed live this
+session, one new mechanism attempted and abandoned:
+
+**Confirmed beyond doubt: a Grid frame's height CANNOT be forced smaller
+once it has content, ever, not just eventually.** Built a purpose-built
+probe (`HERMES_GRID_DEBUG`-gated prints, since removed) that read the
+height field IMMEDIATELY after calling `_lock_grid_height` mid-build —
+not after a delay, not after navigating away. A 6-item/3-column build's
+height log read `204, 204, 396, 396, 396, 588` (the `588` being the
+phantom-empty-row reservation the moment the last row exactly fills, same
+mechanism Phase 2 already documented). Re-locking to `396` (the log's
+second-to-last value — provably the correct pre-phantom height) and
+reading back the SAME field in the SAME synchronous flow still showed
+`588`. Figma's Grid engine (`rows` left on "Auto" — required, see Phase
+2) owns final say over its own height; the Fixed/Hug resizing-mode field
+is not a real lever once content exists, confirming (with harder evidence
+this time) what Phase 2's own two reverted attempts already suspected.
+
+**Attempted fix: stop fighting the Grid's own height, hide the overflow
+instead.** Any frame drawn with the Frame tool clips its content by
+default (confirmed live: "Clip content" checkbox, checked, in the Design
+panel for every frame this file creates). New approach: wrap the Grid
+inside a plain Fixed-height auto-layout frame (`direction="VERTICAL"`,
+`align_start=True`, 0 padding/gap) sized to the TRUE target height: the
+Grid itself draws taller than needed (target + 300px headroom) INSIDE
+that wrapper, and the wrapper's clip cuts off the phantom row instead of
+fighting Figma's field. The wrapper's own Fixed-size lock IS reliable
+(same `_lock_fixed_size` mechanism every other composite in this file
+already depends on) — confirmed live: wrapper read back at exactly its
+locked height (204) after the full build, no drift.
+
+**Why it was reverted: introduced a WORSE bug than the one it fixed.**
+Live-testing the wrapper (existing file `Jztp6LS2EJpv4ZnJckN5pz`, fresh
+Page) found the Grid's own on-screen bounds balloon past what the wrapper
+clips, and a click computed by zooming-to-fit the (oversized) Grid itself
+lands in the clipped-away region — which doesn't hit-test into the Grid
+at all. First attempt: item 1 escaped as a stray sibling of the wrapper
+instead of nesting into the Grid (confirmed via Layers-panel dump:
+`Frame 32(wrapper) > [Frame 33(grid, empty), Item 1]`, not nested).
+Second attempt: zoomed against the WRAPPER instead of the Grid for click
+math (safe, correctly-sized target) and explicitly reselected the Grid
+before each item's actual draw (fixed item 1). Still failed for items
+2-6: EVERY subsequent item escaped to the wrapper the same way item 1
+initially did (confirmed via a "6 selected" Layers-panel screenshot:
+`Item 4/2/5/3/6` all shown at the Grid's OWN sibling indent level, next
+to a still-collapsed, still-empty `Frame 36`) — and a third fix (explicit
+Grid-reselect immediately before the click-bias zoom step, not just
+before the draw) produced an IDENTICAL escape pattern, byte-for-byte same
+screenshot layout. The exact mechanism causing items 2-6 to keep escaping
+even after matching item 1's now-working sequence was NOT found — ran out
+of budget for another live-recon round (dumping the real DOM/position
+values inside the escape moment itself, not just before/after) needed to
+actually pin it down, unlike Phase 2's own STACK-bias bugs which each got
+resolved by exactly that kind of live instrumentation.
+
+**Reverted in full** (`git checkout -- hermes/figma_browser.py` back to
+Phase 18's state) rather than ship a mechanism that trades a cosmetic
+height overshoot for content silently escaping its intended container —
+strictly worse for a caller relying on the output. The height residual
+documented at the end of Phase 2 stands, now with stronger live evidence
+that direct field manipulation is a dead end. **A real fix needs either**
+(a) the wrapper-clip idea carried through with a proper live-recon
+session on WHY items 2+ specifically escape post-item-1 (dump exact
+click coordinates vs. both frames' real on-screen rects at the moment of
+the failing click, not just before/after state), or (b) reading Figma's
+Grid height back only ONCE, fully-settled, after ALL children exist and
+no further phantom-row reservation will fire — not attempted this
+session either. Flag for a dedicated session with a bigger live-recon
+budget, same as Phase 2 originally flagged this for.
+
+## Phase 20 — Production incident: canvas-timeout bounce + grid-of-cards reliability — ⚠️ PARTIALLY FIXED (2026-08-16)
+
+Triggered by a real user report: a chat request to build a "Pet Profile /
+Breed picker" screen from an uploaded mockup image (reproducing a
+reference frame already living in a shared Figma file) failed silently
+twice in a row, and the ONE build that did complete didn't visually match
+the reference at all. Investigated via the actual conversation history in
+`hermes.db` (not a synthetic repro first) — real evidence before any
+live-recon.
+
+**Bug 1 — FIXED: canvas-timeout bounce.** A separate, unrelated chat
+attempt (a login-mockup reproduction, same day) failed twice with a bare
+`Locator.wait_for: Timeout 30000ms exceeded`. Root cause: Figma's
+navigation sometimes bounces through an intermediate dashboard page
+(`.../files/team/<id>/recents-and-sharing`) before settling on the actual
+design file — live-reproduced repeatedly this session against an
+EXISTING file URL, unrelated to the `design/new` rate limit Phase 18
+already handles. `_open_figma_session` had no retry for this, so every
+downstream `canvas.wait_for` just hung the full 30s waiting for a canvas
+that would never appear on a dashboard page. Fix: `_open_figma_session`
+now retries the SAME `goto` up to 3 times (3s apart) if the URL isn't
+actually on `/design/` yet — live-verified: a session that bounced now
+lands on the real file without any caller-side retry logic.
+
+**Bug 2 — PARTIALLY FIXED: grid-of-cards items escape/corrupt past the
+2nd one.** The Pet Profile screen needed a 2-column grid of breed cards
+(each card = an avatar + a name, i.e. a STACK composite, not plain TEXT)
+— reproduced live: cards 1-2 nested correctly, every card from #3 onward
+escaped as a stray root-level sibling. Root cause found: `grid_mode`'s
+per-item measurement (`_place_items`, tracks `used` for the next click's
+bias) reselects "whatever's currently selected" to read its real Y-
+position — for a composite GRID CHILD, that's whatever its OWN
+`fill_children` last touched internally (e.g. the card's name TEXT), not
+the card's own outer frame. Reading a TEXT node's Y-position (relative to
+ITS immediate parent, the card) instead of the card's real height
+under-reports `used` by roughly the card's own height, snowballing worse
+each subsequent item. **Fixed:** ROW/STACK/GRID branches now stash their
+own outer-frame selector (`composite_row_selector`, set right before
+`fill_children` runs, before selection moves) and `grid_mode`'s
+measurement step prefers it over blindly trusting "whatever's selected."
+
+**Confirmed NOT a full fix.** Re-tested live after the fix: same 2-column
+breed-card GRID repro still corrupted past card 2 — contained WITHIN the
+frame instead of escaping to distant clutter (a real, visible
+improvement, and clutter was ALSO a confirmed confound — see below), but
+still wrong. A second attempt tried the ALREADY-proven-reliable ROW-of-
+STACK-cards pattern (Phase 2's fix, live-verified there for cards with no
+further children) instead of GRID entirely — this performed WORSE:
+every card's avatar gained an extra unwanted nesting level and every
+card's name TEXT escaped to the ROOT frame, none staying inside their
+card. **Conclusion: composite children (cards with their own nested
+avatar+text) inside EITHER a GRID or a ROW are an unreliable pattern
+overall** — proven reliable so far only for GRID/ROW children that are
+plain leaves (TEXT) or simple 1-purpose composites (BUTTON/INPUT). Not
+resolved this session; flag for a dedicated live-recon session the same
+way Phase 19's Grid-height residual was flagged. Near-term mitigation:
+avoid multi-child-card grids/rows in generated specs until fixed —
+simpler layouts (flat list of cards, one per row, no nested grid/row
+wrapper) don't hit this bug.
+
+**Confirmed confound, not the root cause: page clutter.** This session's
+own Phase 19 investigation had been silently failing to create fresh
+Pages for isolation (the "Pages" text locator it relied on doesn't always
+render — Figma's left panel can collapse that header when only one page
+exists) — every earlier live test that session had been piling onto a
+SINGLE page, which grew to 40+ leftover frames by the time this
+investigation started. That clutter measurably worsened Bug 2's symptom
+(cards escaping to essentially random, distant canvas coordinates
+matching unrelated leftover clutter) but reproduces on a genuinely clean
+page too (contained within the frame instead) — so it's a real
+aggravating factor, not the underlying cause. Fixed the page-creation
+mechanism itself: the reliable control is `[data-testid="new-page-
+button"]` (`aria-label="Add new page"`), not text-matching "Pages" — only
+appears once the canvas/editor UI has fully loaded, not right after
+`_open_figma_session` returns.
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of

@@ -1271,6 +1271,23 @@ async def _place_items(
     parent_extent = parent_w if parent_direction == "HORIZONTAL" else parent_h
     for item in items:
         itype = str(item.get("type") or "").upper()
+        # Set by the ROW/STACK/GRID branches below, right while the
+        # composite's OWN outer frame is still the live selection (just
+        # before their `fill_children` callback runs and moves selection
+        # into whatever they place last). `grid_mode`'s post-item
+        # measurement needs this: without it, `_current_row_selector`
+        # resolves to the composite's own LAST-PLACED INNER child instead
+        # (e.g. a card's breed-name TEXT, not the card frame) — its
+        # Y-position is then read relative to the card, not the grid,
+        # under-reporting `used` by the card's own height. A real,
+        # confirmed bug fixed here -- but NOT a full fix for grid-of-cards
+        # reliability: a live repro (2-column breed-picker, each cell a
+        # STACK card with an avatar + name) still corrupted past the 2nd
+        # card even with this in place. See docs/figma-uiux-roadmap.md's
+        # Phase 20 notes -- composite children (cards, not plain TEXT) in
+        # a GRID or ROW are a known-unreliable pattern, flagged for a
+        # dedicated session, not resolved by this fix alone.
+        composite_row_selector: str | None = None
         try:
             if itype in ("TEXT", "FOOTER_LINK"):
                 await _add_text(
@@ -1451,7 +1468,9 @@ async def _place_items(
                     _direction=box_direction, _w=box_w, _h=box_h,
                     _gap=box_gap, _pad=box_padding,
                 ) -> None:
+                    nonlocal composite_row_selector
                     box_selector = await _current_row_selector(page)
+                    composite_row_selector = box_selector
                     await _place_items(
                         page, icx, icy, _items, _child_w, box_selector,
                         parent_direction=_direction, unsplash_key=unsplash_key,
@@ -1495,7 +1514,9 @@ async def _place_items(
                     _w=box_w, _h=box_h, _gap_row=box_gap_row, _pad=box_padding,
                     _columns=columns,
                 ) -> None:
+                    nonlocal composite_row_selector
                     box_selector = await _current_row_selector(page)
+                    composite_row_selector = box_selector
                     await _place_items(
                         page, icx, icy, _items, _child_w, box_selector,
                         parent_direction="VERTICAL", unsplash_key=unsplash_key,
@@ -1568,7 +1589,15 @@ async def _place_items(
                 # shallower row than an earlier column), so the next click
                 # always lands past the tallest content so far regardless of
                 # which column it came from.
-                node_selector = await _current_row_selector(page)
+                # `composite_row_selector` (set above, only when this item
+                # was itself a ROW/STACK/GRID) points at the composite's OWN
+                # outer frame. Without it, `_current_row_selector` here
+                # would resolve to whatever that composite's `fill_children`
+                # left selected -- its own LAST-PLACED INNER child (e.g. a
+                # breed-card's name TEXT), not the card frame -- and its
+                # Y-position reads relative to the CARD, not the grid,
+                # under-reporting `used` by roughly the card's own height.
+                node_selector = composite_row_selector or await _current_row_selector(page)
                 await page.locator(node_selector).click(force=True)
                 await page.wait_for_timeout(150)
                 node_y = await _read_position_y(page)
@@ -1867,6 +1896,30 @@ async def _open_figma_session(p, target_url: str, headless: bool) -> tuple[Any, 
                 ),
                 "url": target_url,
             }
+
+    # Figma sometimes bounces the initial navigation through an
+    # intermediate dashboard page (`.../files/team/<id>/recents-and-
+    # sharing`) before settling on the actual design file -- live-
+    # reproduced repeatedly in a separate diagnostic session against an
+    # EXISTING file URL (not the `design/new`-specific rate limit handled
+    # below). Without a retry, the URL is left on that dashboard page,
+    # which has no canvas at all -- every downstream `canvas.wait_for
+    # (timeout=30000)` call then just hangs the full 30s waiting for a
+    # canvas that will never appear there. This is a real, reproduced
+    # production failure (a chat request to build a Figma frame from an
+    # uploaded mockup failed twice in a row with exactly this signature:
+    # `Locator.wait_for: Timeout 30000ms exceeded`). Re-issuing the SAME
+    # goto is what resolved it live -- the bounce is transient, not a real
+    # redirect target.
+    if "/design/" in target_url and "/design/" not in page.url:
+        for _ in range(3):
+            try:
+                await page.goto(target_url, wait_until="commit", timeout=30000)
+            except Exception as retry_err:
+                logger.warning(f"Retry goto after dashboard bounce: {retry_err}")
+            await page.wait_for_timeout(3000)
+            if "/design/" in page.url:
+                break
 
     # Figma's own rate limit on `design/new` ("You're creating too many new
     # files too quickly") renders as a bare line of text — no canvas, no
