@@ -847,6 +847,24 @@ def test_figma_selfcheck_message_ignores_malformed_json():
     assert main._figma_selfcheck_message("figma_web_design", "not json") is None
 
 
+def test_figma_selfcheck_prompt_tells_the_model_to_call_fix_tools():
+    from hermes import main
+    p = main._FIGMA_SELFCHECK_PROMPT
+    assert "figma_web_fix_photo" in p
+    assert "figma_web_fix_text" in p
+    assert "figma_web_fix_property" in p
+    assert "PANGGIL" in p and "SEKARANG" in p
+
+
+def test_figma_selfcheck_flow_prompt_tells_the_model_to_call_fix_tools():
+    from hermes import main
+    p = main._FIGMA_SELFCHECK_FLOW_PROMPT
+    assert "figma_web_fix_photo" in p
+    assert "figma_web_fix_text" in p
+    assert "figma_web_fix_property" in p
+    assert "PANGGIL" in p and "SEKARANG" in p
+
+
 class _FigmaToolCall:
     def __init__(self, call_id, args):
         self.id = call_id
