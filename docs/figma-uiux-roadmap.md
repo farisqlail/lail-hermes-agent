@@ -1715,6 +1715,142 @@ in the prior session before the fix.
 
 Files touched: `hermes/figma_browser.py` (`_set_number`).
 
+## Phase 23 — `_zoom_to_selection` double-press redundancy fixed (real bug, NOT the row/grid-of-cards fix) (2026-08-18)
+
+Picked up the row/grid-of-cards reliability bug (Phase 20/2's own flagged
+residual: composite children — cards with their own nested avatar+text —
+inside a GRID or ROW are unreliable, "flag for a dedicated session"). Found
+and fixed one real, separate bug along the way; it did **not** turn out to
+be the row/grid-of-cards bug itself — see Phase 24 for the actual
+investigation and its outcome.
+
+`_place_items`' non-grid branch called `_zoom_to_selection` (Shift+2)
+**twice in a row, unconditionally**, on the exact same selection with the
+exact same bias every time `parent_w and parent_h` are both truthy (always
+true for STACK/ROW/ROOT): once inside `_return_to_parent`, then again
+immediately after `_lock_fixed_size` "just in case" it needed re-fitting.
+Confirmed live via instrumentation that most of these `_lock_fixed_size`
+calls are pure no-ops (the frame is already Fixed-size, nothing to
+re-lock) — meaning the second zoom call was pressing Shift+2 on a
+selection that hadn't changed and didn't need re-fitting, purely wasted
+work. Fixed: `_lock_fixed_size` now returns whether it actually changed
+anything (`bool`); the second zoom only fires when it did.
+
+(An early hypothesis — that a *repeated* Shift+2 press on an
+already-fitted selection escalates Figma's own zoom level, e.g. 247% →
+518%, breaking the "canvas-rect-fraction = node-fraction" click-bias
+assumption — was tested and **refuted**: the 247%→518% jump in the
+instrumentation data was between two *different* selections (the ROW then
+the CARD), not a repeat press on the same one; zoom% stayed perfectly
+stable across every repeat press on one selection once instrumented
+precisely. Recorded here so a future session doesn't re-waste time on the
+same disproven idea.)
+
+Live-verified: `pytest tests/ -q` stayed green (810 passed); a live
+3-build stress test (reusing the same file, TEXT+BUTTON+RECTANGLE each)
+still built cleanly with the redundant calls removed. Legitimate cleanup,
+kept in the codebase — but confirmed (Phase 24) to NOT be what was causing
+the row/grid-of-cards escape.
+
+Files touched: `hermes/figma_browser.py` (`_lock_fixed_size` return type,
+its one caller in `_place_items`).
+
+## Phase 24 — Row/grid-of-cards escape bug: deep live-recon, root cause still not found (2026-08-18)
+
+Third session (after Phase 2's original discovery and Phase 20's
+follow-up) to attack this residual, with the biggest live-recon budget of
+the three (10+ live builds against a real Figma file, several with
+purpose-built instrumentation monkeypatching this file's own internal
+functions). Result: **several real hypotheses conclusively ruled out with
+hard evidence, but the actual root cause still not found.** Recorded in
+full so the next session starts from these ruled-out branches instead of
+re-treading them.
+
+**Minimal repro (smaller than any prior session's), reliable every time:**
+a ROW containing a SINGLE STACK "card" with exactly two children, an
+AVATAR then a TEXT (`Card One`). The AVATAR always nests correctly one
+level inside the card. The TEXT always escapes — ends up a direct child of
+the ROOT frame, a sibling of the ROW itself, confirmed via an
+interactive ground-truth test (collapse the ROW's own Layers-panel tree
+node; a real descendant disappears from the visible row list, an escaped
+node does not — "Card One" stayed visible every time the ROW was
+collapsed). This is smaller than Phase 20's own 2-column/6-item grid
+repro and doesn't need a GRID at all — just one ROW, one STACK, two plain
+leaf children — meaning the bug's trigger condition is "a composite nested
+two auto-layout levels deep gets a SECOND child," not anything
+GRID-specific or multi-card-specific as Phase 20's own framing suggested.
+
+**Ruled out, each with live instrumentation evidence (not just static
+reading):**
+
+1. **DOM/bounding-box archaeology for indentation is a dead end.**
+   Playwright's `bounding_box()` on Layers-panel rows returns `None`/
+   zero-size for rows not in the panel's currently-rendered virtualization
+   window — even a raw `getBoundingClientRect()`/computed-style walk via
+   `page.evaluate` returned all-zero rects for every row. Don't retry this
+   approach; use the interactive collapse-test method above instead (real
+   ground truth, no DOM archaeology needed).
+2. **`_current_row_selector`'s selector resolution is NOT the bug.**
+   Instrumented every call during the minimal repro: `[data-fpl-tree-
+   active="true"]` matched exactly ONE row every single time, and it was
+   always the CORRECT node (root, then ROW, then CARD, in order) — no
+   ancestor-chain-marked-active confusion, no stale resolution. 4/4 calls
+   correct.
+3. **`_lock_fixed_size`'s (previously) unscoped `get_by_role("combobox",
+   ...)` is NOT hitting the same multi-match bug `_apply_auto_layout`'s
+   direction radio once had.** Instrumented every call: always 0 or 1
+   matches, never 2+, never a strict-mode violation, never raised.
+4. **`_return_to_parent`'s reselect-by-testid click is NOT landing on the
+   wrong node.** Instrumented every call: the resulting
+   `data-fpl-tree-active` testid matched the EXPECTED `parent_row_selector`
+   100% of the time (4/4), including the exact call that computes the
+   TEXT item's own click point.
+5. **The computed click point is NOT geometrically wrong.** The
+   double-zoom redundancy (Phase 23) was fixed first on the theory it
+   might be corrupting the point — confirmed via live rebuild that the
+   escape still happens identically with that fix in place, so it wasn't
+   the (or at least not the only) cause. Then, independently of that fix,
+   a CSS marker was injected via `page.evaluate` at the EXACT (cx, cy)
+   about to be passed to `_add_text` for "Card One", and the page
+   screenshotted before any typing happened — on a completely clean, fresh
+   Page (`[data-testid="new-page-button"]`, eliminating this session's own
+   20+-leftover-frame clutter as a confound, per Phase 20's own already-
+   documented lesson about shared-file clutter). The marker sits solidly
+   inside the CARD's own selection-handle bounds, well clear of the
+   avatar above it and the card's own edges — not near any boundary, not
+   ambiguous. **The click point is correct. Figma still parents the new
+   TEXT node to the ROOT frame anyway.**
+
+**Where this leaves it:** every mechanism this codebase's own click-bias
+system depends on (selector resolution, reselection, zoom fit, the
+resulting click coordinate) was individually instrumented and confirmed
+correct for the exact failing case. The escape still happens. This points
+at something in Figma's OWN click-to-insert behavior for a TEXT/shape tool
+click that lands within a doubly-nested auto-layout frame (auto-layout
+STACK, itself inside an auto-layout ROW) that isn't simple point-in-
+rectangle hit-testing — analogous in spirit to the already-known GRID
+quirk ("Figma's Grid auto-layout ignores click position for new-child
+placement and instead auto-slots by creation order," Phase 2) but for
+plain VERTICAL/HORIZONTAL auto-layout, and specifically only manifesting
+two nesting levels deep, not one (every standalone, one-level-deep
+composite — STACK, ROW, BUTTON, INPUT, CHECKBOX — remains fully reliable
+by the whole existing test/build history). Not something further
+instrumentation of THIS codebase's own functions can localize — it needs
+either a Figma-side behavior investigation (manually reproducing the same
+click sequence directly in the Figma UI, isolated from any of this
+codebase's automation, to observe whether the same misparenting happens
+on a pure human-driven click) or examining Figma's own client-side
+insertion logic more directly than DOM/selector instrumentation can reach.
+
+**Mitigation unchanged from Phase 20:** avoid multi-child composites (a
+"card" with its own nested children) as items inside a ROW/GRID in
+generated specs. A flat list of leaf items (plain TEXT, BUTTON, INPUT) as
+ROW/GRID children remains fully reliable; only a composite-within-a-
+composite two levels deep triggers this.
+
+Files touched: none (Phase 23's fix is the only code change from this
+session; this phase is investigation-only, no new mechanism shipped).
+
 ## Verification (every phase)
 
 After each change: `pytest tests/ -q` (806 tests must keep passing — none of

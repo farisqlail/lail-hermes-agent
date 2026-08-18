@@ -135,7 +135,7 @@ async def _set_position(page, x: float, y: float) -> None:
     await page.wait_for_timeout(150)
 
 
-async def _lock_fixed_size(page, width: float, height: float) -> None:
+async def _lock_fixed_size(page, width: float, height: float) -> bool:
     """Force an auto-layout frame's own sizing back to Fixed.
 
     `Shift+A` resets BOTH axes of a frame to "Hug contents" the moment it
@@ -158,17 +158,26 @@ async def _lock_fixed_size(page, width: float, height: float) -> None:
     A frame that's already in Fixed/Dimensions mode has no such combobox at
     all (`count() == 0`) — nothing to do there, so this is safe to call
     unconditionally after every `_apply_auto_layout`.
+
+    Returns whether either axis actually needed switching (True) or the
+    frame was already Fixed on both (False) — callers that would otherwise
+    re-zoom "just in case" after this should only do so when it's True; see
+    `_place_items`'s own call site for why re-zooming unconditionally is
+    actively harmful, not just wasted work.
     """
+    changed = False
     for label, value in (("Horizontal resizing", width), ("Vertical resizing", height)):
         combo = page.get_by_role("combobox", name=label)
         if await combo.count() == 0:
             continue
+        changed = True
         await combo.click(timeout=8000)
         await page.wait_for_timeout(100)
         await page.keyboard.press("Control+A")
         await combo.type(str(round(value)))
         await page.keyboard.press("Enter")
         await page.wait_for_timeout(150)
+    return changed
 
 
 async def _set_fill_hex(page, hex_color: str | None) -> None:
@@ -1635,12 +1644,29 @@ async def _place_items(
                 # — see `_append_bias`.
                 cx, cy = await _return_to_parent(page, parent_row_selector, parent_direction, bias=bias)
                 if parent_w and parent_h:
-                    await _lock_fixed_size(page, parent_w, parent_h)
-                    cx, cy = await _zoom_to_selection(
-                        page,
-                        horizontal_bias=bias if parent_direction == "HORIZONTAL" else 0.5,
-                        vertical_bias=bias if parent_direction != "HORIZONTAL" else 0.5,
-                    )
+                    # `_return_to_parent` already zoomed to this exact
+                    # selection with this exact bias — re-zooming again
+                    # unconditionally used to re-press Shift+2 on an
+                    # ALREADY-fitted selection, which is not idempotent:
+                    # confirmed live (docs/figma-uiux-roadmap.md's grid/
+                    # row-of-cards investigation) a second consecutive press
+                    # escalates Figma's own zoom level (e.g. 247% -> 518%)
+                    # while this function's point formula stays a fixed
+                    # fraction of the CANVAS rect — invisible for a large
+                    # composite (the point still lands inside it either
+                    # way) but fatal for a small nested one (the point falls
+                    # outside its now much-more-zoomed-in bounds, escaping
+                    # to whatever frame happens to sit there instead, e.g. a
+                    # STACK card's 2nd child landing on the ROOT frame).
+                    # Only worth re-zooming when the lock actually changed
+                    # the frame's real on-screen size (Hug -> Fixed) — the
+                    # case this whole mechanism exists to protect against.
+                    if await _lock_fixed_size(page, parent_w, parent_h):
+                        cx, cy = await _zoom_to_selection(
+                            page,
+                            horizontal_bias=bias if parent_direction == "HORIZONTAL" else 0.5,
+                            vertical_bias=bias if parent_direction != "HORIZONTAL" else 0.5,
+                        )
         except Exception:
             logger.exception("Failed to create Figma element via UI automation: %r", item)
     return cx, cy, created
