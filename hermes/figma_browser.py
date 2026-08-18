@@ -934,25 +934,28 @@ def _item_size(
     with what's really on screen. `box_size` is the `(box_w, box_h)` a
     ROW/STACK branch already computed for itself — not worth re-deriving.
     """
+    raw_w = item.get("width")
+    eff_w = min(float(raw_w), content_w) if raw_w is not None and content_w > 0 else (float(raw_w) if raw_w is not None else content_w)
     if itype in ("TEXT", "FOOTER_LINK"):
         font_size = float(item.get("fontSize") or 16)
         content = str(item.get("content") or item.get("text") or "")
-        w = min(len(content) * font_size * 0.55, content_w) if content else font_size
-        return w, _text_extent(item, content_w)
+        w = min(len(content) * font_size * 0.55, eff_w) if content else font_size
+        return w, _text_extent(item, eff_w)
     if itype in ("HEADER_IMAGE", "HEADER"):
-        return float(item.get("width") or content_w), float(item.get("height") or 220)
+        return eff_w, float(item.get("height") or 220)
     if itype in ("AVATAR", "ELLIPSE", "CIRCLE"):
         size = float(item.get("size") or item.get("width") or 56)
-        return size, size
+        clamped_size = min(size, content_w) if content_w > 0 else size
+        return clamped_size, clamped_size
     if itype in ("INPUT", "BUTTON"):
-        return float(item.get("width") or content_w), float(item.get("height") or 50)
+        return eff_w, float(item.get("height") or 50)
     if itype == "CHECKBOX":
-        return float(item.get("width") or content_w), float(item.get("height") or 28)
+        return eff_w, float(item.get("height") or 28)
     if itype in ("ROW", "STACK", "GRID"):
         if box_size is not None:
             return box_size
-        return float(item.get("width") or content_w), float(item.get("height") or 140)
-    return float(item.get("width") or 100), float(item.get("height") or 40)
+        return eff_w, float(item.get("height") or 140)
+    return min(float(item.get("width") or 100), content_w if content_w > 0 else 100), float(item.get("height") or 40)
 
 
 # The Playwright browser here always runs at a fixed 1440x900 viewport (see
@@ -1287,6 +1290,8 @@ async def _place_items(
     parent_extent = parent_w if parent_direction == "HORIZONTAL" else parent_h
     for item in items:
         itype = str(item.get("type") or "").upper()
+        raw_w = item.get("width")
+        eff_w = min(float(raw_w), content_w) if raw_w is not None and content_w > 0 else (float(raw_w) if raw_w is not None else content_w)
         # Set by the ROW/STACK/GRID branches below, right while the
         # composite's OWN outer frame is still the live selection (just
         # before their `fill_children` callback runs and moves selection
@@ -1310,14 +1315,14 @@ async def _place_items(
                     page, cx, cy, item.get("content") or item.get("text") or "",
                     font_size=item.get("fontSize"), color=item.get("color"),
                     bold=bool(item.get("bold")), font_family=item.get("fontFamily"),
-                    max_width=item.get("width") or content_w,
+                    max_width=eff_w,
                 )
             elif itype in ("HEADER_IMAGE", "HEADER"):
                 photo_name = f"hermes:photo:{photo_registry['n']}:header"
                 photo_registry["n"] += 1
                 await _add_shape(
                     page, "r", cx, cy,
-                    item.get("width") or content_w, item.get("height") or 220,
+                    eff_w, item.get("height") or 220,
                     color=item.get("color") or "#E2E8F0",
                     corner_radius=item.get("borderRadius"),
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
@@ -1335,7 +1340,7 @@ async def _place_items(
                     "photo_query": photo_query, "photo_placed": placed,
                 })
             elif itype in ("AVATAR", "ELLIPSE", "CIRCLE"):
-                size = item.get("size") or item.get("width") or 56
+                size = min(float(item.get("size") or item.get("width") or 56), content_w if content_w > 0 else 56)
                 is_avatar = itype == "AVATAR"
                 photo_name = f"hermes:photo:{photo_registry['n']}:avatar" if is_avatar else None
                 if is_avatar:
@@ -1367,9 +1372,9 @@ async def _place_items(
                         font_size=_item.get("fontSize") or 14, color=_item.get("color") or "#94A3B8",
                     )
                 await _add_composite(
-                    page, cx, cy, item.get("width") or content_w, item.get("height") or 50,
+                    page, cx, cy, eff_w, item.get("height") or 50,
                     color=item.get("backgroundColor") or "#F8FAFC",
-                    corner_radius=item.get("borderRadius", 50),
+                    corner_radius=item.get("borderRadius", 12),
                     # Real inputs almost always have a visible border — default
                     # to a light gray one rather than requiring the model to
                     # ask for what every mockup already implies.
@@ -1401,8 +1406,8 @@ async def _place_items(
                         bold=bool(_item.get("bold")), font_family=_item.get("fontFamily"),
                     )
                 await _add_composite(
-                    page, cx, cy, item.get("width") or content_w, item.get("height") or 50,
-                    color=fill, corner_radius=item.get("borderRadius", 50),
+                    page, cx, cy, eff_w, item.get("height") or 50,
+                    color=fill, corner_radius=item.get("borderRadius", 12),
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
                     shadow=bool(item.get("shadow")), elevation=item.get("elevation") or "subtle",
                     direction="HORIZONTAL", gap=8, padding=16, fill_children=_fill_button,
@@ -1420,7 +1425,7 @@ async def _place_items(
                         font_size=13, color="#475569",
                     )
                 await _add_composite(
-                    page, cx, cy, item.get("width") or content_w, item.get("height") or 28,
+                    page, cx, cy, eff_w, item.get("height") or 28,
                     color="#FFFFFF", direction="HORIZONTAL", gap=10, padding=0,
                     fill_children=_fill_checkbox, rename=checkbox_name,
                 )
@@ -1441,7 +1446,7 @@ async def _place_items(
                 n = max(len(sub_items), 1)
                 box_gap = float(item.get("itemSpacing") or 12)
                 box_padding = float(item.get("padding") or 0)
-                box_w = item.get("width") or content_w
+                box_w = min(float(item.get("width")), content_w) if item.get("width") and content_w > 0 else content_w
                 box_h = item.get("height") or (50 if is_row else 140)
                 box_content_w = max(box_w - 2 * box_padding, 20)
                 if is_row:
@@ -1517,7 +1522,7 @@ async def _place_items(
                 box_gap = float(item.get("itemSpacing") or 16)
                 box_gap_row = float(item.get("rowSpacing") or box_gap)
                 box_padding = float(item.get("padding") or 0)
-                box_w = item.get("width") or content_w
+                box_w = min(float(item.get("width")), content_w) if item.get("width") and content_w > 0 else content_w
                 rows_needed = (max(len(sub_items), 1) + columns - 1) // columns
                 box_h = item.get("height") or (rows_needed * 90 + box_padding * 2)
                 box_content_w = max(box_w - 2 * box_padding, 20)
@@ -1555,8 +1560,9 @@ async def _place_items(
                 rect_gradient = item.get("gradientColors")
                 rect_gradient = tuple(rect_gradient[:2]) if rect_gradient and len(rect_gradient) >= 2 else None
                 rect_gradient_type = str(item.get("gradientType") or "LINEAR").upper()
+                rect_w = min(float(item.get("width") or 100), content_w if content_w > 0 else 100)
                 await _add_shape(
-                    page, "r", cx, cy, item.get("width") or 100, item.get("height") or 40,
+                    page, "r", cx, cy, rect_w, item.get("height") or 40,
                     color=item.get("backgroundColor") or item.get("color") or item.get("fill"),
                     corner_radius=item.get("borderRadius"),
                     border_color=item.get("borderColor"), border_width=item.get("borderWidth"),
@@ -1672,7 +1678,9 @@ async def _place_items(
     return cx, cy, created
 
 
-async def _build_frame_via_ui(page, spec: dict[str, Any], unsplash_key: str | None = None) -> dict[str, Any]:
+async def _build_frame_via_ui(
+    page, spec: dict[str, Any], unsplash_key: str | None = None, target_url: str | None = None,
+) -> dict[str, Any]:
     width = float(spec.get("width") or 390)
     height = float(spec.get("height") or 844)
     direction = str(spec.get("layoutMode") or "VERTICAL").upper()
@@ -1685,31 +1693,102 @@ async def _build_frame_via_ui(page, spec: dict[str, Any], unsplash_key: str | No
     gap = float(spec.get("itemSpacing") or 16)
     bg = spec.get("backgroundColor") or spec.get("fill") or "#FFFFFF"
     content_w = max(width - 2 * pad_lr, 40)
+    frame_name = spec.get("name")
 
     canvas = page.locator("canvas").first
     await canvas.wait_for(state="visible", timeout=30000)
-    width_field = page.locator('[data-onboarding-key="scrubbable-control-width"] input').first
-    for attempt in range(4):
-        canvas_box = await canvas.bounding_box()
-        anchor_x, anchor_y = canvas_box["x"] + 80, canvas_box["y"] + 60
-        await _draw(page, "f", anchor_x, anchor_y, w=120, h=120)
+
+    has_node_id = bool(target_url and "node-id=" in target_url)
+    is_existing_frame = False
+    root_row_selector = None
+
+    if has_node_id:
+        # When Figma navigates to a URL containing ?node-id=..., it automatically
+        # focuses and selects the targeted node/frame.
+        await page.wait_for_timeout(1000)
         try:
-            await width_field.wait_for(state="visible", timeout=6000)
-            break
+            root_row_selector = await _current_row_selector(page)
+            is_existing_frame = True
+            logger.info("Existing frame selected via node-id URL: %s", root_row_selector)
         except Exception:
-            if attempt == 3:
-                raise
-            logger.warning("Root frame draw attempt %d didn't register, retrying", attempt + 1)
-            # Pressing 'f' again while the frame tool's "Dimension Presets"
-            # side panel is already open (from the failed attempt) doesn't
-            # reliably re-arm the tool — Escape closes that panel first so
-            # the retry starts from a clean state instead of compounding.
-            await page.keyboard.press("Escape")
-            await page.wait_for_timeout(1500)
-    await _set_number(page, "scrubbable-control-width", width)
-    await _set_number(page, "scrubbable-control-height", height)
-    await _set_fill_hex(page, bg)
-    await _apply_auto_layout(page, direction, pad_lr, pad_tb, gap, centered=False)
+            is_existing_frame = False
+
+    if not is_existing_frame and frame_name and target_url and "design/new" not in target_url:
+        # Check if an existing frame matching frame_name already exists in this file
+        try:
+            found = await _select_node_by_display_name(page, frame_name)
+            if found:
+                root_row_selector = await _current_row_selector(page)
+                is_existing_frame = True
+                logger.info("Existing frame found by name '%s': %s", frame_name, root_row_selector)
+        except Exception:
+            is_existing_frame = False
+
+    if is_existing_frame and root_row_selector:
+        # EDIT EXISTING FRAME IN-PLACE
+        logger.info("Editing existing frame in-place: %s", root_row_selector)
+        try:
+            # 1. Clean existing children if present
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(200)
+            cur_sel = await _current_row_selector(page)
+            if cur_sel != root_row_selector:
+                # Children layers were selected, select all and delete them
+                await page.keyboard.press("Control+A")
+                await page.wait_for_timeout(150)
+                await page.keyboard.press("Delete")
+                await page.wait_for_timeout(300)
+            # 2. Reselect the root frame row
+            await page.locator(root_row_selector).click(force=True)
+            await page.wait_for_timeout(200)
+        except Exception as e:
+            logger.warning("Notice while clearing existing frame children: %s", e)
+
+        # 3. Update frame size, fill, and Auto Layout properties
+        try:
+            await _set_number(page, "scrubbable-control-width", width)
+            await _set_number(page, "scrubbable-control-height", height)
+        except Exception:
+            await _lock_fixed_size(page, width, height)
+        try:
+            await _set_fill_hex(page, bg)
+            await _apply_auto_layout(page, direction, pad_lr, pad_tb, gap, centered=False)
+            await _lock_fixed_size(page, width, height)
+            if frame_name:
+                await _rename_layer(page, frame_name)
+        except Exception as e:
+            logger.warning("Notice updating existing frame properties: %s", e)
+    else:
+        # CREATE NEW FRAME
+        width_field = page.locator('[data-onboarding-key="scrubbable-control-width"] input').first
+        for attempt in range(4):
+            canvas_box = await canvas.bounding_box()
+            anchor_x, anchor_y = canvas_box["x"] + 80, canvas_box["y"] + 60
+            await _draw(page, "f", anchor_x, anchor_y, w=120, h=120)
+            try:
+                await width_field.wait_for(state="visible", timeout=6000)
+                break
+            except Exception:
+                if attempt == 3:
+                    raise
+                logger.warning("Root frame draw attempt %d didn't register, retrying", attempt + 1)
+                # Pressing 'f' again while the frame tool's "Dimension Presets"
+                # side panel is already open (from the failed attempt) doesn't
+                # reliably re-arm the tool — Escape closes that panel first so
+                # the retry starts from a clean state instead of compounding.
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(1500)
+        await _set_number(page, "scrubbable-control-width", width)
+        await _set_number(page, "scrubbable-control-height", height)
+        await _set_fill_hex(page, bg)
+        await _apply_auto_layout(page, direction, pad_lr, pad_tb, gap, centered=False)
+        root_row_selector = await _current_row_selector(page)
+        if frame_name:
+            try:
+                await _rename_layer(page, frame_name)
+            except Exception:
+                pass
+
     # First click point, nothing placed yet: bias off `_append_bias` with
     # used=0 rather than jumping straight to a high fixed fraction — an
     # empty root frame only needs the click past its own leading padding.
@@ -1723,7 +1802,6 @@ async def _build_frame_via_ui(page, spec: dict[str, Any], unsplash_key: str | No
         cx, cy = await _zoom_to_selection(page, horizontal_bias=first_bias)
     else:
         cx, cy = await _zoom_to_selection(page, vertical_bias=first_bias)
-    root_row_selector = await _current_row_selector(page)
 
     children = spec.get("children") or []
     photo_registry = {"n": 0, "nodes": [], "node_n": 0, "fixable_nodes": []}
@@ -1741,7 +1819,7 @@ async def _build_frame_via_ui(page, spec: dict[str, Any], unsplash_key: str | No
 
     return {
         "ok": True,
-        "mode": "ui_automation",
+        "mode": "edit_existing" if is_existing_frame else "create_new",
         "children_created": created,
         "children_requested": len(children),
         # The root frame's own Layers-panel row selector, resolved while it
@@ -2017,8 +2095,11 @@ async def design_figma_frame_web(
     """Design a Figma frame in Figma Web via Playwright Chromium.
 
     Args:
-        file_url: Optional URL to an open Figma file (e.g. https://www.figma.com/design/xxx/yyy).
-                  If None, defaults to https://www.figma.com/design/new
+        file_url: Optional URL to an open Figma file or frame (e.g.
+                  https://www.figma.com/design/xxx/yyy?node-id=1-2). If provided with
+                  a node-id (or if frame_name already exists), edits that existing frame
+                  in-place instead of creating a new one. If None, defaults to
+                  https://www.figma.com/design/new
         spec: Structured UI design schema dictionary.
         out_dir: Path to save preview screenshot.
         headless: If True, runs browser in headless mode. Default False so operator can watch or log in.
@@ -2051,7 +2132,7 @@ async def design_figma_frame_web(
                 return session
             context, page = session
 
-            result = await _build_frame_via_ui(page, spec, unsplash_key=unsplash_key)
+            result = await _build_frame_via_ui(page, spec, unsplash_key=unsplash_key, target_url=target_url)
 
             # Figma redirects "design/new" to a real, reopenable file URL
             # (e.g. .../design/<fileKey>/Untitled) the moment it creates the
@@ -2072,9 +2153,10 @@ async def design_figma_frame_web(
             md_image = f"![Figma Frame Preview](file:///{shot_path.as_posix()})"
             created, requested = result["children_created"], result["children_requested"]
             ok = created == requested
+            mode_action = "diedit/diperbarui" if result.get("mode") == "edit_existing" else "dibuat"
             detail = (
                 f"Frame '{spec.get('name')}' ({int(spec.get('width') or 390)}x{int(spec.get('height') or 844)}px) "
-                f"dibuat di Figma Web — {created}/{requested} elemen berhasil ditambahkan."
+                f"{mode_action} di Figma Web — {created}/{requested} elemen berhasil ditata."
             )
             return {
                 "ok": ok,
@@ -2204,7 +2286,7 @@ async def design_multi_frame_web(
                     for _ in range(8):
                         await page.mouse.wheel(-1500, 0)
                         await page.wait_for_timeout(60)
-                r = await _build_frame_via_ui(page, spec, unsplash_key=unsplash_key)
+                r = await _build_frame_via_ui(page, spec, unsplash_key=unsplash_key, target_url=target_url if i == 0 else None)
                 await page.locator(r["root_row_selector"]).click(force=True)
                 await page.wait_for_timeout(200)
                 await _set_position(page, cumulative_x, 0)

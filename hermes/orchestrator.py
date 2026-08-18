@@ -388,16 +388,16 @@ def _why(res) -> str:
     classifying one string while reporting another is how a loop ends up
     explaining a failure it did not act on.
     """
-    if res.outcome and res.outcome.api_error:
-        return res.outcome.api_error
-    return res.stderr[:200]
+    if res.outcome and res.outcome.api_error is not None:
+        return str(res.outcome.api_error)
+    return str(res.stderr[:200] if res.stderr else "")
 
 
 def choose_engine(step: dict, settings: Settings, task_engine: str | None = None) -> str:
-    if step.get("engine") in ("claude", "antigravity"):
-        return step["engine"]
     if task_engine in ("claude", "antigravity"):
         return task_engine
+    if step.get("engine") in ("claude", "antigravity"):
+        return step["engine"]
     if settings.default_engine in ("claude", "antigravity"):
         return settings.default_engine
     return "antigravity" if step.get("scope") == "large" else "claude"

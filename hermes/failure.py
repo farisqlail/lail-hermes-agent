@@ -93,7 +93,7 @@ def classify(text: str) -> str:
     checked before falling through to semantic, since its phrases are ours and
     unambiguous.
     """
-    low = (text or "").lower()
+    low = str(text or "").lower()
     if any(p in low for p in _TRANSIENT):
         return TRANSIENT
     if any(p in low for p in _ENVIRONMENT):
@@ -110,7 +110,7 @@ def advice(text: str) -> str:
     failures: those are handled by the loop, not by the operator.
     """
     kind = classify(text)
-    low = (text or "").lower()
+    low = str(text or "").lower()
     if kind == STRUCTURAL:
         return _STRUCTURAL_ADVICE
     if kind == ENVIRONMENT:
@@ -147,7 +147,7 @@ def signature(text: str) -> str:
     progress was made, so they are flattened away. What is left is enough to
     answer one question — is this the same wall as last round?
     """
-    low = (text or "").lower()
+    low = str(text or "").lower()
     low = re.sub(r"0x[0-9a-f]+", "#", low)                    # addresses
     low = re.sub(r"[a-z]:\\[^\s'\"]+|/[^\s'\"]{4,}", "<path>", low)
     low = re.sub(r"\b[0-9a-f]{8,}\b", "#", low)               # ids, hashes

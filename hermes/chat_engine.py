@@ -93,81 +93,58 @@ RESUME_NUDGE = (
 # one fixed scale (not a range) means every element in one build actually
 # shares a system instead of each being independently "close enough".
 _FIGMA_DESIGN_SYSTEM_GUIDE = (
-    "ATURAN DESAIN SENIOR UI/UX — pakai untuk SETIAP desain, termasuk yang "
-    "dibuat dari nol (tanpa gambar referensi). Pegang 4 prinsip tiap "
-    "keputusan visual: CONSISTENCY (satu sistem spacing/warna/tipe dipakai "
-    "berulang, bukan nilai unik tiap elemen), USABILITY (kejelasan fungsi "
-    "user diutamakan di atas dekorasi), ACCESSIBILITY (kontras & ukuran "
-    "teks harus terbaca semua orang, bukan cuma di layar desainer), "
-    "AESTHETICS (rapi & enak dilihat TANPA mengorbankan 3 prinsip di "
-    "atas).\n"
-    "- SPACING (8pt grid): semua padding/gap/itemSpacing HARUS salah satu "
-    "dari 4/8/12/16/24/32/48/64px. Jangan pakai angka acak (mis. 18, 22, "
-    "35) — itu ciri khas desain AI yang terlihat berantakan.\n"
-    "- TYPE SCALE: caption 12, body kecil 14, body 16, subjudul 20, h3 24, "
-    "h2 28, h1/hero 32-40. Maksimal 2-3 ukuran berbeda per layar; jangan "
-    "campur banyak ukuran untuk elemen sejenis.\n"
-    "- HIERARKI: HANYA SATU judul besar bold per layar/section. Body text "
-    "selalu Regular (bold=false), kecuali label tombol/CTA.\n"
-    "- RADIUS: kecil/input 8-12, card 16, pill/tombol/avatar 999 (penuh "
-    "bulat). Konsisten dalam satu layar — jangan campur kotak tajam dan "
-    "sangat bulat tanpa alasan.\n"
-    "- WARNA — palet netral konkret, jangan menebak-nebak tiap kali: "
-    "background layar #FFFFFF atau #F8FAFC; permukaan card #FFFFFF (kalau "
-    "background layarnya abu) atau #F8FAFC/#F1F5F9 (kalau background "
-    "layarnya putih) — card harus BEDA sedikit dari background di "
-    "belakangnya, jangan sama persis; border/pembatas tipis #E2E8F0; teks "
-    "utama #0F172A atau #1E293B; teks sekunder/caption #64748B atau "
-    "#94A3B8. SATU warna aksen/primary dipakai KONSISTEN untuk SEMUA "
-    "elemen interaktif utama (tombol CTA, link aktif, ikon terpilih) dalam "
-    "satu layar — jangan ganti hue aksen di tengah layar. Kontras "
-    "teks-latar WAJIB terbaca: teks gelap di latar terang, teks putih di "
-    "latar gelap/jenuh — jangan taruh teks sekunder (#94A3B8 ke bawah) "
-    "untuk teks yang penting dibaca, hanya untuk placeholder/caption yang "
-    "memang boleh redup. Warna semantik (hijau=sukses, merah=bahaya, "
-    "kuning=peringatan) HANYA untuk status/badge yang benar-benar makna "
-    "itu — jangan dipakai sebagai dekorasi. Standar kontras WCAG AA: rasio "
-    "teks-latar minimal 4.5:1 untuk teks biasa (<18px, atau <14px bold), "
-    "minimal 3:1 untuk teks besar (≥18px, atau ≥14px bold) — kalau ragu, "
-    "pilih pasangan warna dari palet netral di atas yang sudah dijamin "
-    "gelap-vs-terang, jangan campur dua warna medium yang mirip tingkat "
-    "terangnya.\n"
-    "- SHADOW/ELEVATION: field `shadow`+`elevation` ('subtle'/'medium'/"
-    "'strong', default 'subtle'). 'subtle' = card biasa yang istirahat di "
-    "atas background-nya sendiri (list item, product card — PALING SERING "
-    "dipakai). 'medium' = card yang perlu menonjol dari background ramai/"
-    "berwarna/foto, atau dropdown/popover. 'strong' = HANYA untuk SATU "
-    "elemen paling mengambang di layar (modal, floating action button) — "
-    "jangan pakai 'strong' untuk banyak elemen sekaligus, itu bikin semua "
-    "kelihatan sama pentingnya (= tidak ada yang penting). Card FLAT tanpa "
-    "shadow (cukup border tipis) untuk daftar/list yang statis dan tidak "
-    "actionable.\n"
-    "- CARD: kombinasi backgroundColor (surface, lihat WARNA) + "
-    "borderRadius 16 + padding 16-24 + salah SATU dari borderColor tipis "
-    "ATAU shadow (bukan dua-duanya sekaligus kecuali memang diminta). "
-    "Beberapa card sejenis dikelompokkan lewat ROW (kalau muat sejajar, "
-    "mis. 2-3 stat card) atau STACK (kalau berturutan vertikal, mis. "
-    "daftar transaksi) — jangan taruh card langsung sebagai children "
-    "campur-baur tanpa pembungkus kalau memang harusnya satu grup rapi.\n"
-    "- LAYOUT: urutan visual atas→bawah mengikuti prioritas informasi — "
-    "header/hero → judul → konten inti → aksi utama (tombol) → aksi "
-    "sekunder (link kecil di bawah). ROW hanya kalau elemen sejenis MUAT "
-    "sejajar dengan lebar wajar (2-3 item pas di layar mobile ~375px); "
-    "kalau item terlalu banyak untuk sejajar (4+), susun VERTICAL (STACK) "
-    "sebagai gantinya, jangan dipaksa sejajar sampai kegepengan. Untuk "
-    "STACK/ROW yang isinya banyak elemen, beri `height` yang REALISTIS "
-    "untuk isinya (perkirakan: jumlah total tinggi tiap anak + gap antar "
-    "anak + padding atas-bawah, lalu tambah sedikit slack) — height yang "
-    "kekecilan untuk isinya bikin proses pembuatannya gagal menata elemen "
-    "dengan benar.\n"
-    "- WHITESPACE konsisten: satu `itemSpacing` dan satu `padding` per "
-    "frame/composite, bukan beda-beda tiap anak tanpa alasan visual. "
-    "Prinsip proximity: elemen yang jaraknya dekat otomatis terbaca "
-    "sebagai satu kelompok terkait; elemen yang perlu dibaca sebagai "
-    "kelompok BERBEDA harus dipisah gap lebih besar (mis. antar-section) "
-    "daripada gap di dalam satu kelompok (mis. antar-item dalam satu "
-    "card) — pakai selisih ini untuk komunikasikan hubungan antar elemen, "
-    "bukan cuma \"space biar rapi\"."
+    "ATURAN DESAIN SENIOR UI/UX & SISTEM FIGMA — Terapkan secara ketat pada "
+    "SETIAP desain frame/UI (dari nol maupun berbasis mockup):\n\n"
+    "1. PRINSIP DASAR & HIERARKI VISUAL (Top-to-Bottom Flow):\n"
+    "- CONSISTENCY: Satu sistem visual yang kohesif — 1 font family, 1 palet "
+    "warna netral, 1 warna aksen dominan, dan 1 sistem spacing teratur.\n"
+    "- USABILITY & STRUKTUR LAYOUT STANDAR (Layar Mobile 375x812):\n"
+    "  * Header/Top Section: Avatar kecil / Badge / Icon / App Title di bagian atas.\n"
+    "  * Hero/Heading Group: STACK vertikal rapat (gap 4-8px) berisi Judul Utama "
+    "(24-28px Bold, #0F172A) dan Subjudul (14-16px Regular, #64748B).\n"
+    "  * Content/Form Area: Form input atau Card informasi dengan gap 12-16px.\n"
+    "  * Action Area: 1 Tombol CTA utama (height 48-52px, full-width, warna aksen "
+    "solid kontras tinggi, teks putih bold 16px) + link sekunder/footer di bawah.\n"
+    "- ACCESSIBILITY (WCAG AA): Kontras teks minimal 4.5:1 untuk teks normal "
+    "(#0F172A di latar terang, #FFFFFF di tombol gelap) dan 3:1 untuk teks besar/bold.\n\n"
+    "2. ANTI-OVERFLOW & PENCEGAHAN ELEMEN KELUAR FRAME:\n"
+    "- WAJIB KOSONGKAN (OMIT) field `width` untuk semua elemen full-width "
+    "(BUTTON, INPUT, HEADER_IMAGE, STACK, RECTANGLE, TEXT). Engine otomatis "
+    "menyesuaikan lebar 100% area konten (mis. frame 375 - 2x24 padding = 327px). "
+    "JANGAN PERNAH mengisi `width: 375` atau nilai lebih besar dari inner width "
+    "pada elemen anak karena akan meluber keluar frame!\n"
+    "- Di dalam ROW: Kosongkan `width` tiap anak agar engine membagi rata, "
+    "atau jika diisi, pastikan total width semua anak + gap tidak melebihi lebar kontainer.\n"
+    "- Nesting Maksimal 2 Level: Frame Root -> Container (STACK/ROW) -> Leaf elements. "
+    "Hindari menumpuk 3+ tingkat nesting (mis. Card di dalam Card di dalam Grid) "
+    "agar elemen tidak terlempar ke root Figma canvas.\n\n"
+    "3. TIPOGRAFI & PEMILIHAN FONT TERKURASI (Harmonis & Profesional):\n"
+    "- Pilihan Font Family (Pilih 1 sesuai kategori/vibe aplikasi):\n"
+    "  * Modern Tech / General App / SaaS (Default & Rekomendasi): 'Plus Jakarta Sans' "
+    "atau 'Inter' (Sangat bersih, proporsional, legibilitas tinggi).\n"
+    "  * Fintech / Clean Consumer / Friendly: 'Poppins' (Judul & Tombol) + 'Inter' (Body).\n"
+    "  * Luxury / Fashion / Editorial / Hospitality: 'Playfair Display' (Judul saja) + 'Inter' (Body).\n"
+    "  * Minimal / Productivity: 'DM Sans' atau 'Inter'.\n"
+    "- Aturan Font: Maksimal 1 font family per layar (atau 1 kombinasi Serif Judul + "
+    "Sans Body). Jangan sekali-kali mengganti font di tiap elemen secara acak.\n"
+    "- Skala Tipografi: Judul Hero 28-32px Bold, Judul Section/Card 20-24px Bold, "
+    "Subjudul 14-16px Regular, Body 14px Regular, Caption/Label 12px Regular/Medium. "
+    "Body text & placeholder SELALU Regular (bold: false).\n\n"
+    "4. SPACING & WHITESPACE (8pt Grid):\n"
+    "- Semua padding/gap HARUS salah satu dari 4, 8, 12, 16, 24, 32, 48px.\n"
+    "- Proximity: Gap antar elemen terkait (mis. Judul ke Subjudul) rapat (4-8px); "
+    "gap antar form input (12-16px); gap antar-section besar (24-32px).\n\n"
+    "5. PALET WARNA, CARD, & ELEVASI:\n"
+    "- Background Layar: '#F8FAFC' (Slate-50) atau '#FFFFFF'.\n"
+    "- Surface Card: '#FFFFFF' dengan borderRadius 16, padding 16-24, dan salah "
+    "SATU dari border tipis '#E2E8F0' ATAU shadow (elevation: 'subtle').\n"
+    "- Teks Utama: '#0F172A' (Slate-900). Teks Sekunder/Muted: '#64748B' (Slate-500). "
+    "Placeholder: '#94A3B8'.\n"
+    "- Aksen / Primary: SATU warna primer konsisten untuk seluruh tombol CTA dan "
+    "elemen aktif (mis. '#4F46E5' Indigo, '#2563EB' Blue, '#059669' Emerald, "
+    "'#7C3AED' Purple, '#DC2626' Red).\n"
+    "- Button Primary: Tinggi 48-52px, borderRadius 12-16 atau 999 (pill), "
+    "warna aksen, textColor '#FFFFFF', bold: true, fontSize 16."
 )
 
 # Leaf-level figma_web_design child item — the bottom of the nesting depth
@@ -200,7 +177,7 @@ _FIGMA_CHILD_LEAF_PROPS = {
     "textColor": {"type": "string", "description": "warna hex label teks di dalam BUTTON, default putih"},
     "backgroundColor": {"type": "string", "description": "warna hex latar/fill untuk INPUT atau BUTTON/RECTANGLE (alias dari `color`), default abu muda"},
     "size": {"type": "integer", "description": "diameter AVATAR dalam px (lingkaran)"},
-    "width": {"type": "integer", "description": "lebar elemen dalam px (kosongkan untuk full-width otomatis, atau untuk pembagian rata di dalam ROW)"},
+    "width": {"type": "integer", "description": "lebar elemen dalam px. PENTING: KOSONGKAN/OMIT field ini untuk elemen full-width (BUTTON, INPUT, HEADER_IMAGE, STACK, RECTANGLE) agar otomatis mengisi 100% lebar container tanpa keluar/meluber dari frame. Hanya isi width jika berada di dalam ROW atau elemen ukuran khusus."},
     "height": {"type": "integer", "description": "tinggi elemen dalam px"},
     "borderRadius": {"type": "integer", "description": "corner radius dalam px"},
     "bold": {"type": "boolean", "description": "true untuk teks tebal (judul/label penting) pada TEXT/BUTTON, default false (Regular)"},
@@ -208,7 +185,7 @@ _FIGMA_CHILD_LEAF_PROPS = {
     "borderWidth": {"type": "integer", "description": "ketebalan border dalam px, default 1"},
     "shadow": {"type": "boolean", "description": "true kalau elemen di gambar terlihat 'mengambang' (drop shadow) — umum untuk card/button di atas latar polos"},
     "elevation": {"type": "string", "enum": ["subtle", "medium", "strong"], "description": "seberapa 'mengambang' shadow-nya (hanya berlaku kalau `shadow`=true), default 'subtle'. subtle=card biasa di atas background sendiri (paling umum). medium=card yang perlu menonjol dari background ramai/berwarna, atau dropdown. strong=HANYA untuk satu elemen paling mengambang di layar (modal/FAB) — jangan pakai untuk banyak elemen sekaligus."},
-    "fontFamily": {"type": "string", "description": "nama font family untuk TEXT/FOOTER_LINK atau label tombol BUTTON, mis. 'Roboto', 'Poppins', 'Playfair Display' — HARUS nama font yang benar-benar ada di katalog Google Fonts Figma (jangan mengarang nama). Kosongkan untuk default 'Inter'. Pakai HANYA kalau gambar/permintaan jelas menunjukkan font khusus (mis. judul serif elegan, atau brand font tertentu) — jangan ganti font tanpa alasan visual."},
+    "fontFamily": {"type": "string", "description": "nama font Google Fonts resmi Figma, mis. 'Plus Jakarta Sans', 'Inter', 'Poppins', 'Playfair Display', 'DM Sans'. Default 'Inter'. Gunakan maksimal 1 font family per layar (atau 2 jika heading serif + body sans). Jangan ganti font family per elemen tanpa alasan hierarki yang jelas."},
     "gradientColors": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2, "description": "DUA warna hex [awal, akhir] untuk gradient, khusus BUTTON/RECTANGLE, mis. ['#0070F3', '#00C2FF']. Kosongkan untuk warna solid biasa (paling umum) — gradient HANYA kalau gambar/permintaan jelas menunjukkan transisi warna, jangan dipakai sebagai dekorasi default. Kombinasikan dengan `gradientType` untuk pilih bentuknya."},
     "gradientType": {"type": "string", "enum": ["LINEAR", "RADIAL", "ANGULAR", "DIAMOND"], "description": "bentuk gradient (hanya berlaku kalau `gradientColors` diisi), default 'LINEAR' (transisi atas-ke-bawah lurus). 'RADIAL' = pancaran melingkar dari titik tengah keluar (efek glow/spotlight). 'ANGULAR' = transisi berputar seperti jarum jam mengelilingi titik tengah (conic gradient). 'DIAMOND' = pancaran belah ketupat dari titik tengah. Ketiganya jarang dipakai — hanya kalau gambar/permintaan jelas menunjukkan bentuk itu."},
 }
@@ -388,6 +365,11 @@ CHAT_TOOLS = [
                         "bukan API/plugin. Menghasilkan frame, AutoLayout, warna, dan "
                         "elemen UI, lalu mengembalikan screenshot preview-nya. Pakai "
                         "ini bila pengguna minta didesainkan frame / UI di Figma Web.\n\n"
+                        "Bila pengguna memberikan link ke sebuah frame (misal URL dengan "
+                        "`?node-id=...` dari 'Copy link to selection' di Figma atau bila frame "
+                        "dengan `frame_name` sudah ada di file tersebut), agent akan OTOMATIS "
+                        "MENGEDIT dan menata ulang frame tersebut secara langsung (in-place) — "
+                        "BUKAN membuat frame baru lagi.\n\n"
                         + _FIGMA_DESIGN_SYSTEM_GUIDE + "\n\n"
                         "Jika pengguna melampirkan gambar (screenshot/mockup/referensi "
                         "UI) di chat, JADI senior UI/UX: baca gambar itu langsung — "
@@ -402,7 +384,7 @@ CHAT_TOOLS = [
                         "lalu terapkan skala di atas — jangan sekadar menumpuk elemen "
                         "generik."),
         "parameters": {"type": "object", "properties": {
-            "file_url": {"type": "string", "description": "URL dokumen Figma Web (misal https://www.figma.com/design/xxx/yyy)"},
+            "file_url": {"type": "string", "description": "URL dokumen Figma Web atau URL link frame tertentu (misal https://www.figma.com/design/xxx/yyy?node-id=1-2). Bila link frame diberikan (atau frame dengan frame_name sudah ada di file), agent akan langsung mengedit frame tersebut in-place tanpa membuat frame baru."},
             "frame_name": {"type": "string", "description": "nama frame UI, misal 'Login Screen'"},
             "layout_mode": {"type": "string", "enum": ["VERTICAL", "HORIZONTAL", "NONE"], "description": "orientasi AutoLayout frame utama"},
             "width": {"type": "integer", "description": "lebar frame dalam px, default 375"},

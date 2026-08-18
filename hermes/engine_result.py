@@ -81,8 +81,10 @@ def _api_error(data: dict) -> str | None:
     """
     subtype = data.get("subtype")
     if data.get("is_error"):
-        return (data.get("api_error_status") or subtype
-                or "engine reported is_error")
+        status = data.get("api_error_status")
+        if status is not None:
+            return str(status)
+        return str(subtype) if subtype else "engine reported is_error"
     if subtype and subtype != "success":
         return str(subtype)
     return None

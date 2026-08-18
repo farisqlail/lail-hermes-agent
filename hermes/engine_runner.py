@@ -54,20 +54,20 @@ def mcp_config_dict(url: str, token: str) -> dict:
 def _argv(engine: str, prompt: str, model: str = "", effort: str = "",
           session_id: str = "", resume_id: str = "",
           timeout_s: int = 0, mcp_config_path: str = "") -> list[str]:
-    argv = list(COMMANDS[engine](prompt))
+    argv = [str(x) for x in COMMANDS[engine](str(prompt))]
     if model and engine in MODEL_FLAG:
-        argv += ["--model", model]
+        argv += ["--model", str(model)]
     if effort and engine in EFFORT_FLAG:
-        argv += ["--effort", effort]
+        argv += ["--effort", str(effort)]
     if mcp_config_path and engine in MCP_CONFIG_FLAG:
-        argv += ["--mcp-config", mcp_config_path]
+        argv += ["--mcp-config", str(mcp_config_path)]
     if engine in RESUMABLE:
         # Resume wins: passing both would ask claude to open a new session and
         # reopen an old one in the same invocation.
         if resume_id:
-            argv += ["--resume", resume_id]
+            argv += ["--resume", str(resume_id)]
         elif session_id:
-            argv += ["--session-id", session_id]
+            argv += ["--session-id", str(session_id)]
     if timeout_s and engine in PRINT_TIMEOUT_FLAG:
         argv += ["--print-timeout", f"{timeout_s}s"]
     return argv
