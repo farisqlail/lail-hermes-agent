@@ -911,3 +911,72 @@ async def test_chat_shows_the_model_its_own_figma_screenshot_next_round(hermes_h
     round2_messages = calls[1]["messages"]
     assert round2_messages[-1]["role"] == "user"
     assert round2_messages[-1]["content"][1]["type"] == "image_url"
+
+
+class _NamedToolCall:
+    def __init__(self, call_id, name, args):
+        self.id = call_id
+        self.type = "function"
+        self.function = type("F", (), {"name": name, "arguments": args})()
+
+
+async def test_chat_lets_the_model_call_a_fix_tool_after_selfcheck(hermes_home, monkeypatch, tmp_path):
+    """End-to-end through main.build_nim_chat's tool loop: if round 2 (the
+    round that sees the self-check screenshot) responds with a
+    figma_web_fix_property tool call instead of prose, the loop must
+    dispatch it, feed its own result back, fire a second self-check for
+    it, and still reach a final prose answer on round 3 — proving the
+    self-check screenshot round does not have to end the turn."""
+    from hermes import config, main
+
+    build_shot = _fake_png(tmp_path / "build.png")
+    fix_shot = _fake_png(tmp_path / "fix.png")
+    build_result = main.json.dumps({
+        "ok": True, "screenshot_path": str(build_shot),
+        "file_url": "https://figma.com/design/abc123/Untitled",
+        "fixable_nodes": [{"node_name": "hermes:node:0:button", "type": "BUTTON"}],
+    })
+    fix_result = main.json.dumps({"ok": True, "screenshot_path": str(fix_shot)})
+
+    build_call = _NamedToolCall("call_1", "figma_web_design", "{}")
+    fix_call = _NamedToolCall(
+        "call_2", "figma_web_fix_property",
+        main.json.dumps({"file_url": "https://figma.com/design/abc123/Untitled",
+                         "node_name": "hermes:node:0:button",
+                         "property": "color", "value": "#16A34A"}))
+
+    dispatched: list[tuple[str, dict]] = []
+
+    class FakeCompletions:
+        def __init__(self):
+            self._round = 0
+
+        async def create(self, **kwargs):
+            self._round += 1
+            if self._round == 1:
+                msg = _FigmaRoundMessage(tool_calls=[build_call])
+            elif self._round == 2:
+                msg = _FigmaRoundMessage(tool_calls=[fix_call])
+            else:
+                msg = _FigmaRoundMessage(content="Sudah diperbaiki: tombol sekarang hijau.")
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    async def dispatch(name, args):
+        dispatched.append((name, args))
+        return build_result if name == "figma_web_design" else fix_result
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(tts_enabled=False))
+    chat = main.build_nim_chat(config.load_settings(),
+                               config.Secrets(nvidia_api_key="nvapi-test"))
+    out = await chat([{"role": "user", "content": "desain tombol hijau"}],
+                     tools=[{"type": "function", "function": {"name": "figma_web_design", "parameters": {}}},
+                            {"type": "function", "function": {"name": "figma_web_fix_property", "parameters": {}}}],
+                     dispatch=dispatch)
+
+    assert out == "Sudah diperbaiki: tombol sekarang hijau."
+    assert [name for name, _ in dispatched] == ["figma_web_design", "figma_web_fix_property"]
