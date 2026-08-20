@@ -22,11 +22,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
+from pathlib import Path
+from uuid import uuid4
 
 import httpx
 from openai import AsyncOpenAI
 
-from . import uploads
+from . import paths, uploads
 
 
 class StitchError(RuntimeError):
@@ -62,67 +65,102 @@ POLL_INTERVAL_S = 20.0
 POLL_ATTEMPTS = 10
 
 
-async def generate_screen_image(
-    hub, prompt: str, *, device_type: str = "MOBILE", title: str | None = None,
-) -> bytes:
-    """Generate one UI screen via Stitch and return its screenshot bytes.
-
-    `hub` is an already-connected `McpHub` (`hermes/mcp_hub.py`) with the
-    `stitch` server enabled -- callers are responsible for that check
-    (see `chat_engine.py`'s `stitch_design_figma_frame` handler).
-    """
-    project = await _call(hub, "create_project", {"title": title or prompt[:60]})
-    name = project.get("name") or ""
-    project_id = name.rsplit("/", 1)[-1] if name else project.get("projectId")
+async def generate_screen_raw(
+    hub, prompt: str, *, project_id: str | None = None,
+    edit_screen_id: str | None = None, device_type: str = "MOBILE",
+    title: str | None = None,
+) -> tuple[bytes, str, str]:
+    """Core generator/editor: returns (image_bytes, project_id, screen_id)."""
     if not project_id:
-        raise StitchError(f"create_project: tidak ada project id di respons: {project}")
+        project = await _call(hub, "create_project", {"title": title or prompt[:60]})
+        name = project.get("name") or ""
+        project_id = name.rsplit("/", 1)[-1] if name else project.get("projectId")
+        if not project_id:
+            raise StitchError(f"create_project: tidak ada project id di respons: {project}")
 
-    # `generate_screen_from_text`'s own response already embeds the full
-    # screen object (screenshot included) -- live-confirmed 2026-08-18, not
-    # just a screen id needing a follow-up `get_screen`. Only fall back to
-    # that follow-up call when this fast path doesn't have it (the
-    # timeout->poll branch below only ever has an id from `list_screens`).
     screen = None
-    try:
-        gen = await _call(hub, "generate_screen_from_text", {
-            "projectId": project_id, "prompt": prompt, "deviceType": device_type,
-        })
-        screen = _first_screen(gen)
-    except asyncio.TimeoutError:
-        # Exactly the case the tool description warns about -- fall through
-        # to polling below, generation likely finished server-side anyway.
-        pass
-
-    screen_id = screen.get("id") if screen else None
-    if not screen_id:
-        screen_id = await _poll_for_screen(hub, project_id)
+    if edit_screen_id:
+        try:
+            gen = await _call(hub, "edit_screens", {
+                "projectId": project_id, "screenId": edit_screen_id, "prompt": prompt,
+            })
+            screen = _first_screen(gen)
+        except asyncio.TimeoutError:
+            pass
+        screen_id = edit_screen_id
+    else:
+        try:
+            gen = await _call(hub, "generate_screen_from_text", {
+                "projectId": project_id, "prompt": prompt, "deviceType": device_type,
+            })
+            screen = _first_screen(gen)
+        except asyncio.TimeoutError:
+            pass
+        screen_id = screen.get("id") if screen else None
+        if not screen_id:
+            screen_id = await _poll_for_screen(hub, project_id)
 
     img = _screenshot_bytes(screen) if screen else None
-    if img is not None:
-        return img
-    url = _screenshot_url(screen) if screen else None
-    if url:
-        return await _download(url)
-
-    # Screenshot wasn't embedded (or the id came from the polling
-    # fallback, which only has an id). Fetch explicitly -- live-observed
-    # once that `get_screen` can answer without a `screenshot` field on
-    # the very first call right after generation finishes, then have it a
-    # few seconds later, so this allows one retry before giving up.
-    for attempt in range(2):
-        screen = await _call(hub, "get_screen", {
-            "projectId": project_id, "screenId": screen_id,
-            "name": f"projects/{project_id}/screens/{screen_id}",
-        })
-        img = _screenshot_bytes(screen)
-        if img is not None:
-            return img
-        url = _screenshot_url(screen)
+    if img is None:
+        url = _screenshot_url(screen) if screen else None
         if url:
-            return await _download(url)
-        if attempt == 0:
-            await asyncio.sleep(5)
-    raise StitchError(f"get_screen: tidak ada screenshot untuk layar {screen_id}: {screen}")
+            img = await _download(url)
+
+    if img is None:
+        for attempt in range(2):
+            screen = await _call(hub, "get_screen", {
+                "projectId": project_id, "screenId": screen_id,
+                "name": f"projects/{project_id}/screens/{screen_id}",
+            })
+            img = _screenshot_bytes(screen)
+            if img is not None:
+                break
+            url = _screenshot_url(screen)
+            if url:
+                img = await _download(url)
+                break
+            if attempt == 0:
+                await asyncio.sleep(5)
+
+    if img is None:
+        raise StitchError(f"get_screen: tidak ada screenshot untuk layar {screen_id}: {screen}")
+
+    return img, project_id, screen_id
+
+
+async def generate_screen_image(
+    hub, prompt: str, *, project_id: str | None = None,
+    device_type: str = "MOBILE", title: str | None = None,
+) -> bytes:
+    """Generate one UI screen via Stitch and return its screenshot bytes."""
+    img, _, _ = await generate_screen_raw(
+        hub, prompt, project_id=project_id, device_type=device_type, title=title)
+    return img
+
+
+async def generate_and_save_screen(
+    hub, prompt: str, *, project_id: str | None = None,
+    edit_screen_id: str | None = None, device_type: str = "MOBILE",
+    title: str | None = None, out_dir: Path | str | None = None,
+) -> dict:
+    """Generate or edit UI screen via Google Stitch MCP and save screenshot directly."""
+    img, pid, sid = await generate_screen_raw(
+        hub, prompt, project_id=project_id, edit_screen_id=edit_screen_id,
+        device_type=device_type, title=title)
+    target_dir = Path(out_dir) if out_dir else (paths.artifacts_dir() / "stitch")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"stitch_{int(time.time())}_{uuid4().hex[:6]}.png"
+    file_path = target_dir / filename
+    file_path.write_bytes(img)
+    return {
+        "ok": True,
+        "screenshot_path": str(file_path),
+        "project_id": pid,
+        "screen_id": sid,
+        "stitch_url": f"https://stitch.withgoogle.com/projects/{pid}",
+        "title": title or prompt[:60],
+        "device_type": device_type,
+    }
 
 
 def _first_screen(gen: dict) -> dict | None:

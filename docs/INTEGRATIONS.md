@@ -287,10 +287,9 @@ it does not show again. All of its tools are reads, so they run ungated.
 
 ## Stitch (AI UI generation)
 
-Generate UI screens from a text prompt via Google's Stitch, then hand the
-result straight to the Figma automation below through the
-`stitch_design_figma_frame` chat tool — Stitch draws the reference, Hermes
-reads it and rebuilds it as real Figma layers, in one call:
+Generate UI screens from a text prompt via Google's Stitch directly through the
+`stitch_design_screen` chat tool — Stitch generates the high-fidelity UI screen
+and Hermes serves the screenshot directly:
 
 ```
 name:      stitch
@@ -307,7 +306,7 @@ same field used by any other manual-header server).
 
 > [!NOTE]
 > Stitch generation can take a minute or two per screen — this is expected,
-> not a hang. The `stitch_design_figma_frame` tool polls automatically
+> not a hang. The `stitch_design_screen` tool polls automatically
 > instead of failing on the first timeout. Stitch itself is Google Labs
 > experimental (not an officially supported product), so behavior/limits can
 > change without much notice.

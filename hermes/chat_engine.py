@@ -446,54 +446,31 @@ CHAT_TOOLS = [
             }},
             "required": ["frames"]}}},
     {"type": "function", "function": {
-        "name": "stitch_design_figma_frame",
-        "description": ("Generate SATU layar UI dari deskripsi TEKS pakai Google "
-                        "Stitch (AI design generator), lalu langsung dituangkan jadi "
-                        "frame Figma nyata — satu panggilan, gambar Stitch dibaca dan "
-                        "dibangun ulang sebagai layer Figma sungguhan (bukan sekadar "
-                        "gambar ditempel).\n\n"
-                        "PENTING — Stitch HANYA menerima teks, TIDAK bisa melihat "
-                        "gambar sama sekali (beda dari tool ini sendiri/kamu, yang "
-                        "bisa lihat gambar terlampir di chat). Kalau pengguna "
-                        "melampirkan gambar REFERENSI dan minta hasilnya MIRIP/SAMA "
-                        "PERSIS dengan gambar itu (reproduksi mockup, tiru desain "
-                        "existing) — JANGAN pakai tool ini, pakai `figma_web_design` "
-                        "langsung, itu tool yang didesain baca gambar terlampir dan "
-                        "mereproduksinya persis. Salah pilih ini sudah pernah "
-                        "menghasilkan desain generik yang meleset total dari gambar "
-                        "yang dikirim pengguna.\n\n"
-                        "Pakai tool ini HANYA kalau: (a) tidak ada gambar terlampir "
-                        "dan pengguna minta desain digenerate dari deskripsi (mis. "
-                        "'buatkan halaman login pakai Stitch', 'generate dashboard "
-                        "analytics'), atau (b) pengguna EKSPLISIT tetap minta Stitch "
-                        "meski ada gambar terlampir (mis. sebagai titik awal/"
-                        "inspirasi, bukan reproduksi presisi). Untuk kasus (b): "
-                        "tuangkan SEMUA detail visual yang kamu lihat sendiri di "
-                        "gambar itu (layout, urutan elemen, warna hex, teks persis, "
-                        "komposisi) ke parameter `prompt` sedetail mungkin — itu "
-                        "sinyal terbaik yang bisa diberikan ke Stitch. Lalu WAJIB "
-                        "sampaikan ke pengguna bahwa hasil Stitch tetap interpretasi "
-                        "ulang AI dari teks, BUKAN reproduksi piksel-presisi — kalau "
-                        "hasilnya meleset dari gambar aslinya, itu memang batas "
-                        "kemampuan Stitch (bukan bug), dan tawarkan `figma_web_design` "
-                        "sebagai alternatif kalau pengguna butuh kemiripan persis.\n\n"
+        "name": "stitch_design_screen",
+        "description": ("Generate atau edit layar UI dari deskripsi TEKS pakai Google "
+                        "Stitch (AI design generator). Menghasilkan screenshot UI berkualitas "
+                        "tinggi secara langsung serta link project Stitch untuk akses langsung.\n\n"
                         "Butuh MCP server 'stitch' aktif (lihat docs/INTEGRATIONS.md); "
-                        "bila belum aktif tool akan mengembalikan error yang "
-                        "menjelaskan itu. Proses generate bisa makan waktu 1-2 menit "
-                        "— ini normal, bukan macet, tool sudah menangani polling-nya "
-                        "sendiri.\n\n"
-                        "Bila `file_url` diisi menunjuk frame yang SUDAH ADA, frame "
-                        "itu diganti (dihapus lalu dibuat ulang di posisi yang sama, "
-                        "bukan disisipi) dengan hasil Stitch — konten lama frame itu "
-                        "HILANG, bukan digabung. Beri tahu pengguna itu bila mereka "
-                        "sepertinya masih butuh konten lama. Catatan teknis: frame "
-                        "hasil edit punya node id BARU (link node-id lama ke frame "
-                        "itu tidak lagi berlaku), tapi posisi & nama tetap sama."),
+                        "bila belum aktif tool akan mengembalikan error yang menjelaskan itu. "
+                        "Proses generate bisa makan waktu 30-90 detik — tool sudah menangani "
+                        "polling-nya sendiri.\n\n"
+                        "Bila ingin MENAMBAH screen baru ke project yang sudah ada atau MENGEDIT screen "
+                        "existing: sertakan `project_id` (dan `edit_screen_id` jika merevisi screen tertentu) "
+                        "dari hasil pembuatan screen sebelumnya."),
         "parameters": {"type": "object", "properties": {
-            "prompt": {"type": "string", "description": "Deskripsi UI yang mau digenerate Stitch, sedetail mungkin (mis. 'halaman login dengan email, password, tombol masuk, dan link lupa password')"},
-            "frame_name": {"type": "string", "description": "nama frame Figma hasil akhir, misal 'Login Screen'. Default: ringkasan singkat dari prompt."},
+            "prompt": {"type": "string", "description": (
+                "Spesifikasi prompt UI terstruktur & mendalam untuk Google Stitch. "
+                "WAJIB sertakan: 1) Device target & dimensi spesifik, 2) Tema visual & token warna Hex "
+                "(Primary, Background, Surface, Accent), 3) Hierarki layout Atas-ke-Bawah/Sidebar "
+                "(Header/Nav, Hero/Cards, Form/Content list, Fixed CTA Button), 4) Microcopy & data realistis "
+                "(bukan Lorem Ipsum). Contoh format: 'Mobile iOS 390x844. Theme: Clean Fintech #1E40AF. "
+                "Top: Back icon + Title. Hero: Summary card with balance Rp 1.500.000. Content: 3 input "
+                "fields with floating labels. Bottom: Fixed CTA button Transfer Sekarang'."
+            )},
+            "screen_title": {"type": "string", "description": "nama/judul layar UI hasil akhir, misal 'Login Screen', 'Dashboard Analytics'. Default: ringkasan singkat dari prompt."},
             "device_type": {"type": "string", "enum": ["MOBILE", "DESKTOP", "TABLET"], "description": "target perangkat untuk Stitch, default 'MOBILE'"},
-            "file_url": {"type": "string", "description": "URL frame Figma existing untuk diedit in-place (opsional, lihat catatan risiko di deskripsi tool)"},
+            "project_id": {"type": "string", "description": "ID project Stitch existing jika ingin menambah screen ke project tersebut atau mengeditnya. Kosongkan bila ingin membuat project baru."},
+            "edit_screen_id": {"type": "string", "description": "ID screen di dalam project_id jika ingin merevisi/mengedit screen tersebut alih-alih menambah screen baru."},
         }, "required": ["prompt"]}}},
     {"type": "function", "function": {
         "name": "figma_web_fix_photo",
@@ -964,7 +941,7 @@ class ChatEngine:
                         return json.dumps({**res, "url": url, "markdown": f"![Figma Flow Preview]({url})"}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
 
-                if name == "stitch_design_figma_frame":
+                if name in ("stitch_design_screen", "stitch_design_figma_frame"):
                     if self.hub is None:
                         return json.dumps(
                             {"error": "MCP hub tidak tersedia di sesi ini."},
@@ -973,37 +950,29 @@ class ChatEngine:
                     if not prompt:
                         return json.dumps({"error": "prompt kosong"}, ensure_ascii=False)
                     device_type = str(args.get("device_type") or "MOBILE").upper()
-                    w, h = {"MOBILE": (375, 812), "DESKTOP": (1440, 900),
-                            "TABLET": (768, 1024)}.get(device_type, (375, 812))
-                    frame_name = str(args.get("frame_name") or prompt[:40])
-                    s = config.load_settings()
-                    sec = config.load_secrets()
-                    image_bytes = await stitch_bridge.generate_screen_image(
-                        self.hub, prompt, device_type=device_type, title=frame_name)
-                    children = await stitch_bridge.image_to_figma_children(
-                        image_bytes, base_url=s.nvidia_base_url, key=sec.nvidia_api_key,
-                        model=s.chat_model or s.model,
-                        child_schema=_figma_child_item_schema(2))
-                    spec = {
-                        "name": frame_name, "layoutMode": "VERTICAL",
-                        "width": w, "height": h, "backgroundColor": "#FFFFFF",
-                        "padding": 24, "itemSpacing": 16, "children": children,
-                    }
-                    res = await figma_browser.design_figma_frame_web(
-                        file_url=args.get("file_url"), spec=spec,
-                        out_dir=paths.artifacts_dir() / "figma",
-                        unsplash_key=sec.unsplash_access_key or None,
-                    )
+                    screen_title = str(args.get("screen_title") or args.get("frame_name") or prompt[:40])
+                    project_id = str(args.get("project_id") or "").strip() or None
+                    edit_screen_id = str(args.get("edit_screen_id") or "").strip() or None
+
+                    res = await stitch_bridge.generate_and_save_screen(
+                        self.hub, prompt, project_id=project_id, edit_screen_id=edit_screen_id,
+                        device_type=device_type, title=screen_title,
+                        out_dir=paths.artifacts_dir() / "stitch")
                     if res.get("ok") and res.get("screenshot_path"):
                         from urllib.parse import quote
                         url = f"/api/artifacts/view?path={quote(res['screenshot_path'])}"
+                        stitch_url = res.get("stitch_url")
+                        pid = res.get("project_id")
+                        sid = res.get("screen_id")
+                        link_md = f"\n\n🔗 [Buka & Edit di Google Stitch]({stitch_url})" if stitch_url else ""
+                        meta_md = f"\n*Project ID: `{pid}` | Screen ID: `{sid}`*" if pid else ""
                         if chat_id and self.bridge and getattr(self.bridge, "send_file", None):
                             try:
                                 await self.bridge.send_file(chat_id, "screenshot", res["screenshot_path"])
                             except Exception as e:
-                                print(f"Could not send Stitch->Figma screenshot to Telegram: {e}")
+                                print(f"Could not send Stitch screenshot to Telegram: {e}")
                         return json.dumps(
-                            {**res, "url": url, "markdown": f"![Stitch -> Figma Preview]({url})"},
+                            {**res, "url": url, "markdown": f"![Stitch UI Preview]({url}){link_md}{meta_md}"},
                             ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
 

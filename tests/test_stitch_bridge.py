@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+from pathlib import Path
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -203,3 +204,74 @@ async def test_image_to_figma_children_forces_structured_tool_call():
     image_part = kwargs["messages"][0]["content"][1]
     assert image_part["type"] == "image_url"
     assert image_part["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+async def test_generate_and_save_screen(tmp_path):
+    hub = FakeHub({
+        "create_project": {"name": "projects/proj1"},
+        "generate_screen_from_text": {
+            "outputComponents": [{"design": {"screens": [{
+                "id": "scr1",
+                "screenshot": {"fileContentBase64": "aGVsbG8="},
+            }]}}],
+        },
+    })
+    res = await stitch_bridge.generate_and_save_screen(
+        hub, "modern login", device_type="MOBILE", title="Login Page", out_dir=tmp_path
+    )
+    assert res["ok"] is True
+    assert res["title"] == "Login Page"
+    assert res["device_type"] == "MOBILE"
+    assert res["project_id"] == "proj1"
+    assert res["screen_id"] == "scr1"
+    assert res["stitch_url"] == "https://stitch.withgoogle.com/projects/proj1"
+    saved = Path(res["screenshot_path"])
+    assert saved.is_file()
+    assert saved.read_bytes() == base64.b64decode("aGVsbG8=")
+
+
+@pytest.mark.asyncio
+async def test_generate_and_save_screen_existing_project(tmp_path):
+    hub = FakeHub({
+        "generate_screen_from_text": {
+            "outputComponents": [{"design": {"screens": [{
+                "id": "scr2",
+                "screenshot": {"fileContentBase64": "aGVsbG8="},
+            }]}}],
+        },
+    })
+    res = await stitch_bridge.generate_and_save_screen(
+        hub, "dashboard screen", project_id="existing_proj_123", device_type="DESKTOP",
+        title="Dashboard", out_dir=tmp_path
+    )
+    assert res["ok"] is True
+    assert res["project_id"] == "existing_proj_123"
+    assert res["screen_id"] == "scr2"
+    assert res["stitch_url"] == "https://stitch.withgoogle.com/projects/existing_proj_123"
+    called_tools = [c[0] for c in hub.calls]
+    assert "stitch__create_project" not in called_tools
+    assert called_tools == ["stitch__generate_screen_from_text"]
+
+
+@pytest.mark.asyncio
+async def test_generate_and_save_screen_edit_screen(tmp_path):
+    hub = FakeHub({
+        "edit_screens": {
+            "outputComponents": [{"design": {"screens": [{
+                "id": "scr1",
+                "screenshot": {"fileContentBase64": "aGVsbG8="},
+            }]}}],
+        },
+    })
+    res = await stitch_bridge.generate_and_save_screen(
+        hub, "change button to green", project_id="proj99", edit_screen_id="scr1",
+        out_dir=tmp_path
+    )
+    assert res["ok"] is True
+    assert res["project_id"] == "proj99"
+    assert res["screen_id"] == "scr1"
+    called_tools = [c[0] for c in hub.calls]
+    assert called_tools == ["stitch__edit_screens"]
+
+

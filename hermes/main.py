@@ -529,6 +529,23 @@ def build_nim_chat(settings, secrets):
         "'error', sampaikan gagalnya apa adanya; jangan mengarang klip. Klip "
         "viral otomatis dibuat 9:16 (vertikal, siap Shorts/TikTok); bila pengguna "
         "mau rasio asli, pakai vertical='none'.\n\n"
+        "MEMBUAT DESAIN UI / APLIKASI WEB & MOBILE (STITCH): bila pengguna minta dibuatkan "
+        "desain UI/UX, tampilan web, atau aplikasi mobile dari nol ('buat UI login', 'desain dashboard', "
+        "'buatkan app mobile fintech', dll.): kamu WAJIB memanggil `stitch_design_screen`. "
+        "Jangan gunakan automasi Figma. Jangan mengirim prompt pendek atau generik ke Stitch. "
+        "WAJIB susun parameter `prompt` secara sangat mendalam dan terstruktur (Senior UI/UX spec):\n"
+        "1. Tentukan `device_type` ('MOBILE', 'DESKTOP', atau 'TABLET') sesuai permintaan pengguna.\n"
+        "2. Detailkan Tema & Gaya Visual: mode gelap/terang, palet warna (#HEX primer, background, kartu, teks), "
+        "border radius (rounded-2xl), elevasi/shadow.\n"
+        "3. Detailkan Tata Letak Hierarkis (Top-to-Bottom): Header/Nav (avatar, back button, title) -> "
+        "Hero/KPI/Summary cards -> Main content (form fields, chart area, list cards) -> Fixed Action/CTA button.\n"
+        "4. Gunakan Microcopy & Data Realistis (bukan Lorem Ipsum): teks bahasa Indonesia/Inggris yang relevan, "
+        "angka, mata uang, status badge ('Aktif', 'Selesai').\n"
+        "5. CONTINUITY / ITERASI: Bila pengguna minta MENAMBAH screen ke alur/project yang sudah dibuat sebelumnya "
+        "atau MEREVISI screen yang ada, cari `project_id` (dan `screen_id` untuk `edit_screen_id`) dari riwayat percakapan "
+        "dan teruskan ke `stitch_design_screen` agar tersimpan dalam 1 project Stitch yang sama.\n"
+        "Bila hasil alat berstatus sukses, SERTAKAN field `markdown` APA ADANYA agar preview UI dan tautan langsung ke "
+        "Google Stitch tampil di chat.\n\n"
     )
 
     async def chat(history: list[dict], tools=None, dispatch=None) -> str:
