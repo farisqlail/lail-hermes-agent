@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, sqlite3, time
+import os, re, sqlite3, time
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
@@ -86,11 +86,22 @@ def _task_request(body: str) -> str:
 # absent: it is terminal, which is what makes the sweep idempotent and keeps
 # start.bat's auto-restart loop from re-notifying on every pass.
 INTERRUPTIBLE = ("running", "awaiting_confirm", "queued")
-# Derived from INTERRUPTIBLE so the sweep queries can never drift to a stale
-# hardcoded placeholder count when a status is added or removed.
 _IN_INTERRUPTIBLE = f"({','.join('?' * len(INTERRUPTIBLE))})"
 
+def _score_relevance(tokens: set[str], text: str) -> float:
+    if not tokens:
+        return 1.0
+    text_lower = text.lower()
+    score = 0.0
+    for tok in tokens:
+        if tok in text_lower:
+            score += 2.0 if re.search(rf"\b{re.escape(tok)}\b", text_lower) else 1.0
+    return score
+
+
+
 class Store:
+
     def __init__(self, db: Path, vault_dir: Path | str | None = None):
         self.db = str(db)
         # The vault holds knowledge, not operational state: operator facts and a
@@ -144,6 +155,11 @@ class Store:
                 CREATE TABLE IF NOT EXISTS messages(
                   id INTEGER PRIMARY KEY AUTOINCREMENT, conv_id TEXT,
                   role TEXT, content TEXT, ts REAL);
+                CREATE TABLE IF NOT EXISTS scheduled_jobs(
+                  job_id TEXT PRIMARY KEY, description TEXT,
+                  interval_s INTEGER, next_run_ts REAL,
+                  last_run_ts REAL, enabled INTEGER DEFAULT 1,
+                  chat_id INTEGER, created REAL);
                 """
             )
             try:
@@ -156,6 +172,10 @@ class Store:
                 pass
             try:
                 c.execute("ALTER TABLE sessions ADD COLUMN engine TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                c.execute("CREATE TABLE IF NOT EXISTS scheduled_jobs(job_id TEXT PRIMARY KEY, description TEXT, interval_s INTEGER, next_run_ts REAL, last_run_ts REAL, enabled INTEGER DEFAULT 1, chat_id INTEGER, created REAL)")
             except sqlite3.OperationalError:
                 pass
 
@@ -457,6 +477,20 @@ class Store:
         rows.sort(key=lambda r: r["ts"], reverse=True)
         return rows[:limit]
 
+    def recall_facts(self, query: str | None = None, limit: int = 10) -> list[dict]:
+        facts = self.list_facts(limit=100)
+        q = (query or "").strip().lower()
+        if not q:
+            return facts[:limit]
+        terms = set(re.findall(r"\w+", q))
+        scored = []
+        for f in facts:
+            score = _score_relevance(terms, f["key"] + " " + f["value"])
+            if score > 0 or q in f["value"].lower():
+                scored.append((score, f))
+        scored.sort(key=lambda x: (x[0], x[1]["ts"] or 0.0), reverse=True)
+        return [f for _, f in scored[:limit]]
+
     def delete_fact(self, key):
         (self._facts_dir() / f"{_safe_name(key)}.md").unlink(missing_ok=True)
 
@@ -522,41 +556,50 @@ class Store:
 
     def recall_tasks(self, project: str | None = None, query: str | None = None,
                      limit: int = 5) -> list[dict]:
-        """Past task archives, newest first, for feeding back into a plan.
+        """Past task archives, ranked by relevance and recency, for feeding back into a plan.
 
         Filtered by `project` when given (the strong signal: what happened last
-        time this repo was touched); otherwise by keyword `query` against the
-        request text. Reads the vault notes directly — the same sync file I/O the
-        facts use, so a planner can call it without an MCP round-trip.
-
-        Task ids lead with a sortable timestamp, so ordering by note stem is
-        newest-first without parsing any date.
+        time this repo was touched); otherwise ranked by keyword `query` against the
+        request text and body.
         """
         d = self.vault_dir / "tasks"
         if not d.is_dir():
             return []
-        q = (query or "").lower()
-        rows = []
-        for p in sorted(d.glob("*.md"), key=lambda x: x.stem, reverse=True):
+        q = (query or "").strip().lower()
+        terms = set(re.findall(r"\w+", q)) if q else set()
+        candidates = []
+        for p in d.glob("*.md"):
             try:
                 meta, body = _parse_frontmatter(p.read_text(encoding="utf-8"))
             except OSError:
                 continue
             proj = meta.get("project") or ""
             request = _task_request(body)
-            if project is not None:
-                if proj != project:
-                    continue
-            elif q and q not in request.lower() and q not in body.lower():
+            if project is not None and proj != project:
                 continue
-            rows.append({"task_id": meta.get("task_id") or p.stem,
-                         "status": meta.get("status", ""),
-                         "project": proj,
-                         "text": request,
-                         "outcome": _body_field(body, "Hasil")})
-            if len(rows) >= limit:
-                break
-        return rows
+            content = (request + " " + body).lower()
+            if terms:
+                score = _score_relevance(terms, content)
+                if score <= 0 and q not in content:
+                    continue
+            else:
+                score = 1.0
+            candidates.append({
+                "task_id": meta.get("task_id") or p.stem,
+                "status": meta.get("status", ""),
+                "project": proj,
+                "text": request,
+                "outcome": _body_field(body, "Hasil"),
+                "score": score,
+                "stem": p.stem,
+            })
+        if terms:
+            candidates.sort(key=lambda x: (x["score"], x["stem"]), reverse=True)
+        else:
+            candidates.sort(key=lambda x: x["stem"], reverse=True)
+        return [{"task_id": c["task_id"], "status": c["status"], "project": c["project"],
+                 "text": c["text"], "outcome": c["outcome"]} for c in candidates[:limit]]
+
 
     # --- project notes ---
     # One note per project, regenerated from the task archive whenever a task
@@ -583,3 +626,46 @@ class Store:
         d.mkdir(parents=True, exist_ok=True)
         _atomic_write(d / f"proyek-{_safe_name(name)}.md",
                       "\n".join(lines) + "\n")
+
+    # --- scheduled jobs ---
+    def create_scheduled_job(self, job_id: str, description: str, interval_s: int,
+                             next_run_ts: float, chat_id: int = 0):
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO scheduled_jobs(job_id, description, interval_s, next_run_ts, last_run_ts, enabled, chat_id, created) "
+                "VALUES(?,?,?,?,?,1,?,?) "
+                "ON CONFLICT(job_id) DO UPDATE SET "
+                "description=excluded.description, interval_s=excluded.interval_s, "
+                "next_run_ts=excluded.next_run_ts, enabled=1, chat_id=excluded.chat_id",
+                (job_id, description, interval_s, next_run_ts, 0.0, chat_id, time.time()))
+        self.publish({"type": "scheduled_job_created", "job_id": job_id, "description": description})
+
+    def list_scheduled_jobs(self, enabled_only: bool = False) -> list[dict]:
+        with self._conn() as c:
+            query = "SELECT * FROM scheduled_jobs"
+            if enabled_only:
+                query += " WHERE enabled=1"
+            query += " ORDER BY next_run_ts ASC"
+            rows = c.execute(query).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_scheduled_job(self, job_id: str) -> dict | None:
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM scheduled_jobs WHERE job_id=?", (job_id,)).fetchone()
+            return dict(r) if r else None
+
+    def update_scheduled_job_run(self, job_id: str, last_run_ts: float, next_run_ts: float,
+                                 enabled: bool = True):
+        with self._conn() as c:
+            c.execute(
+                "UPDATE scheduled_jobs SET last_run_ts=?, next_run_ts=?, enabled=? WHERE job_id=?",
+                (last_run_ts, next_run_ts, 1 if enabled else 0, job_id))
+        self.publish({"type": "scheduled_job_updated", "job_id": job_id, "next_run_ts": next_run_ts})
+
+    def delete_scheduled_job(self, job_id: str) -> bool:
+        with self._conn() as c:
+            cur = c.execute("DELETE FROM scheduled_jobs WHERE job_id=?", (job_id,))
+            deleted = cur.rowcount > 0
+        if deleted:
+            self.publish({"type": "scheduled_job_deleted", "job_id": job_id})
+        return deleted

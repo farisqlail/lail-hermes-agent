@@ -546,6 +546,18 @@ def build_nim_chat(settings, secrets):
         "dan teruskan ke `stitch_design_screen` agar tersimpan dalam 1 project Stitch yang sama.\n"
         "Bila hasil alat berstatus sukses, SERTAKAN field `markdown` APA ADANYA agar preview UI dan tautan langsung ke "
         "Google Stitch tampil di chat.\n\n"
+        "PROAKTIF & REKOMENDASI LANGKAH LANJUTAN: Sebagai senior AI assistant, jangan pasif. "
+        "Setelah menyelesaikan tugas (terutama membuat desain UI Stitch, menganalisis kegagalan, "
+        "atau memeriksa proyek), SELALU tawarkan 1-3 rekomendasi langkah lanjutan yang konkret dan cerdas. "
+        "Sertakan tag tombol aksi proaktif di akhir jawabanmu dalam format: "
+        "`[Action: Label Singkat | Perintah lengkap aksi]`. "
+        "Contoh: `[Action: 🚀 Buat Screen Register | Buat screen register di project Stitch tadi]` atau "
+        "`[Action: ⏰ Jadwalkan Cek Tiap Jam | Jadwalkan cek status server tiap 3600 detik]`. "
+        "Sistem akan otomatis merender tag ini menjadi tombol aksi interaktif 1-klik di Telegram.\n\n"
+        "PENJADWALAN TUGAS BACKGROUND (CRON / TIMER): bila pengguna minta dijadwalkan tugas berkala "
+        "atau tunda ('cek API tiap 2 jam', 'jalankan backup besok jam 8', dll.), panggil `schedule_task` "
+        "dengan parameter yang sesuai. Panggil `list_scheduled_tasks` untuk melihat daftar tugas terjadwal, "
+        "atau `cancel_scheduled_task` untuk membatalkannya.\n\n"
     )
 
     async def chat(history: list[dict], tools=None, dispatch=None) -> str:
@@ -1220,6 +1232,17 @@ async def run():
 
             from . import pending_ui
 
+            _ACTION_REGISTRY: dict[str, str] = {}
+
+            def _extract_actions(reply: str) -> tuple[str, list[tuple[str, str]]]:
+                """Extract [Action: Label | Command] tags and return (clean_text, [(label, cmd)])."""
+                actions = []
+                def _repl(m):
+                    actions.append((m.group(1).strip(), m.group(2).strip()))
+                    return ""
+                clean = re.sub(r"\[Action:\s*([^\|\]]+)\s*\|\s*([^\]]+)\]", _repl, reply).strip()
+                return clean, actions
+
             async def _push_pending(chat_id: int, pending: list[dict]):
                 """Send an approve/decline card for each write action this
                 turn just parked. `pending` items come straight off
@@ -1234,7 +1257,7 @@ async def run():
                         reply_markup=pending_ui.keyboard(pa)))
 
             async def _run_chat_turn(user_id: int, chat_id: int, text: str,
-                                     images=None):
+                                     images=None, reply_voice: bool = False):
                 session_id = f"tg-{chat_id}"
                 store.ensure_session(session_id, f"Telegram {chat_id}")
                 try:
@@ -1244,7 +1267,44 @@ async def run():
                 except Exception as e:
                     await sender(chat_id, f"(Maaf, chat gagal: {_console_safe(e)})")
                     return
-                await sender(chat_id, out["reply"])
+                raw_reply = out["reply"]
+                clean_reply, actions = _extract_actions(raw_reply)
+                text_to_send = clean_reply or raw_reply
+                if actions and has_chat(chat_id):
+                    import secrets
+                    btn_rows = []
+                    row = []
+                    for label, cmd in actions[:4]:
+                        act_id = secrets.token_hex(4)
+                        _ACTION_REGISTRY[act_id] = cmd
+                        row.append(InlineKeyboardButton(label[:30], callback_data=f"act:{act_id}"))
+                        if len(row) == 2:
+                            btn_rows.append(row)
+                            row = []
+                    if row:
+                        btn_rows.append(row)
+                    markup = InlineKeyboardMarkup(btn_rows)
+                    await _telegram_send_with_retry(lambda: app.bot.send_message(
+                        chat_id=chat_id,
+                        text=_clip_for_telegram(text_to_send),
+                        reply_markup=markup))
+                else:
+                    await sender(chat_id, text_to_send)
+
+                # Optional TTS voice reply if user sent voice or tts_enabled
+                current_settings = bridge.get_settings()
+                if (reply_voice or getattr(current_settings, "tts_enabled", False)) and has_chat(chat_id):
+                    from . import tts, paths
+                    if tts.available() and text_to_send:
+                        try:
+                            import uuid
+                            audio_p = paths.artifacts_dir() / "tts" / f"voice_{uuid.uuid4().hex[:8]}.mp3"
+                            await tts.synthesize(text_to_send, audio_p, voice=current_settings.tts_voice)
+                            with open(audio_p, "rb") as af:
+                                await _telegram_send_with_retry(lambda: app.bot.send_voice(chat_id=chat_id, voice=af))
+                        except Exception as e:
+                            print(f"Could not send voice reply: {_console_safe(e)}")
+
                 await _push_pending(chat_id, out["pending"])
 
             async def on_start(update: Update, ctx):
@@ -1378,13 +1438,34 @@ async def run():
                 if await on_ask_text(c, text):
                     return
                 await sender(c, f"\U0001f399\ufe0f \"{text}\"")
-                t = asyncio.create_task(_run_chat_turn(u, c, text))
+                t = asyncio.create_task(_run_chat_turn(u, c, text, reply_voice=True))
+                t.add_done_callback(crash_reporter(c))
+
+            async def on_action(update: Update, ctx):
+                q = update.callback_query
+                await q.answer()
+                data = q.data or ""
+                if not data.startswith("act:"):
+                    return
+                from .telegram_bridge import is_allowed
+                if not is_allowed(q.from_user.id, bridge.get_settings()):
+                    return
+                act_id = data[4:]
+                cmd = _ACTION_REGISTRY.get(act_id)
+                if not cmd:
+                    await q.answer("Aksi kedaluwarsa.")
+                    return
+                c = q.message.chat_id
+                u = q.from_user.id
+                await sender(c, f"👉 *{cmd}*")
+                t = asyncio.create_task(_run_chat_turn(u, c, cmd))
                 t.add_done_callback(crash_reporter(c))
 
             app.add_handler(CommandHandler("task", on_task))
             app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^confirm:"))
             app.add_handler(CallbackQueryHandler(on_ask, pattern=r"^ask:"))
             app.add_handler(CallbackQueryHandler(on_pending, pattern=r"^pend:"))
+            app.add_handler(CallbackQueryHandler(on_action, pattern=r"^act:"))
             app.add_handler(CommandHandler("start", on_start))
             app.add_handler(CommandHandler("help", on_help))
             app.add_handler(CommandHandler("projects", on_projects))

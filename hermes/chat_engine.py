@@ -359,6 +359,26 @@ CHAT_TOOLS = [
                          "description": "format 9:16 Shorts/TikTok, default 'blur'. 'crop' potong tengah, 'none' rasio asli."}},
             "required": ["url"]}}},
     {"type": "function", "function": {
+        "name": "schedule_task",
+        "description": ("Jadwalkan tugas otomatis (one-shot delay atau recurring berkala) di background. "
+                        "Agent akan bangun dan menjalankan task tersebut secara mandiri pada waktu yang ditentukan."),
+        "parameters": {"type": "object", "properties": {
+            "description": {"type": "string", "description": "Instruksi/perintah task yang akan dijalankan otomatis (misal '@sayur run tests', 'cek status server', dll.)"},
+            "delay_seconds": {"type": "integer", "description": "Waktu tunggu dalam detik sebelum eksekusi pertama, default 60"},
+            "interval_seconds": {"type": "integer", "description": "Interval pengulangan berkala dalam detik (mis. 3600 = tiap 1 jam, 86400 = tiap 24 jam). Kosongkan/0 jika hanya jalan 1x (one-shot)."},
+            "job_name": {"type": "string", "description": "Nama pengenal singkat tugas, misal 'auto-backup', 'nightly-tests'."},
+        }, "required": ["description"]}}},
+    {"type": "function", "function": {
+        "name": "list_scheduled_tasks",
+        "description": "Lihat semua tugas terjadwal (background cron / timers) yang sedang aktif.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "cancel_scheduled_task",
+        "description": "Batalkan atau hapus tugas terjadwal berdasarkan job_id.",
+        "parameters": {"type": "object", "properties": {
+            "job_id": {"type": "string", "description": "ID tugas terjadwal yang ingin dibatalkan"},
+        }, "required": ["job_id"]}}},
+    {"type": "function", "function": {
         "name": "figma_web_design",
         "description": ("Desain frame/UI baru langsung di Figma Web (browser) "
                         "menggunakan automation UI asli (draw tools + panel Figma), "
@@ -883,6 +903,39 @@ class ChatEngine:
                                            "video_title": res["video_title"],
                                            "candidates": cands}, ensure_ascii=False)
                     return json.dumps(res, ensure_ascii=False)
+
+                if name == "schedule_task":
+                    import time
+                    from uuid import uuid4
+                    desc = str(args.get("description") or "").strip()
+                    if not desc:
+                        return json.dumps({"error": "description kosong"}, ensure_ascii=False)
+                    delay = max(5, int(args.get("delay_seconds") or 60))
+                    interval = max(0, int(args.get("interval_seconds") or 0))
+                    job_name = str(args.get("job_name") or f"job_{uuid4().hex[:6]}")
+                    now = time.time()
+                    next_run = now + delay
+                    if hasattr(self.store, "create_scheduled_job"):
+                        self.store.create_scheduled_job(
+                            job_id=job_name, description=desc, interval_s=interval,
+                            next_run_ts=next_run, chat_id=chat_id or 0)
+                        return json.dumps({
+                            "ok": True, "job_id": job_name, "description": desc,
+                            "delay_seconds": delay, "interval_seconds": interval,
+                            "next_run_epoch": next_run,
+                        }, ensure_ascii=False)
+                    return json.dumps({"error": "store does not support scheduling"}, ensure_ascii=False)
+
+                if name == "list_scheduled_tasks":
+                    if hasattr(self.store, "list_scheduled_jobs"):
+                        jobs = self.store.list_scheduled_jobs(enabled_only=True)
+                        return json.dumps({"scheduled_jobs": jobs}, ensure_ascii=False)
+                    return json.dumps({"scheduled_jobs": []}, ensure_ascii=False)
+
+                if name == "cancel_scheduled_task":
+                    jid = str(args.get("job_id") or "").strip()
+                    deleted = self.store.delete_scheduled_job(jid) if hasattr(self.store, "delete_scheduled_job") else False
+                    return json.dumps({"ok": deleted, "job_id": jid}, ensure_ascii=False)
 
                 if name == "figma_web_design":
                     file_url = args.get("file_url")

@@ -197,6 +197,9 @@ class Settings(BaseModel):
     # so a burst of failures cannot stampede the engine.
     proactive_retry_enabled: bool = False
     proactive_retry_max: int = 3
+    # Sentinel: watch registered project repositories for code changes and run tests
+    proactive_sentinel_enabled: bool = False
+
 
     # Wake word, run by the native tray helper so the mic stays live with the
     # browser closed. Off by default: an always-listening microphone is opt-in.

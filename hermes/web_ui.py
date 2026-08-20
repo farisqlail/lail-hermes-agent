@@ -59,6 +59,15 @@ class ResolveBody(BaseModel):
     session_id: str | None = None
 
 
+class ScheduledJobBody(BaseModel):
+    job_id: str | None = None
+    description: str
+    interval_s: int = 0
+    delay_s: int = 60
+    chat_id: int = 0
+
+
+
 
 # The web operator holds one continuous conversation. Localhost, single user,
 # so a fixed id is enough; a per-browser session id is only needed once the
@@ -766,6 +775,66 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
     def delete_fact(key: str):
         store.delete_fact(key)
         return {"ok": True}
+
+    @app.get("/api/scheduled-jobs")
+    def get_scheduled_jobs():
+        if hasattr(store, "list_scheduled_jobs"):
+            return store.list_scheduled_jobs()
+        return []
+
+    @app.post("/api/scheduled-jobs")
+    def post_scheduled_job(body: ScheduledJobBody):
+        import time
+        from uuid import uuid4
+        job_id = body.job_id or f"job_{uuid4().hex[:6]}"
+        now = time.time()
+        next_run = now + max(1, body.delay_s)
+        if hasattr(store, "create_scheduled_job"):
+            store.create_scheduled_job(
+                job_id=job_id, description=body.description,
+                interval_s=body.interval_s, next_run_ts=next_run,
+                chat_id=body.chat_id)
+            return {"ok": True, "job_id": job_id, "next_run_ts": next_run}
+        raise HTTPException(status_code=500, detail="Store does not support scheduled jobs")
+
+    @app.post("/api/scheduled-jobs/{job_id}/run")
+    async def run_scheduled_job_now(job_id: str):
+        if not hasattr(store, "get_scheduled_job"):
+            raise HTTPException(status_code=404, detail="Not found")
+        job = store.get_scheduled_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if bridge:
+            t = asyncio.create_task(
+                bridge.handle_task(
+                    user_id=0, chat_id=job.get("chat_id") or 0,
+                    text=job.get("description") or "", trusted=True))
+            t.add_done_callback(_bg_crash_cb(store, f"sched-{job_id}"))
+        return {"ok": True, "job_id": job_id}
+
+    @app.delete("/api/scheduled-jobs/{job_id}")
+    def delete_scheduled_job(job_id: str):
+        if hasattr(store, "delete_scheduled_job"):
+            ok = store.delete_scheduled_job(job_id)
+            return {"ok": ok, "job_id": job_id}
+        return {"ok": False}
+
+    @app.get("/api/stitch/gallery")
+    def get_stitch_gallery():
+        from urllib.parse import quote
+        stitch_dir = paths.artifacts_dir() / "stitch"
+        if not stitch_dir.is_dir():
+            return []
+        items = []
+        for p in sorted(stitch_dir.glob("*.png"), key=lambda x: x.stat().st_mtime, reverse=True):
+            items.append({
+                "filename": p.name,
+                "path": str(p),
+                "url": f"/api/artifacts/view?path={quote(str(p))}",
+                "created": p.stat().st_mtime,
+            })
+        return items
+
 
     @app.get("/api/settings")
     def get_settings(): return config.load_settings().model_dump()

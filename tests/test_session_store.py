@@ -136,3 +136,23 @@ def test_sweep_is_idempotent(tmp_path):
 def test_sweep_on_empty_db(tmp_path):
     s = Store(tmp_path / "t.db"); s.init_schema()
     assert s.sweep_interrupted() == []
+
+
+def test_scheduled_jobs_crud(tmp_path):
+    s = Store(tmp_path / "t.db"); s.init_schema()
+    s.create_scheduled_job("j1", "run backup", interval_s=3600, next_run_ts=1000.0, chat_id=123)
+    jobs = s.list_scheduled_jobs(enabled_only=True)
+    assert len(jobs) == 1
+    assert jobs[0]["job_id"] == "j1"
+    assert jobs[0]["description"] == "run backup"
+    assert jobs[0]["interval_s"] == 3600
+    assert jobs[0]["next_run_ts"] == 1000.0
+
+    s.update_scheduled_job_run("j1", last_run_ts=1000.0, next_run_ts=4600.0, enabled=True)
+    job = s.get_scheduled_job("j1")
+    assert job["last_run_ts"] == 1000.0
+    assert job["next_run_ts"] == 4600.0
+
+    assert s.delete_scheduled_job("j1") is True
+    assert s.get_scheduled_job("j1") is None
+

@@ -1,112 +1,165 @@
-# Hermes Agent
+# 🏛️ Lail Hermes Agent
 
-A Windows-local, **Telegram-driven** orchestrator. Send a task in Telegram — Hermes plans it with
-an LLM, hands the coding to your CLI agents (**Claude Code** / **Antigravity**), builds Android
-APKs, tests in a browser or Android emulator, and reports back. Everything is configured from a
-local web UI, and you can also **talk to it** (voice in via local Whisper STT, voice out via
-edge-tts) and **show it things** — a live webcam view with GPU object detection that will
-explain whatever you hold up when you speak. It can also act **on its own**: an optional
-proactive loop pushes a daily brief, watches a folder, and retries transient failures.
+> **Autonomous AI Developer, UI/UX Designer & Task Orchestrator** for Windows.  
+> Control effortlessly via **Telegram Bot**, **Web Dashboard**, or **Voice (STT/TTS)**.
 
-**Orchestrator, not a coder.** Hermes plans and drives; `claude -p` and `agy -p` write the code.
+Hermes orchestrates state-of-the-art AI coding CLIs (**Claude Code** / **Antigravity**), designs modern web/mobile apps via **Google Stitch MCP**, manages autonomous **background cron jobs**, enforces **continuous QA with live test sentinels**, and remembers your preferences in an **Obsidian Semantic Vault**.
 
-## How it works
+---
+
+## ⚡ Overview & Core Workflows
 
 <table>
   <tr>
     <td width="25%" align="center">
-      <h3>1️⃣ Send</h3>
-      <b>Telegram</b><br/><br/>
-      <code>/task buat app counter Flutter</code><br/><br/>
-      <sub>Numeric user-ID whitelist; risky tasks (git push / delete / outside paths) ask for ✅/❌ confirmation first</sub>
+      <h3>📱 1. Channels</h3>
+      <b>Telegram · Web · Voice</b><br/><br/>
+      <code>"Buat UI mobile fintech di Stitch"</code><br/>
+      <code>/task @myproj fix auth token</code><br/><br/>
+      <sub>Interactive inline buttons, push-to-talk, voice note replies (edge-tts)</sub>
     </td>
     <td width="25%" align="center">
-      <h3>2️⃣ Plan</h3>
-      <b>NVIDIA NIM brain</b><br/><br/>
-      <code>{"steps":[code, build, test]}</code><br/><br/>
-      <sub>An OpenAI-compatible NIM model plans the steps and picks an engine; MCP tools available as function calls</sub>
+      <h3>🧠 2. Plan & Brain</h3>
+      <b>NVIDIA NIM / DeepSeek</b><br/><br/>
+      <code>{"steps": [spec, design, test]}</code><br/><br/>
+      <sub>Semantic memory RAG, failure classification, auto-repair loops</sub>
     </td>
     <td width="25%" align="center">
-      <h3>3️⃣ Execute</h3>
-      <b>Engines &amp; runners</b><br/><br/>
-      <code>claude -p</code> · <code>agy -p</code><br/><br/>
-      <sub>Coding in an isolated per-task dir, APK build (Flutter/RN/Gradle), test via Playwright or adb + emulator</sub>
+      <h3>⚙️ 3. Execution</h3>
+      <b>Stitch · Claude · Antigravity</b><br/><br/>
+      <code>stitch_design_screen</code><br/>
+      <code>claude -p · agy -p</code><br/><br/>
+      <sub>Direct Stitch project links, APK builds, Playwright browser tests</sub>
     </td>
     <td width="25%" align="center">
-      <h3>4️⃣ Report</h3>
-      <b>Back to your chat</b><br/><br/>
-      <code>step 0 [code]: done ✔</code><br/><br/>
-      <sub>Live progress per step; APK + screenshots land in the dashboard and SQLite store</sub>
+      <h3>🛡️ 4. Proactive Sentry</h3>
+      <b>Continuous QA & Crons</b><br/><br/>
+      <code>[🚨 Test Failed] -> [⚡ 1-Tap Fix]</code><br/><br/>
+      <sub>Self-initiated background tests, scheduled crons, daily briefs</sub>
     </td>
   </tr>
 </table>
 
+---
+
+## 🗺️ System Architecture
+
 ```mermaid
 flowchart TD
-    TG(["📱 Telegram<br/><sub>/task · chat · voice · images</sub>"])
-    OP(["👤 Operator<br/><sub>web UI · voice · camera</sub>"])
-    GW["🌐 LLM endpoint<br/><sub>NVIDIA NIM · or local 9router :20128</sub>"]
-
-    subgraph HERMES["🏛️ LAIL HERMES"]
-        direction TB
-        OR["🧠 orchestrator<br/><sub>plan · drive · classify failures</sub>"]
-        PRO["🔄 proactive loop<br/><sub>daily brief · folder watcher · auto-retry</sub>"]
-        HUB["🔌 mcp_hub<br/><sub>MCP tools · stdio / SSE</sub>"]
-
-        subgraph EXEC["execution"]
-            direction LR
-            ENG["⚙️ code<br/><sub>claude -p · agy -p</sub>"] --> BLD["📦 build<br/><sub>flutter / gradle</sub>"] --> TST["🧪 test<br/><sub>playwright · emulator</sub>"]
-        end
-
-        subgraph VOICE["🎙️ voice"]
-            direction LR
-            STT["STT<br/><sub>faster-whisper (CPU)</sub>"]
-            TTS["TTS<br/><sub>edge-tts</sub>"]
-        end
-
-        UI["🖥️ web_ui · FastAPI<br/><sub>127.0.0.1:8799</sub>"]
-        DB[("🗄️ SQLite<br/><sub>tasks · logs · artifacts · facts</sub>")]
-
-        OR --> EXEC
-        OR <-.->|"tool calls"| HUB
-        OR --> DB
-        PRO -->|"queue task (via Bridge gate)"| OR
-        UI --- DB
-        UI --- VOICE
+    subgraph CHANNELS["📱 User Channels & Input"]
+        TG["📱 Telegram Bot<br/><sub>Inline Buttons · Voice In/Out · Photos</sub>"]
+        WEB["🖥️ Web Dashboard<br/><sub>127.0.0.1:8799 · Terminal Stream · Gallery</sub>"]
+        VOICE["🎙️ Voice Loop<br/><sub>faster-whisper STT · edge-tts TTS</sub>"]
+        CAM["📷 Camera Vision<br/><sub>GPU coco-ssd · Real-time object detect</sub>"]
     end
 
-    TRAY["🛰️ tray helper<br/><sub>wake word (openWakeWord) · always-on mic</sub>"]
-    CAM["📷 camera vision<br/><sub>coco-ssd on GPU · WebGPU/WebGL<br/>live boxes · auto-explain what you hold</sub>"]
+    subgraph BRAIN["🧠 Hermes Brain & Orchestrator"]
+        ROUTER["🔀 Chat & Task Router<br/><sub>NVIDIA NIM · 9Router · OpenAI API</sub>"]
+        PLANNER["📋 Step Planner & Evaluator<br/><sub>Failure Classifier · Budget Guards</sub>"]
+        MEM["🧠 Semantic Vault RAG<br/><sub>Obsidian Notes · Token Relevance Ranker</sub>"]
+    end
 
-    TG -->|"/task · chat · whitelist · confirm gate"| OR
-    OR -.->|"status · APK · screenshots · images"| TG
-    PRO -.->|"daily brief · alerts"| TG
-    OR <-.->|"OpenAI API · base_url"| GW
-    OP <-->|"chat · voice · camera"| UI
-    OP --- CAM
-    CAM -.->|"frame + detected labels"| UI
-    TRAY <-.->|"wake event · state poll"| UI
+    subgraph AUTONOMOUS["🔄 Autonomous Proactive Engines"]
+        CRON["⏰ Dynamic Cron Scheduler<br/><sub>One-shot Timers · Recurring Tasks</sub>"]
+        SENTRY["🛡️ Sentinel Continuous QA<br/><sub>Workspace Watcher · Auto-Test Runner</sub>"]
+        BRIEF["📅 Daily Brief & Auto-Retry"]
+    end
 
-    classDef ext fill:#229ED9,stroke:#1a7fb0,color:#fff
-    classDef brain fill:#76B900,stroke:#5a8c00,color:#fff
-    classDef store fill:#f5f0e6,stroke:#c9b896,color:#333
-    classDef op fill:#e06666,stroke:#a61c1c,color:#fff
-    classDef gw fill:#8a63d2,stroke:#5f3dc4,color:#fff
-    classDef tray fill:#2f2f3a,stroke:#12b5cb,color:#fff
-    classDef proc fill:#e8a33d,stroke:#b5791f,color:#fff
-    classDef cam fill:#3d9970,stroke:#2a6b4f,color:#fff
-    class TG ext
-    class OR brain
-    class DB store
-    class OP op
-    class GW gw
-    class TRAY tray
-    class PRO proc
-    class CAM cam
+    subgraph TOOLS["🔌 Tools & Execution Engines"]
+        STITCH["🎨 Google Stitch MCP<br/><sub>Direct UI Generation · Multi-Screen Flow</sub>"]
+        CLAUDE["⚡ Claude Code CLI (claude -p)"]
+        AGY["🪐 Antigravity CLI (agy -p)"]
+        BLD["📦 Build & Test Runners<br/><sub>Flutter APK · Gradle · Playwright</sub>"]
+    end
+
+    subgraph STORAGE["🗄️ Persistence"]
+        DB[("SQLite DB<br/><sub>tasks · logs · scheduled_jobs</sub>")]
+        VAULT[("Obsidian Vault<br/><sub>facts · task archives · wikilinks</sub>")]
+    end
+
+    CHANNELS <--> ROUTER
+    ROUTER <--> PLANNER
+    PLANNER <--> MEM
+    MEM <--> VAULT
+    ROUTER <--> DB
+
+    AUTONOMOUS -->|"trigger scheduled / QA task"| ROUTER
+    AUTONOMOUS -.->|"push alert + 1-tap fix"| TG
+
+    PLANNER --> TOOLS
+    STITCH -.->|"direct project link & preview"| TG
+    STITCH -.->|"direct project link & preview"| WEB
+    CLAUDE --> BLD
+    AGY --> BLD
+
+    classDef channel fill:#0284c7,stroke:#0369a1,color:#fff
+    classDef brain fill:#16a34a,stroke:#15803d,color:#fff
+    classDef auto fill:#d97706,stroke:#b45309,color:#fff
+    classDef tool fill:#9333ea,stroke:#7e22ce,color:#fff
+    classDef store fill:#475569,stroke:#334155,color:#fff
+
+    class TG,WEB,VOICE,CAM channel
+    class ROUTER,PLANNER,MEM brain
+    class CRON,SENTRY,BRIEF auto
+    class STITCH,CLAUDE,AGY,BLD tool
+    class DB,VAULT store
 ```
+
+---
+
+## 🎨 Google Stitch UI Design & Multi-Screen Continuity
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as 👤 Operator
+    participant TG as 📱 Telegram / Web
+    participant Hermes as 🏛️ Hermes Engine
+    participant Stitch as 🎨 Google Stitch MCP
+
+    User->>TG: "Buat UI Login App E-Commerce Modern"
+    TG->>Hermes: Dispatch prompt
+    Hermes->>Hermes: Formulate Senior UI/UX Spec (Color, Typography, Layout, microcopy)
+    Hermes->>Stitch: stitch__create_project + stitch__generate_screen_from_text
+    Stitch-->>Hermes: {projectId: "proj123", screenId: "scr001", screenshot}
+    Hermes-->>TG: 🖼️ Preview + 🔗 [Buka & Edit di Google Stitch] + [Action: 🚀 Buat Screen Register]
+
+    Note over User,TG: Iterasi & Multi-Screen Flow
+    User->>TG: Tap [🚀 Buat Screen Register]
+    TG->>Hermes: Re-use project_id="proj123"
+    Hermes->>Stitch: stitch__generate_screen_from_text(project_id="proj123")
+    Stitch-->>Hermes: Screen Register added to same project!
+    Hermes-->>TG: Multi-screen UI flow updated on same Canvas!
+```
+
+---
+
+## 🛡️ Proactive QA Sentinel & Dynamic Cron Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Watcher as 🛡️ Sentinel Watcher (proactive.py)
+    participant Tests as 🧪 Background Test Runner
+    participant TG as 📱 Operator Telegram
+    actor User as 👤 Operator
+
+    Watcher->>Watcher: Detect code edit in @myproject (*.py/*.ts)
+    Watcher->>Tests: Run fast test suite (pytest -q / npm test)
+    Tests-->>Watcher: Test Failed (AssertionError in auth.py)
+    Watcher->>TG: 🚨 Alert: "Test gagal di @myproject" + [⚡ Auto-Fix Diff]
+    User->>TG: Tap [⚡ Auto-Fix Diff]
+    TG->>Watcher: Execute auto-fix task via Claude/Antigravity
+```
+
 
 ## Features
 
+- **Google Stitch MCP UI/UX Generation & Project Continuity** — Ask Hermes to build web or mobile app designs (`"buat UI login modern"`). Hermes creates high-spec prompts (visual theme, hierarchy, components, microcopy), invokes Google Stitch MCP, renders the UI screenshot directly in chat, and provides a direct web link (`https://stitch.withgoogle.com/projects/{projectId}`). Multi-screen flows and screen revisions reuse the same `project_id` on the canvas.
+- **Interactive Telegram Actions & Voice Notes** — Interactive Inline Keyboard buttons for 1-tap task approvals, proactive next-step recommendations, and voice replies. Send a voice note to Hermes $\rightarrow$ it transcribes via faster-whisper and replies with a spoken voice note back via `edge-tts`.
+- **Dynamic Background Scheduler & Crons** — Schedule one-shot or recurring background tasks (`schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task`) directly from chat or Web UI REST endpoints. Background loop runs tasks autonomously and alerts the operator.
+- **Sentinel Continuous QA Watchdog** — Automatically detects code modifications across registered `@project` workspaces, runs fast background test suites (`pytest`/`npm test`), and sends Telegram alerts with 1-tap `[⚡ Auto-Fix]` action buttons if tests break.
+- **Semantic Memory & Obsidian Vault RAG** — Keyed facts and past task archives are stored as human-browsable Obsidian Markdown files and queried with token-relevance ranking (`_score_relevance`) so the agent intelligently recalls architectural decisions, coding preferences, and past solutions.
 - **Telegram control** with a strict numeric user-ID whitelist (non-listed senders are rejected).
   `/help` shows the full command guide, `/projects` lists the registered `@name`s, and the
   commands are published to Telegram's `/` autocomplete menu.

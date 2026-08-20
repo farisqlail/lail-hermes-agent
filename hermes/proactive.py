@@ -311,7 +311,95 @@ async def tick(settings, store, bridge, ics_upcoming, state: dict,
         except Exception as e:
             _log(f"auto-retry failed: {_safe(e)}")
 
+    # DYNAMIC SCHEDULED JOBS
+    try:
+        if hasattr(store, "list_scheduled_jobs"):
+            jobs = store.list_scheduled_jobs(enabled_only=True)
+            for j in jobs:
+                next_ts = float(j.get("next_run_ts") or 0.0)
+                if now_ts >= next_ts and next_ts > 0:
+                    target_chat = int(j.get("chat_id") or chat_id or 0)
+                    job_desc = str(j.get("description") or "")
+                    job_id = str(j.get("job_id") or "")
+                    interval = int(j.get("interval_s") or 0)
+                    await bridge.handle_task(
+                        user_id=0, chat_id=target_chat, text=job_desc, trusted=True)
+                    _log(f"executed scheduled job: {job_id} ({job_desc[:40]})")
+                    new_next = (now_ts + interval) if interval > 0 else 0.0
+                    store.update_scheduled_job_run(job_id, now_ts, new_next, enabled=(interval > 0))
+                    changed = True
+    except Exception as e:
+        _log(f"scheduled jobs failed: {_safe(e)}")
+
+    # SENTINEL (Continuous QA Watchdog)
+    if getattr(settings, "proactive_sentinel_enabled", False):
+        try:
+            if await scan_and_test_projects(settings, state, bridge, now_ts):
+                changed = True
+        except Exception as e:
+            _log(f"sentinel run failed: {_safe(e)}")
+
     return changed
+
+
+async def scan_and_test_projects(settings, state: dict, bridge, now_ts: float) -> bool:
+    """Watch registered projects for recent modifications and run test suite if files changed."""
+    projects = getattr(settings, "projects", {})
+    if not projects:
+        return False
+    changed = False
+    chat_id = int(getattr(settings, "proactive_chat_id", 0) or 0)
+    seen_mtimes = state.setdefault("sentinel_mtimes", {})
+    for name, p_str in projects.items():
+        p = Path(p_str)
+        if not p.is_dir():
+            continue
+        latest_mtime = 0.0
+        latest_file = None
+        try:
+            for ext in ("*.py", "*.ts", "*.js", "*.go", "*.rs"):
+                for f in p.glob(f"**/{ext}"):
+                    if any(part in f.parts for part in (".venv", "node_modules", ".git", "__pycache__")):
+                        continue
+                    mtime = f.stat().st_mtime
+                    if mtime > latest_mtime:
+                        latest_mtime = mtime
+                        latest_file = f
+        except Exception:
+            continue
+
+        last_recorded = seen_mtimes.get(name, 0.0)
+        if last_recorded == 0.0:
+            seen_mtimes[name] = latest_mtime
+            continue
+
+        if latest_mtime > last_recorded and (now_ts - latest_mtime) >= 5:
+            seen_mtimes[name] = latest_mtime
+            changed = True
+            _log(f"sentinel detected code change in @{name} ({latest_file.name if latest_file else ''})")
+            pytest_exe = p / ".venv" / "Scripts" / "pytest.exe"
+            exe_str = str(pytest_exe) if pytest_exe.is_file() else "pytest"
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    exe_str, "-q", cwd=str(p),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+                if proc.returncode != 0 and chat_id != NO_CHAT:
+                    out_text = (stdout or stderr).decode("utf-8", errors="replace")[:300]
+                    alert_msg = (
+                        f"🚨 *Sentinel QA Alert* di `@{name}`\n"
+                        f"Perubahan kode terdeteksi pada `{latest_file.name if latest_file else 'workspace'}` dan test gagal:\n"
+                        f"```\n{out_text}\n```\n"
+                        f"[Action: ⚡ Perbaiki Test Ini | @{name} perbaiki test yang gagal: {out_text[:100]}]"
+                    )
+                    await bridge.sender(chat_id, alert_msg)
+            except asyncio.TimeoutError:
+                pass
+            except Exception as e:
+                _log(f"sentinel subprocess failed: {_safe(e)}")
+    return changed
+
 
 
 async def run_loop(*, store, bridge, ics_upcoming=None, load_settings=None,
