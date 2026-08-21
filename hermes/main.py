@@ -1257,13 +1257,13 @@ async def run():
                         reply_markup=pending_ui.keyboard(pa)))
 
             async def _run_chat_turn(user_id: int, chat_id: int, text: str,
-                                     images=None, reply_voice: bool = False):
+                                     images=None, documents=None, reply_voice: bool = False):
                 session_id = f"tg-{chat_id}"
                 store.ensure_session(session_id, f"Telegram {chat_id}")
                 try:
                     out = await engine.run_turn(
                         session_id, text, images=images, chat=chat,
-                        chat_id=chat_id, user_id=user_id)
+                        chat_id=chat_id, user_id=user_id, documents=documents)
                 except Exception as e:
                     await sender(chat_id, f"(Maaf, chat gagal: {_console_safe(e)})")
                     return
@@ -1377,23 +1377,43 @@ async def run():
                 if not msg:
                     return
                 tg_file = None
+                is_document = False
+                doc_filename = ""
                 if msg.photo:
                     tg_file = await msg.photo[-1].get_file()
                 elif msg.document:
                     tg_file = await msg.document.get_file()
+                    doc_filename = msg.document.file_name or ""
+                    mime = msg.document.mime_type or ""
+                    # A Telegram "document" can be an uncompressed picture too —
+                    # route those through the image path, everything else through
+                    # the text-extraction path. Some clients omit file_name on
+                    # forwarded media, so mime_type is checked too rather than
+                    # trusting an empty extension to mean "not an image".
+                    ext = Path(doc_filename).suffix.lstrip(".").lower()
+                    is_document = (ext not in ("png", "jpg", "jpeg", "gif", "webp")
+                                  and not mime.startswith("image/"))
                 if not tg_file:
                     return
                 data = await tg_file.download_as_bytearray()
                 session_id = f"tg-{c}"
+                images, documents = [], []
                 try:
-                    name, _ = uploads.save(paths.uploads_dir(), session_id, bytes(data))
+                    if is_document:
+                        name, _ = uploads.save_document(
+                            paths.uploads_dir(), session_id, doc_filename, bytes(data))
+                        doc_path = uploads.resolve(paths.uploads_dir(), session_id, name)
+                        documents = [doc_path] if doc_path else []
+                    else:
+                        name, _ = uploads.save(paths.uploads_dir(), session_id, bytes(data))
+                        img_path = uploads.resolve(paths.uploads_dir(), session_id, name)
+                        images = [img_path] if img_path else []
                 except Exception as e:
-                    await sender(c, f"Gagal menyimpan gambar: {_console_safe(e)}")
+                    await sender(c, f"Gagal menyimpan berkas: {_console_safe(e)}")
                     return
-                img_path = uploads.resolve(paths.uploads_dir(), session_id, name)
-                images = [img_path] if img_path else []
                 text = msg.caption or ""
-                t = asyncio.create_task(_run_chat_turn(u, c, text, images=images))
+                t = asyncio.create_task(
+                    _run_chat_turn(u, c, text, images=images, documents=documents))
                 t.add_done_callback(crash_reporter(c))
 
             async def on_voice(update: Update, ctx):
@@ -1469,7 +1489,7 @@ async def run():
             app.add_handler(CommandHandler("start", on_start))
             app.add_handler(CommandHandler("help", on_help))
             app.add_handler(CommandHandler("projects", on_projects))
-            app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, on_photo))
+            app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo))
             app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_chat))
 

@@ -30,6 +30,8 @@ interface Message {
   /** Object URLs for images sent with this turn. Display only, and only for
    *  this page load: the server deletes the files once it has answered. */
   images?: string[];
+  /** Filenames of documents sent with this turn. Display only. */
+  docNames?: string[];
   usage?: {
     total: number;
   };
@@ -388,10 +390,12 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   // They used to be diffed here, which meant no announcement on any other page.
   
   const [inputText, setInputText] = useState('');
-  // Images staged for the next turn. Held as Files until send: uploading on
-  // pick would leave orphans on the server every time the operator changes
-  // their mind.
-  const [attached, setAttached] = useState<{ file: File; url: string }[]>([]);
+  // Images and documents staged for the next turn. Held as Files until send:
+  // uploading on pick would leave orphans on the server every time the
+  // operator changes their mind.
+  const [attached, setAttached] = useState<
+    { file: File; url: string; kind: 'image' | 'document' }[]
+  >([]);
   const [cameraOpen, setCameraOpen] = useState(false);
   // "Auto-jelaskan": while on and the camera is open, every spoken turn grabs
   // the current frame and asks the agent what is in view. Held in a ref too, so
@@ -596,15 +600,30 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     scrollToBottom();
   }, [messages, streamContent, showStream, scrollToBottom]);
 
-  /** Stage image files chosen, pasted or dropped. Non-images are ignored
-   *  rather than refused loudly: a paste often carries several flavours of the
-   *  same clipboard entry, only one of which is the picture. */
+  // Mirrors hermes/uploads.py's _DOCUMENT_EXTENSIONS — kept in sync by hand,
+  // there being no shared schema between the Python backend and this file.
+  const DOCUMENT_EXTENSIONS = new Set([
+    'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'log', 'yaml', 'yml',
+    'xml', 'ini', 'toml', 'py', 'js', 'ts', 'tsx', 'jsx', 'html', 'css',
+    'sh', 'java', 'c', 'cpp', 'h', 'go', 'rs', 'rb', 'php', 'sql',
+    'pdf', 'docx', 'xlsx',
+  ]);
+  const docExt = (name: string) => name.split('.').pop()?.toLowerCase() ?? '';
+
+  /** Stage image and document files chosen, pasted or dropped. Anything
+   *  neither an image nor a known document extension is ignored rather than
+   *  refused loudly: a paste often carries several flavours of the same
+   *  clipboard entry, only one of which is the actual attachment. */
   const addFiles = (files: Iterable<File>) => {
-    const picked = Array.from(files).filter((f) => f.type.startsWith('image/'));
+    const picked = Array.from(files).flatMap((file): { file: File; kind: 'image' | 'document' }[] => {
+      if (file.type.startsWith('image/')) return [{ file, kind: 'image' }];
+      if (DOCUMENT_EXTENSIONS.has(docExt(file.name))) return [{ file, kind: 'document' }];
+      return [];
+    });
     if (picked.length === 0) return;
     setAttached((prev) => [
       ...prev,
-      ...picked.map((file) => ({ file, url: URL.createObjectURL(file) })),
+      ...picked.map(({ file, kind }) => ({ file, url: URL.createObjectURL(file), kind })),
     ]);
   };
 
@@ -637,8 +656,40 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     return ids;
   };
 
-  const uploadAttached = (): Promise<string[]> =>
-    uploadFiles(attached.map((a) => a.file));
+  /** Same shape as `uploadFiles`, but for non-image documents — the server
+   *  needs the original filename to know how to read the bytes. Returns only
+   *  the files that actually made it, paired with their server id, so a
+   *  rejected upload doesn't get shown as "sent" alongside ones that were. */
+  const uploadDocuments = async (files: File[]): Promise<{ file: File; id: string }[]> => {
+    const out: { file: File; id: string }[] = [];
+    for (const file of files) {
+      try {
+        const params = new URLSearchParams({ filename: file.name });
+        if (sessionId) params.set('session_id', sessionId);
+        const res = await fetch(`/api/uploads/document?${params}`, {
+          method: 'POST', body: file,
+        });
+        if (!res.ok) {
+          const detail = await res.json().catch(() => ({}));
+          toast(detail.detail || `Gagal mengunggah ${file.name}`, 'err');
+          continue;
+        }
+        out.push({ file, id: (await res.json()).id });
+      } catch {
+        toast(`Gagal mengunggah ${file.name}`, 'err');
+      }
+    }
+    return out;
+  };
+
+  const uploadAttached = async (): Promise<
+    { imageIds: string[]; docIds: string[]; docNames: string[] }
+  > => {
+    const images = attached.filter((a) => a.kind === 'image').map((a) => a.file);
+    const docs = attached.filter((a) => a.kind === 'document').map((a) => a.file);
+    const [imageIds, docResults] = await Promise.all([uploadFiles(images), uploadDocuments(docs)]);
+    return { imageIds, docIds: docResults.map((d) => d.id), docNames: docResults.map((d) => d.file.name) };
+  };
 
   /** The "explain what I'm holding" turn: grab the current camera frame plus the
    *  detector's labels and send them with the operator's words, so the vision
@@ -670,14 +721,15 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     // Files passed for THIS turn (the auto-jelaskan frame), uploaded directly
     // rather than through the `attached` state — no snap→send setState race.
     const direct = opts?.images ?? [];
-    const hasImages = attached.length > 0 || direct.length > 0;
-    if ((!text && !hasImages && !resume) || streaming) return;
+    const hasImages = attached.some((a) => a.kind === 'image') || direct.length > 0;
+    const hasAttachments = attached.length > 0 || direct.length > 0;
+    if ((!text && !hasAttachments && !resume) || streaming) return;
     // "buka kamera" typed (or auto-sent from a voice transcript) opens the
     // webcam locally instead of going to the chat model — the same whole-
     // utterance match the voice loop uses, so the two paths behave alike.
     // Skipped when a picture is already staged or sent: then the words are its
     // caption.
-    if (!hasImages && !resume && matchLocalCommand(text) === 'camera') {
+    if (!hasAttachments && !resume && matchLocalCommand(text) === 'camera') {
       setCameraOpen(true);
       toast(CAMERA_ACK, 'ok');
       setInputText('');
@@ -686,10 +738,13 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     // An image with no caption still needs words: an empty text part is
     // rejected by some providers, and the operator should see exactly what
     // was asked on their behalf.
-    if (!text && !resume) text = 'Tolong analisa gambar ini.';
+    if (!text && !resume) {
+      text = hasImages ? 'Tolong analisa gambar ini.' : 'Tolong jelaskan berkas ini.';
+    }
     const staged = attached;
     const directUrls = direct.map((f) => URL.createObjectURL(f));
-    const imageIds = [...(await uploadAttached()), ...(await uploadFiles(direct))];
+    const { imageIds: stagedImageIds, docIds, docNames } = await uploadAttached();
+    const imageIds = [...stagedImageIds, ...(await uploadFiles(direct))];
     setAttached([]);
 
     // Captured once: every later update belongs to THIS conversation, whatever
@@ -711,7 +766,8 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
     if (!resume) {
       const userMsg: Message = {
         role: 'user', content: text,
-        images: [...staged.map((a) => a.url), ...directUrls],
+        images: [...staged.filter((a) => a.kind === 'image').map((a) => a.url), ...directUrls],
+        docNames,
       };
       setMessages((prev) => [...prev, userMsg]);
     }
@@ -740,6 +796,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
           text,
           session_id: turnSession,
           images: imageIds,
+          documents: docIds,
           resume,
           project: selectedProject || undefined,
           engine: selectedEngine !== 'auto' ? selectedEngine : undefined,
@@ -1295,16 +1352,32 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
             </span>
             {attached.map((a, idx) => (
               <div key={a.url} style={{ position: 'relative' }}>
-                <img
-                  src={a.url}
-                  alt={a.file.name}
-                  style={{ width: '56px', height: '56px', objectFit: 'cover',
-                           borderRadius: 'var(--r-sm)', border: '1px solid var(--border)' }}
-                />
+                {a.kind === 'image' ? (
+                  <img
+                    src={a.url}
+                    alt={a.file.name}
+                    style={{ width: '56px', height: '56px', objectFit: 'cover',
+                             borderRadius: 'var(--r-sm)', border: '1px solid var(--border)' }}
+                  />
+                ) : (
+                  <div
+                    title={a.file.name}
+                    style={{ width: '56px', height: '56px', display: 'flex',
+                             flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                             borderRadius: 'var(--r-sm)', border: '1px solid var(--border)',
+                             background: 'var(--surface-0)', padding: '4px', overflow: 'hidden' }}
+                  >
+                    <span style={{ fontSize: '18px' }}>📄</span>
+                    <span style={{ fontSize: '9px', textAlign: 'center', width: '100%',
+                                   whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {a.file.name}
+                    </span>
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => removeAttached(idx)}
-                  title="Buang gambar"
+                  title="Buang berkas"
                   style={{ position: 'absolute', top: '-6px', right: '-6px', width: '18px',
                            height: '18px', borderRadius: '50%', border: '1px solid var(--border)',
                            background: 'var(--surface-0)', color: 'var(--text)', lineHeight: 1,
@@ -1339,7 +1412,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
                 type="button"
                 className="ask-pill-btn icon-only"
                 disabled={streaming}
-                title="Lampirkan gambar (bisa juga tempel dari clipboard)"
+                title="Lampirkan gambar atau berkas (bisa juga tempel dari clipboard)"
                 onClick={() => fileInputRef.current?.click()}
               >
                 +
@@ -1348,7 +1421,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/png,image/jpeg,image/gif,image/webp"
+                accept="image/png,image/jpeg,image/gif,image/webp,.txt,.md,.csv,.json,.log,.pdf,.docx,.xlsx,.py,.js,.ts,.tsx,.jsx,.html,.css,.yaml,.yml,.xml,.java,.c,.cpp,.go,.rs,.rb,.php,.sql"
                 multiple
                 style={{ display: 'none' }}
                 onChange={(e) => {
@@ -1529,6 +1602,16 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
                                 style={{ width: '72px', height: '72px', objectFit: 'cover',
                                          borderRadius: 'var(--r-sm)', border: '1px solid var(--border)' }}
                               />
+                            ))}
+                          </div>
+                        )}
+                        {m.docNames && m.docNames.length > 0 && (
+                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '6px' }}>
+                            {m.docNames.map((n) => (
+                              <span key={n} style={{ fontSize: '10px', padding: '2px 6px',
+                                                     borderRadius: 'var(--r-sm)', border: '1px solid var(--border)' }}>
+                                📄 {n}
+                              </span>
                             ))}
                           </div>
                         )}

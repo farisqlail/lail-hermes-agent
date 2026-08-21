@@ -23,6 +23,7 @@ from .telegram_bridge import new_task_id
 
 CHAT_HISTORY_LIMIT = 20   # turns fed back to the model — caps prompt cost
 IMAGE_MARKER = "\n\n[gambar dilampirkan]"
+DOCUMENT_MARKER = "\n\n[berkas dilampirkan]"
 
 # How long the start_task tool waits for handle_task to settle its gate before
 # answering the model. The slow part is one `git status` subprocess, so this is
@@ -700,17 +701,26 @@ class ChatEngine:
                                                self.store.list_tasks(limit=20),
                                                list(s.projects))}
 
-    def history_with_context(self, sid: str, images: list[Path] | None = None) -> list[dict]:
+    def history_with_context(self, sid: str, images: list[Path] | None = None,
+                             documents: list[Path] | None = None) -> list[dict]:
         history = [self.brain_context(), *self.store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)]
-        if images and history[-1]["role"] == "user":
-            said = history[-1]["content"].replace(IMAGE_MARKER, "")
+        if (images or documents) and history[-1]["role"] == "user":
+            said = (history[-1]["content"]
+                    .replace(IMAGE_MARKER, "").replace(DOCUMENT_MARKER, ""))
             history[-1] = {"role": "user",
-                           "content": uploads.as_content_parts(said, images)}
+                           "content": uploads.as_content_parts(said, images or [], documents)}
         return history
 
     async def history_for_turn(self, sid: str, text: str, images: list[Path] | None,
-                               dispatch) -> tuple[list[dict], str | None]:
-        history = self.history_with_context(sid, images)
+                               dispatch, documents: list[Path] | None = None,
+                               ) -> tuple[list[dict], str | None]:
+        # A big PDF/XLSX can take real CPU time to parse; run it off the event
+        # loop so it doesn't stall every other concurrent turn (web + Telegram
+        # share one loop). Plain-text turns skip the thread hop entirely.
+        if images or documents:
+            history = await asyncio.to_thread(self.history_with_context, sid, images, documents)
+        else:
+            history = self.history_with_context(sid, images, documents)
         sess = self.store.get_session(sid)
         sproj = sess.get("project") if sess else None
         if not (text and wants_code_task(text, config.load_settings(), session_project=sproj)):
@@ -730,9 +740,15 @@ class ChatEngine:
             return ""
         return template.format(tid=task_id)
 
-    def take_images(self, sid: str, names: list[str]) -> list[Path]:
+    def _resolve_uploads(self, sid: str, names: list[str]) -> list[Path]:
         found = [uploads.resolve(paths.uploads_dir(), sid, n) for n in names or []]
         return [p for p in found if p is not None]
+
+    def take_images(self, sid: str, names: list[str]) -> list[Path]:
+        return self._resolve_uploads(sid, names)
+
+    def take_documents(self, sid: str, names: list[str]) -> list[Path]:
+        return self._resolve_uploads(sid, names)
 
     def attach_images_to_task(self, desc: str, images: list[Path]) -> str:
         if not images:
@@ -1379,13 +1395,16 @@ class ChatEngine:
 
     async def run_turn(self, session_id: str, text: str,
                        images: list[Path] | None = None, chat=None,
-                       chat_id: int = 0, user_id: int = 0) -> dict:
+                       chat_id: int = 0, user_id: int = 0,
+                       documents: list[Path] | None = None) -> dict:
         """One non-streaming conversational turn: record it, run the model
         (with auto-task routing and tool dispatch), persist the answer, learn
         from it. Used by both the web UI's non-streaming endpoint and every
         Telegram message."""
         text = (text or "").strip()
-        self.store.add_message(session_id, "user", text + (IMAGE_MARKER if images else ""))
+        self.store.add_message(session_id, "user", text
+                               + (IMAGE_MARKER if images else "")
+                               + (DOCUMENT_MARKER if documents else ""))
         dispatch = self.make_dispatch(session_id, images, chat_id=chat_id, user_id=user_id)
         if chat is None:
             s = config.load_settings()
@@ -1395,7 +1414,8 @@ class ChatEngine:
             auto_id = None
         else:
             try:
-                turn, auto_id = await self.history_for_turn(session_id, text, images, dispatch)
+                turn, auto_id = await self.history_for_turn(session_id, text, images,
+                                                             dispatch, documents)
                 reply = await chat(turn, tools=await self.chat_tools(), dispatch=dispatch)
             except Exception as e:
                 safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
@@ -1407,6 +1427,8 @@ class ChatEngine:
         self.store.add_message(session_id, "assistant", clean)
         if images:
             uploads.discard(images)
+        if documents:
+            uploads.discard(documents)
         await self.learn_from_turn(text, clean)
         return {"reply": clean, "task_id": auto_id,
                 "pending": [{"id": pa.id, "tool": pa.tool, "args": pa.args,

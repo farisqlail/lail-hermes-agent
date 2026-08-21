@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
 from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth, imagegen, ytclip
-from .chat_engine import ChatEngine, wants_code_task, CHAT_TOOLS, AUTO_TASK_NOTE, IMAGE_MARKER, CHAT_HISTORY_LIMIT, RESUME_NUDGE, START_TASK_DECISION_TIMEOUT_S
+from .chat_engine import ChatEngine, wants_code_task, CHAT_TOOLS, AUTO_TASK_NOTE, IMAGE_MARKER, DOCUMENT_MARKER, CHAT_HISTORY_LIMIT, RESUME_NUDGE, START_TASK_DECISION_TIMEOUT_S
 from .pending_actions import PendingStore
 
 from .project_resolve import parse_project_ref
@@ -17,6 +17,7 @@ class TaskSubmit(BaseModel):
     text: str
     session_id: str | None = None
     images: list[str] = []
+    documents: list[str] = []
     resume: bool = False
     project: str | None = None
     engine: str | None = None
@@ -514,7 +515,10 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             store.append_log(task_id, "ask: Chat Conversation")
             engine = app.state.engine
             images = engine.take_images(sid, body.images)
-            store.add_message(sid, "user", text + (IMAGE_MARKER if images else ""))
+            documents = engine.take_documents(sid, body.documents)
+            store.add_message(sid, "user", text
+                              + (IMAGE_MARKER if images else "")
+                              + (DOCUMENT_MARKER if documents else ""))
             chat = getattr(app.state, "chat", None)
             auto_id = None
             if chat is None:
@@ -530,7 +534,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
                 try:
                     dispatch = engine.wrap_dispatch(engine.make_dispatch(sid, images),
                                                     await _integrate_extra())
-                    turn, auto_id = await engine.history_for_turn(sid, text, images, dispatch)
+                    turn, auto_id = await engine.history_for_turn(sid, text, images,
+                                                                   dispatch, documents)
                     reply = await chat(turn, tools=await _chat_tools(),
                                        dispatch=dispatch)
                 except Exception as e:
@@ -542,6 +547,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             store.set_task_status(task_id, "done")
             store.append_log(task_id, f"answer: {clean}")
             uploads.discard(images)
+            uploads.discard(documents)
             await engine.learn_from_turn(text, clean)
             return {"task_id": task_id, "status": "done"}
 
@@ -647,11 +653,14 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         sid = body.session_id or CONV_WEB
         engine = app.state.engine
         images = engine.take_images(sid, body.images)
+        documents = engine.take_documents(sid, body.documents)
         # A resume turn has no operator message behind it — the trigger was the
         # confirm button — so nothing is recorded as a user turn and the thread
         # shows only the outcome plus the agent picking the work back up.
         if not body.resume:
-            store.add_message(sid, "user", text + (IMAGE_MARKER if images else ""))
+            store.add_message(sid, "user", text
+                              + (IMAGE_MARKER if images else "")
+                              + (DOCUMENT_MARKER if documents else ""))
         chat = getattr(app.state, "chat", None)
 
         # Auto update session project/engine if supplied
@@ -682,7 +691,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             else:
                 dispatch = engine.wrap_dispatch(engine.make_dispatch(sid, images),
                                                 await _integrate_extra())
-                history, auto_id = await engine.history_for_turn(sid, text, images, dispatch)
+                history, auto_id = await engine.history_for_turn(sid, text, images,
+                                                                  dispatch, documents)
                 if body.resume:
                     # Ephemeral, not stored: it steers this one turn and would be
                     # noise in the thread. Also guarantees the prompt ends on a
@@ -717,6 +727,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
                 clean += suffix
             store.add_message(sid, "assistant", clean)
             uploads.discard(images)      # looked at, answered, gone
+            uploads.discard(documents)
             yield sse({"done": True, "usage": usage})
             # After the client has its answer: learning is a background chore,
             # and holding the stream open for a second model call would show up
@@ -751,6 +762,26 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         except OSError as e:
             raise HTTPException(status_code=500, detail=f"Gagal menyimpan: {e}")
         return {"id": name, "mime": mime, "bytes": len(data)}
+
+    @app.post("/api/uploads/document")
+    async def post_upload_document(request: Request, filename: str,
+                                   session_id: str | None = None):
+        """Accept one non-image file (text/code, PDF, DOCX, XLSX) for a
+        conversation. Same raw-body shape as /api/uploads; `filename` carries
+        the extension, which content-sniffing can't recover for plain text."""
+        data = await request.body()
+        if not data:
+            raise HTTPException(status_code=400, detail="Body kosong")
+        try:
+            name, ext = uploads.save_document(paths.uploads_dir(),
+                                              session_id or CONV_WEB, filename, data)
+        except uploads.UnsupportedDocument as e:
+            raise HTTPException(status_code=415, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=413, detail=str(e))
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Gagal menyimpan: {e}")
+        return {"id": name, "ext": ext, "bytes": len(data)}
 
     @app.get("/api/postmortem")
     def get_postmortem(limit: int = 50):

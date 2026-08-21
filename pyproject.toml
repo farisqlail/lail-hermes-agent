@@ -28,6 +28,9 @@ desktop = ["openwakeword>=0.6", "sounddevice>=0.4", "pystray>=0.19", "Pillow>=10
 # bundles the ffmpeg binary so no system install is needed. Optional because the
 # bundled ffmpeg is ~90 MB and only this one tool needs it.
 media = ["yt-dlp>=2024.1", "imageio-ffmpeg>=0.5"]
+# Non-text document attachments (chat + Telegram uploads): PDF, DOCX, XLSX.
+# Plain text/code files need none of this — hermes/uploads.py reads those directly.
+docs = ["pypdf>=4.0", "python-docx>=1.1", "openpyxl>=3.1"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [tool.pytest.ini_options]
