@@ -25,10 +25,16 @@ function copyDirRecursive(srcDir, destDir) {
 async function run() {
   const outDir = path.join(__dirname, 'out');
   const hermesStaticDir = path.join(__dirname, '../hermes/static');
+  const distBackendStaticDir = path.join(__dirname, '../dist-backend/hermes-engine/_internal/hermes/static');
 
   if (fs.existsSync(outDir)) {
     copyDirRecursive(outDir, hermesStaticDir);
     console.log(`[build] Successfully synced Next.js export from ${outDir} to ${hermesStaticDir}`);
+
+    if (fs.existsSync(path.dirname(distBackendStaticDir))) {
+      copyDirRecursive(outDir, distBackendStaticDir);
+      console.log(`[build] Successfully synced Next.js export to ${distBackendStaticDir}`);
+    }
   } else {
     console.warn(`[build] Warning: ${outDir} does not exist yet.`);
   }

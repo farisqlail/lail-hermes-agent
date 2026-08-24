@@ -375,6 +375,34 @@ powershell -ExecutionPolicy Bypass -File <repo>\deploy\install.ps1
 & "$env:HERMES_HOME\start.bat"
 ```
 
+---
+
+## 🖥️ Windows Desktop Application (Standalone App)
+
+Hermes now runs as a **Native Windows Desktop Application** without needing an external web browser:
+
+* **Official Windows Installer (`Setup.exe`)**: Built with NSIS, installs Hermes with Desktop & Start Menu shortcuts, and uninstaller.
+* **Portable Desktop Executable**: Standalone `.exe` that runs on any compatible 64-bit Windows PC.
+* **System Tray Integration**: Background tray icon with live AI state indicators (Listening / Thinking / Speaking / Idle), quick voice summon, and restart controls.
+* **Global Hotkey (`Alt + Space`)**: Instantly toggle / summon Hermes from anywhere in Windows.
+* **Auto-Granted Hardware Permissions**: Direct hardware access for Voice Assistant (Microphone / STT) and Vision AI (Camera / GPU Object Detection).
+
+### Running / Building Desktop App:
+
+```powershell
+# 1. Quick launch Desktop App from repository:
+.\deploy\start-desktop.bat
+
+# 2. Build official Windows Installer (.exe Setup & Portable):
+powershell -ExecutionPolicy Bypass -File deploy\build-desktop-installer.ps1
+
+# The installer and portable binary will be created in:
+# -> dist\Hermes Agent Setup 1.0.0.exe
+# -> dist\Hermes Agent 1.0.0.exe
+```
+
+---
+
 ### If you do not set it
 
 The fallbacks were written for one particular machine and do not agree with each other:
@@ -386,7 +414,7 @@ different task databases — with no error, because both roots are valid.
 Setting `HERMES_HOME` explicitly removes the question entirely. Reconciling those defaults is
 tracked in [`docs/TODO.md`](docs/TODO.md).
 
-Then open <http://127.0.0.1:8799> and fill in: NVIDIA API key (build.nvidia.com), model, Telegram bot
+Then open the Desktop App (or <http://127.0.0.1:8799>) and fill in: NVIDIA API key (build.nvidia.com), model, Telegram bot
 token, your allowed Telegram user ID, Android SDK path, and emulator AVD.
 
 ## Planner evals

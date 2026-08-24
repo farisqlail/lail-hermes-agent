@@ -1,5 +1,6 @@
 from __future__ import annotations
-import asyncio, json, re, subprocess, time
+import asyncio, json, re, subprocess, sys, time
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -168,23 +169,20 @@ class SecretsUpdate(BaseModel):
                 "(check for smart quotes from copy-paste); NVIDIA keys look like 'nvapi-...'")
         return v
 
-STATIC_DIR = Path(__file__).parent / "static"
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    STATIC_DIR = Path(sys._MEIPASS) / "hermes" / "static"
+elif getattr(sys, "frozen", False):
+    STATIC_DIR = Path(sys.executable).parent / "hermes" / "static"
+else:
+    STATIC_DIR = Path(__file__).parent / "static"
+
 INDEX_HTML_CACHE: str | None = None
 
-def load_index_html() -> str:
-    global INDEX_HTML_CACHE
-    import os
-    if os.environ.get("HERMES_DEV"):
-        path = STATIC_DIR / "index.html"
-        if path.exists():
-            return path.read_text(encoding="utf-8")
 
-    if INDEX_HTML_CACHE is not None:
-        return INDEX_HTML_CACHE
+def load_index_html() -> str:
     path = STATIC_DIR / "index.html"
     if path.exists():
-        INDEX_HTML_CACHE = path.read_text(encoding="utf-8")
-        return INDEX_HTML_CACHE
+        return path.read_text(encoding="utf-8")
     return (
         "<html><head><title>Hermes: Bundle Missing</title></head>"
         "<body style='font-family: sans-serif; padding: 2rem; background: #0b0c10; color: #fff;'>"

@@ -1575,5 +1575,8 @@ async def run():
     else:
         await server.serve()
 
+main = run
+
 if __name__ == "__main__":
     asyncio.run(run())
+

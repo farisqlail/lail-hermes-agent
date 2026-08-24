@@ -15,3 +15,11 @@ tests/fake_engine.py
 
 # webpack build cache — machine-local, can exceed GitHub 100MB limit
 web/.next/cache/
+
+# Desktop & Backend build outputs
+/desktop/node_modules/
+/dist/
+/dist-backend/
+/build-backend/
+hermes-engine.spec
+

@@ -113,7 +113,36 @@ call "$AppDir\deploy\start.bat"
 Set-Content -Path "$HermesHome\start.bat" -Value $startBat -Encoding ASCII
 Write-Host "Wrote $HermesHome\start.bat"
 
-# 6. Auto-start at logon
+# 6. Create Desktop & Start Menu Shortcuts for Lail Hermes Desktop App
+try {
+  $WshShell = New-Object -ComObject WScript.Shell
+  $iconPath = "$AppDir\desktop\assets\icon.ico"
+  
+  # Desktop Shortcut
+  $desktopLnk = "$([Environment]::GetFolderPath('Desktop'))\Lail Hermes.lnk"
+  $scDesktop = $WshShell.CreateShortcut($desktopLnk)
+  $scDesktop.TargetPath = "$AppDir\deploy\start-desktop.bat"
+  $scDesktop.WorkingDirectory = "$AppDir"
+  if (Test-Path $iconPath) { $scDesktop.IconLocation = $iconPath }
+  $scDesktop.Description = "Lail Hermes Autonomous AI Workstation"
+  $scDesktop.Save()
+  Write-Host "Created Desktop Shortcut: $desktopLnk" -ForegroundColor Green
+
+  # Start Menu Shortcut
+  $startMenuLnk = "$([Environment]::GetFolderPath('Programs'))\Lail Hermes.lnk"
+  $scStart = $WshShell.CreateShortcut($startMenuLnk)
+  $scStart.TargetPath = "$AppDir\deploy\start-desktop.bat"
+  $scStart.WorkingDirectory = "$AppDir"
+  if (Test-Path $iconPath) { $scStart.IconLocation = $iconPath }
+  $scStart.Description = "Lail Hermes Autonomous AI Workstation"
+  $scStart.Save()
+  Write-Host "Created Start Menu Shortcut: $startMenuLnk" -ForegroundColor Green
+} catch {
+  Write-Host "Could not create shortcuts: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+
+# 7. Auto-start at logon
 try {
   $action  = New-ScheduledTaskAction -Execute "$HermesHome\start.bat"
   $trigger = New-ScheduledTaskTrigger -AtLogOn
@@ -124,6 +153,11 @@ try {
 }
 
 Write-Host ""
-Write-Host "Done. Start Hermes:  $HermesHome\start.bat" -ForegroundColor Green
-Write-Host "Then open the settings UI:  http://127.0.0.1:8799" -ForegroundColor Green
+Write-Host "===============================================================" -ForegroundColor Green
+Write-Host " Done! Hermes Desktop is ready.                                " -ForegroundColor Green
+Write-Host "===============================================================" -ForegroundColor Green
+Write-Host "  Desktop App Launcher: $AppDir\deploy\start-desktop.bat" -ForegroundColor Cyan
+Write-Host "  Desktop Shortcut:     $desktopLnk" -ForegroundColor Cyan
+Write-Host "  Setup Installer:      $AppDir\dist\Hermes Agent Setup 1.0.0.exe" -ForegroundColor Cyan
 if ($missing.Count) { Write-Host ("Note: install missing tools before running tasks: {0}" -f ($missing -join ', ')) -ForegroundColor Yellow }
+

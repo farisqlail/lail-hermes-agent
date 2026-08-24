@@ -2,7 +2,21 @@ import os
 from pathlib import Path
 
 def home() -> Path:
-    return Path(os.environ.get("HERMES_HOME", r"E:/Hermes"))
+    env = os.environ.get("HERMES_HOME")
+    if env:
+        return Path(env)
+    if os.name == "nt":
+        c_hermes = Path(r"C:\Hermes")
+        if c_hermes.exists():
+            return c_hermes
+        try:
+            c_hermes.mkdir(parents=True, exist_ok=True)
+            return c_hermes
+        except (PermissionError, OSError):
+            return Path.home() / "Hermes"
+    return Path.home() / ".hermes"
+
+
 
 def config_dir() -> Path:
     return home() / "config"

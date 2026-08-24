@@ -193,9 +193,11 @@ interface DashboardProps {
   sessionId?: string;
   onRefreshSessions?: () => void;
   onSelectNode?: (node: { id: string; label: string; type: string; details?: string; status?: string } | null) => void;
+  isDrawerOpen?: boolean;
+  onToggleDrawer?: () => void;
 }
 
-export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: DashboardProps) {
+export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawerOpen, onToggleDrawer }: DashboardProps) {
   const { isConnected } = useTasks();
   const { tasks } = useTasksContext();
   const { toast } = useToast();
@@ -1229,126 +1231,162 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
   }, [messages]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'row', width: '100%', height: '100%', position: 'relative' }}>
-      
-      {/* Reconnect Warning HUD Bar */}
+    <div className="page-container" style={{ position: 'relative' }}>
+      {/* Cognitive Server Disconnection Bar */}
       {!isConnected && (
         <div
           style={{
             position: 'absolute',
-            top: 0, left: 0, right: 0,
+            top: 0,
+            left: 0,
+            right: 0,
             backgroundColor: 'var(--err)',
-            color: 'var(--text)',
-            padding: '6px 16px',
+            color: '#ffffff',
+            padding: '4px 16px',
             textAlign: 'center',
             fontWeight: 'bold',
             fontFamily: 'var(--font-mono)',
             fontSize: '10px',
             textTransform: 'uppercase',
-            letterSpacing: '0.1em',
-            zIndex: 10,
-            boxShadow: '0 0 15px var(--err)',
-            borderBottom: '1px solid rgba(255, 0, 80, 0.4)',
+            letterSpacing: '0.08em',
+            zIndex: 40,
           }}
         >
-          ⚠️ ALERT: INTERFACE COGNITIVE SERVER OFFLINE. CONNECTING...
+          ⚠️ COGNITIVE SERVER DISCONNECTED. RECONNECTING...
         </div>
       )}
 
-      {/* Center Viewport HUD Container */}
-      <div className="dashboard-hud-container" style={{ marginTop: !isConnected ? '30px' : '0' }}>
-        <WaveConstellationGraph
-          systemNodes={graphNodes}
-          systemLinks={graphLinks}
-          sessionId={sessionId}
-          onSelectNode={onSelectNode}
-          onNavigateSession={(sId) => navigate(`#/session/${sId}`)}
-        />
-
-        {/* Camera fills this HUD section while open, covering the graph */}
-        <CameraCapture
-          ref={cameraRef}
-          isOpen={cameraOpen}
-          onClose={() => setCameraOpen(false)}
-          onCapture={(file) => addFiles([file])}
-          narrate={narrate}
-          onToggleNarrate={(next) => {
-            setNarrate(next);
-            toast(
-              next
-                ? 'Auto-jelaskan aktif — bicara sambil menghadapkan objek ke kamera.'
-                : 'Auto-jelaskan nonaktif.',
-              'ok',
-            );
-          }}
-        />
-
-
-        <Modal
-          isOpen={!!reviewPending}
-          onClose={() => reviewPending && setDismissedPending((prev) => [...prev, reviewPending.id])}
-          title="⚠️ Perlu konfirmasi"
-        >
-          {reviewPending && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div style={{ fontWeight: 600 }}>{reviewPending.summary}</div>
-              <code style={{
-                fontSize: '11px', color: 'var(--text-dim)', whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word', maxHeight: '160px', overflow: 'auto',
-                padding: '8px', border: '1px solid var(--border)',
-                borderRadius: 'var(--r-sm)', background: 'var(--surface-1)',
-              }}>
-                {JSON.stringify(reviewPending.args, null, 2)}
-              </code>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                <Button variant="primary" onClick={() => resolvePending(reviewPending.id, true)}>
-                  Jalankan
-                </Button>
-                <Button variant="danger" onClick={() => resolvePending(reviewPending.id, false)}>
-                  Batalkan
-                </Button>
-                <span style={{ fontSize: '10px', color: 'var(--text-faint)' }}>
-                  atau ucapkan "konfirmasi" / "batal"
-                </span>
+      {/* Main Center Area: Hero Screen (Empty) OR Chat Thread */}
+      <div className="chat-and-hero-view">
+        {loadingHistory ? (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-faint)', fontSize: '13px' }}>
+            Memuat riwayat percakapan...
+          </div>
+        ) : messages.length === 0 && !showStream ? (
+          /* Empty Session — Hero Display */
+          <div className="hermes-hero-container">
+            <h1 className="hermes-hero-title">
+              HERMES AGENT
+            </h1>
+            <p className="hermes-hero-subtitle">
+              Type a task, question, or snippet. I remember the session, cite my sources, and stop to ask when I'm unsure.
+            </p>
+          </div>
+        ) : (
+          /* Active Chat Thread */
+          <div className="chat-thread-container" ref={chatThreadRef}>
+            {messages.map((m, idx) => (
+              <div key={idx} className={`chat-message-row ${m.role}`}>
+                <div className="chat-author-line">
+                  <span>{m.role === 'user' ? 'OPERATOR' : agentName.toUpperCase()}</span>
+                </div>
+                <div className={`chat-bubble ${m.role}`}>
+                  {m.role === 'user' ? (
+                    <div>
+                      <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>
+                      {m.images && m.images.length > 0 && (
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' }}>
+                          {m.images.map((src) => (
+                            <img
+                              key={src}
+                              src={src}
+                              alt="lampiran"
+                              style={{ width: '80px', height: '80px', objectFit: 'cover', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)' }}
+                            />
+                          ))}
+                        </div>
+                      )}
+                      {m.docNames && m.docNames.length > 0 && (
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '8px' }}>
+                          {m.docNames.map((n) => (
+                            <span key={n} style={{ fontSize: '11px', padding: '3px 8px', borderRadius: 'var(--r-sm)', background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+                              📄 {n}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div>
+                      <Markdown content={m.content} />
+                      {findTaskIds(m.content).map((tid) => (
+                        <InlineTaskCard
+                          key={tid}
+                          taskId={tid}
+                          tasks={tasks}
+                          confirming={!!confirmingMap[tid]}
+                          onConfirm={(approved) => handleConfirmTask(tid, approved)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-              {pending.length > 1 && (
-                <span style={{ fontSize: '10px', color: 'var(--text-faint)' }}>
-                  {pending.length - 1} aksi lain menunggu setelah ini.
-                </span>
-              )}
-            </div>
-          )}
-        </Modal>
+            ))}
 
-        {/* A parked action is a decision, so it interrupts rather than waiting
-            to be noticed in the column. Dismissing only hides it — the action
-            stays parked, and the chip below brings it back. */}
-        {pending.length > 0 && !reviewPending && (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: '8px', margin: '0 0 10px',
-            padding: '8px 10px', border: '1px solid var(--warn)',
-            borderRadius: 'var(--r-sm)', background: 'rgba(240,170,40,0.06)',
-          }}>
-            <span style={{ color: 'var(--warn)', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
-              ⚠️ {pending.length} aksi menunggu konfirmasi
-            </span>
-            <Button variant="secondary" size="small" onClick={() => setDismissedPending([])}>
-              Tinjau
-            </Button>
+            {/* Live Streaming Response Bubble */}
+            {showStream && (
+              <div className="chat-message-row assistant">
+                <div className="chat-author-line">
+                  <span>{agentName.toUpperCase()}</span>
+                  <span style={{ color: 'var(--accent)', fontSize: '10px' }}>(menjawab...)</span>
+                </div>
+                <div className="chat-bubble assistant">
+                  {streamContent ? (
+                    <div>
+                      <Markdown content={streamContent} />
+                      {findTaskIds(streamContent).map((tid) => (
+                        <InlineTaskCard
+                          key={tid}
+                          taskId={tid}
+                          tasks={tasks}
+                          confirming={!!confirmingMap[tid]}
+                          onConfirm={(approved) => handleConfirmTask(tid, approved)}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="electric-thinking">
+                      <span className="electric-label">MENYIAPKAN JAWABAN</span>
+                      <div className="electric-wire">
+                        <div className="electric-current" />
+                        <div className="electric-current electric-current--2" />
+                        <svg className="electric-bolt" viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M13 2 L4 14 L11 14 L9 22 L20 9 L13 9 Z" />
+                        </svg>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Staged images, directly above the input they will be sent with */}
+        {/* Staged attachments preview above bottom input */}
         {attached.length > 0 && (
-          <div style={{
-            display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center',
-            padding: '8px', margin: '0 0 8px',
-            border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
-            background: 'var(--surface-1)',
-          }}>
-            <span style={{ fontSize: '10px', fontFamily: 'var(--font-mono)',
-                           color: 'var(--accent)', letterSpacing: '0.08em' }}>
-              AKAN DIKIRIM
+          <div
+            style={{
+              position: 'absolute',
+              bottom: '80px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              width: 'calc(100% - 48px)',
+              maxWidth: '840px',
+              display: 'flex',
+              gap: '8px',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              padding: '8px 12px',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--r-md)',
+              background: 'var(--surface-card)',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+              zIndex: 35,
+            }}
+          >
+            <span style={{ fontSize: '10px', fontFamily: 'var(--font-mono)', color: 'var(--accent)', letterSpacing: '0.08em' }}>
+              LAMPIRAN:
             </span>
             {attached.map((a, idx) => (
               <div key={a.url} style={{ position: 'relative' }}>
@@ -1356,20 +1394,15 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
                   <img
                     src={a.url}
                     alt={a.file.name}
-                    style={{ width: '56px', height: '56px', objectFit: 'cover',
-                             borderRadius: 'var(--r-sm)', border: '1px solid var(--border)' }}
+                    style={{ width: '48px', height: '48px', objectFit: 'cover', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)' }}
                   />
                 ) : (
                   <div
                     title={a.file.name}
-                    style={{ width: '56px', height: '56px', display: 'flex',
-                             flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                             borderRadius: 'var(--r-sm)', border: '1px solid var(--border)',
-                             background: 'var(--surface-0)', padding: '4px', overflow: 'hidden' }}
+                    style={{ width: '48px', height: '48px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface-0)', padding: '2px', overflow: 'hidden' }}
                   >
-                    <span style={{ fontSize: '18px' }}>📄</span>
-                    <span style={{ fontSize: '9px', textAlign: 'center', width: '100%',
-                                   whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    <span style={{ fontSize: '16px' }}>📄</span>
+                    <span style={{ fontSize: '8px', textAlign: 'center', width: '100%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {a.file.name}
                     </span>
                   </div>
@@ -1377,321 +1410,215 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode }: Dashbo
                 <button
                   type="button"
                   onClick={() => removeAttached(idx)}
-                  title="Buang berkas"
-                  style={{ position: 'absolute', top: '-6px', right: '-6px', width: '18px',
-                           height: '18px', borderRadius: '50%', border: '1px solid var(--border)',
-                           background: 'var(--surface-0)', color: 'var(--text)', lineHeight: 1,
-                           fontSize: '11px', cursor: 'pointer' }}
+                  title="Hapus"
+                  style={{ position: 'absolute', top: '-4px', right: '-4px', width: '16px', height: '16px', borderRadius: '50%', border: '1px solid var(--border)', background: 'var(--surface-0)', color: 'var(--text)', lineHeight: 1, fontSize: '10px', cursor: 'pointer' }}
                 >
-                  x
+                  ✕
                 </button>
               </div>
             ))}
           </div>
         )}
 
-        {/* Bottom prompt input card form (Antigravity Desktop Chat Style) */}
-        <form onSubmit={handleSend} className="ask-prompt-card">
-          <div className="ask-input-row">
-            <input
-              ref={inputRef}
-              type="text"
-              className="ask-input-textarea"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onPaste={(e) => addFiles(e.clipboardData.files)}
-              placeholder="Ask anything, @ to mention, / for actions"
-              disabled={streaming}
-            />
-          </div>
+        {/* Floating Bottom Prompt Bar (Matching Screenshot Reference) */}
+        <form onSubmit={handleSend} className="ask-prompt-floating-card">
+          {/* + Attachment Button */}
+          <button
+            type="button"
+            className="ask-left-action-btn"
+            disabled={streaming}
+            title="Lampirkan berkas atau foto"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            +
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp,.txt,.md,.csv,.json,.log,.pdf,.docx,.xlsx,.py,.js,.ts,.tsx,.jsx,.html,.css,.yaml,.yml,.xml,.java,.c,.cpp,.go,.rs,.rb,.php,.sql"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              if (e.target.files) addFiles(e.target.files);
+              e.target.value = '';
+            }}
+          />
 
-          <div className="ask-toolbar">
-            <div className="ask-toolbar-left">
-              {/* Attach button (+) */}
-              <button
-                type="button"
-                className="ask-pill-btn icon-only"
+          {/* Main Input Text Box */}
+          <input
+            ref={inputRef}
+            type="text"
+            className="ask-main-input-field"
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onPaste={(e) => addFiles(e.clipboardData.files)}
+            placeholder="Give Hermes a task"
+            disabled={streaming}
+          />
+
+          {/* Right Toolbar Actions */}
+          <div className="ask-right-actions-group">
+            {/* Model Selector Pill */}
+            <div className="ask-model-pill" title="Pilih Model AI">
+              <span className="ask-model-pill-text">{plannerModel}</span>
+              <span className="ask-model-pill-arrow">▾</span>
+              <select
+                className="ask-model-select-native"
+                value={plannerModel}
+                onChange={(e) => setPlannerModel(e.target.value)}
                 disabled={streaming}
-                title="Lampirkan gambar atau berkas (bisa juga tempel dari clipboard)"
-                onClick={() => fileInputRef.current?.click()}
               >
-                +
-              </button>
-
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/gif,image/webp,.txt,.md,.csv,.json,.log,.pdf,.docx,.xlsx,.py,.js,.ts,.tsx,.jsx,.html,.css,.yaml,.yml,.xml,.java,.c,.cpp,.go,.rs,.rb,.php,.sql"
-                multiple
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  if (e.target.files) addFiles(e.target.files);
-                  e.target.value = '';
-                }}
-              />
-
-              {/* Model / LLM selector pill */}
-              <div className="ask-select-pill-wrapper" title="Model Planner / LLM AI">
-                <span className="ask-pill-icon">✨</span>
-                <span className="ask-pill-label">{plannerModel}</span>
-              </div>
-
-              {/* Project selector dropdown pill */}
-              <div className="ask-select-pill-wrapper" title="Pilih Proyek untuk Session ini">
-                <span className="ask-pill-icon">💻</span>
-                <select
-                  className="ask-select-pill"
-                  value={selectedProject}
-                  onChange={(e) => handleProjectChange(e.target.value)}
-                  disabled={streaming}
-                >
-                  <option value="">Local / Workspace Global</option>
-                  {projects.map((p) => (
-                    <option key={p} value={p}>
-                      @{p}
-                    </option>
-                  ))}
-                </select>
-                <span className="ask-pill-arrow">▾</span>
-              </div>
-
-              {/* Coding Agent selector dropdown pill */}
-              <div className="ask-select-pill-wrapper agent-pill" title="Pilih Coding Agent untuk Session ini">
-                <select
-                  className="ask-select-pill"
-                  value={selectedEngine}
-                  onChange={(e) => handleEngineChange(e.target.value)}
-                  disabled={streaming}
-                >
-                  <option value="auto">⚡ Auto Engine</option>
-                  <option value="claude">🟧 Claude Code (!claude)</option>
-                  <option value="antigravity">🟩 Antigravity (!agy)</option>
-                </select>
-                <span className="ask-pill-arrow">▾</span>
-              </div>
+                <option value="Gemini 3.7 flash high -...">Gemini 3.7 flash high -...</option>
+                <option value="Gemini 3.6 Flash High">Gemini 3.6 Flash High</option>
+                <option value="Claude 3.7 Sonnet">Claude 3.7 Sonnet</option>
+                <option value="GPT-4o">GPT-4o</option>
+              </select>
             </div>
 
-            <div className="ask-toolbar-right">
-              {/* Camera photo button */}
-              <button
-                type="button"
-                className="ask-pill-btn icon-only"
-                disabled={streaming}
-                title="Ambil foto dari kamera"
-                onClick={() => setCameraOpen(true)}
-              >
-                📷
+            {/* Microphone Button */}
+            <button
+              type="button"
+              className={`ask-tool-icon-btn ${micState === 'recording' ? 'active-rec' : ''}`}
+              disabled={streaming || micState === 'working'}
+              title={
+                micState === 'listening' ? 'Mendengarkan...'
+                : micState === 'recording' ? 'Merekam... klik untuk berhenti'
+                : micState === 'working' ? 'Mentranskripsi...'
+                : 'Bicara (Push-to-talk)'
+              }
+              onClick={() => {
+                holdingRef.current = false;
+                if (micState === 'recording') pushToTalkStop();
+                else pushToTalkStart();
+              }}
+            >
+              🎙️
+            </button>
+
+            {/* Speaker / Mute Button */}
+            <button
+              type="button"
+              className={`ask-tool-icon-btn ${speaking ? 'active-speaking' : ''}`}
+              title={speaking ? 'Hentikan Suara' : ttsEnabled ? 'Suara Aktif' : 'Suara Nonaktif'}
+              onClick={speaking ? shutUp : () => setTtsEnabled(!ttsEnabled)}
+            >
+              {speaking ? '🔇' : ttsEnabled ? '🔊' : '🔈'}
+            </button>
+
+            {/* Engine Mode Action Button */}
+            <button
+              type="button"
+              className="ask-tool-icon-btn"
+              title={`Engine: ${selectedEngine.toUpperCase()} (Klik untuk ganti)`}
+              onClick={() => {
+                const nextEng = selectedEngine === 'auto' ? 'claude' : selectedEngine === 'claude' ? 'antigravity' : 'auto';
+                handleEngineChange(nextEng);
+              }}
+            >
+              ⚡
+            </button>
+
+            {/* White Circular Action Button */}
+            {streaming ? (
+              <button type="button" className="hermes-circle-action-btn stop" onClick={handleStop} title="Hentikan">
+                ⏹
               </button>
-
-              {/* Audio mute button if speaking */}
-              {speaking && (
-                <button
-                  type="button"
-                  className="ask-pill-btn icon-only"
-                  onClick={shutUp}
-                  title="Hentikan suara"
-                >
-                  🔇
-                </button>
-              )}
-
-              {/* Mic push to talk button */}
+            ) : (
               <button
-                type="button"
-                className={`ask-pill-btn icon-only ${micState === 'recording' ? 'active-rec' : ''}`}
-                disabled={streaming || micState === 'working'}
-                title={
-                  micState === 'listening' ? 'Mendengarkan — bicara saja'
-                  : micState === 'recording' ? 'Merekam — klik untuk berhenti'
-                  : micState === 'working' ? 'Mentranskripsi…'
-                  : 'Klik untuk bicara'
-                }
-                onClick={() => {
-                  holdingRef.current = false;
-                  if (micState === 'recording') pushToTalkStop();
-                  else pushToTalkStart();
-                }}
+                type="submit"
+                className="hermes-circle-action-btn"
+                disabled={!inputText.trim() && attached.length === 0}
+                title="Kirim"
               >
-                {micState === 'recording' ? '⏹' : micState === 'working' ? '⏳' : micState === 'listening' ? '👂' : '🎤'}
+                ~
               </button>
-
-              {/* Submit / Stop button */}
-              {streaming ? (
-                <button type="button" className="ask-send-btn stop" onClick={handleStop} title="Hentikan">
-                  ⏹
-                </button>
-              ) : (
-                <button type="submit" className="ask-send-btn" disabled={!inputText.trim()} title="Kirim">
-                  ➔
-                </button>
-              )}
-            </div>
+            )}
           </div>
         </form>
       </div>
 
-      {/* Right Sidebar Column */}
-      <div className="right-hud-panel" style={{ marginTop: !isConnected ? '30px' : '0' }}>
-        
-        {/* Filters Widget */}
-        <div>
-          <div className="right-section-title">
-            <span>Filter</span>
-            <span>Tasks</span>
+      {/* Confirmation Modal for Parked Actions */}
+      <Modal
+        isOpen={!!reviewPending}
+        onClose={() => reviewPending && setDismissedPending((prev) => [...prev, reviewPending.id])}
+        title="⚠️ Perlu konfirmasi"
+      >
+        {reviewPending && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ fontWeight: 600 }}>{reviewPending.summary}</div>
+            <code style={{
+              fontSize: '11px', color: 'var(--text-dim)', whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word', maxHeight: '160px', overflow: 'auto',
+              padding: '8px', border: '1px solid var(--border)',
+              borderRadius: 'var(--r-sm)', background: 'var(--surface-1)',
+            }}>
+              {JSON.stringify(reviewPending.args, null, 2)}
+            </code>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <Button variant="primary" onClick={() => resolvePending(reviewPending.id, true)}>
+                Jalankan
+              </Button>
+              <Button variant="danger" onClick={() => resolvePending(reviewPending.id, false)}>
+                Batalkan
+              </Button>
+            </div>
           </div>
-          <div className="filter-list">
-            <div className="filter-item">
-              <div className="filter-item-label">
-                <span className="filter-dot" style={{ backgroundColor: 'var(--accent)' }}></span>
-                <span>Active / Running</span>
+        )}
+      </Modal>
+
+      {/* Side HUD Drawer (Inspector, Constellation Graph, Camera) */}
+      <aside className={`side-hud-drawer ${isDrawerOpen ? '' : 'closed'}`}>
+        <div className="side-hud-header">
+          <span>Constellation & Telemetry</span>
+          <button
+            type="button"
+            className="hermes-modal-close-btn"
+            onClick={onToggleDrawer}
+            title="Tutup side panel"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="side-hud-content">
+          <div style={{ height: '240px', position: 'relative' }}>
+            <WaveConstellationGraph
+              systemNodes={graphNodes}
+              systemLinks={graphLinks}
+              sessionId={sessionId}
+              onSelectNode={onSelectNode}
+              onNavigateSession={(sId) => navigate(`#/session/${sId}`)}
+            />
+          </div>
+
+          <CameraCapture
+            ref={cameraRef}
+            isOpen={cameraOpen}
+            onClose={() => setCameraOpen(false)}
+            onCapture={(file) => addFiles([file])}
+            narrate={narrate}
+            onToggleNarrate={(next) => setNarrate(next)}
+          />
+
+          <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--accent)' }}>TASK TELEMETRY</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+              <div style={{ padding: '6px 10px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', fontSize: '11px' }}>
+                <span style={{ color: 'var(--accent)' }}>● Active:</span> {taskCounts.running}
               </div>
-              <span className="filter-count">{taskCounts.running}</span>
-            </div>
-            <div className="filter-item">
-              <div className="filter-item-label">
-                <span className="filter-dot" style={{ backgroundColor: 'var(--ok)' }}></span>
-                <span>Completed</span>
+              <div style={{ padding: '6px 10px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', fontSize: '11px' }}>
+                <span style={{ color: 'var(--ok)' }}>● Done:</span> {taskCounts.done}
               </div>
-              <span className="filter-count">{taskCounts.done}</span>
-            </div>
-            <div className="filter-item">
-              <div className="filter-item-label">
-                <span className="filter-dot" style={{ backgroundColor: 'var(--err)' }}></span>
-                <span>Failed</span>
+              <div style={{ padding: '6px 10px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', fontSize: '11px' }}>
+                <span style={{ color: 'var(--err)' }}>● Failed:</span> {taskCounts.failed}
               </div>
-              <span className="filter-count">{taskCounts.failed}</span>
-            </div>
-            <div className="filter-item">
-              <div className="filter-item-label">
-                <span className="filter-dot" style={{ backgroundColor: '#888' }}></span>
-                <span>Queued</span>
+              <div style={{ padding: '6px 10px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', fontSize: '11px' }}>
+                <span style={{ color: 'var(--text-faint)' }}>● Queued:</span> {taskCounts.queued}
               </div>
-              <span className="filter-count">{taskCounts.queued}</span>
             </div>
           </div>
         </div>
-
-        {/* Current Readout Log */}
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-          <div className="right-section-title">
-            <span>Current Readout</span>
-            <span>Feed</span>
-          </div>
-          <div className="chat-preview-container" ref={chatThreadRef}>
-            {loadingHistory ? (
-              <div style={{ color: 'var(--text-faint)', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>RETRIEVING READOUTS...</div>
-            ) : lastMessages.length === 0 && !showStream ? (
-              <div style={{ color: 'var(--text-faint)', fontSize: '11px', fontStyle: 'italic', margin: 'auto' }}>Logs sequence ready. Input command.</div>
-            ) : (
-              <>
-                {lastMessages.map((m, idx) => (
-                  <div key={idx} className={`chat-preview-card ${m.role === 'user' ? 'user' : ''}`}>
-                    <div className="chat-preview-header">
-                      {m.role === 'user' ? 'OPERATOR DIRECTIVE' : `${agentName.toUpperCase()} OUTPUT`}
-                    </div>
-                    {m.role === 'user' ? (
-                      <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
-                        {m.content}
-                        {m.images && m.images.length > 0 && (
-                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '6px' }}>
-                            {m.images.map((src) => (
-                              <img
-                                key={src}
-                                src={src}
-                                alt="lampiran"
-                                style={{ width: '72px', height: '72px', objectFit: 'cover',
-                                         borderRadius: 'var(--r-sm)', border: '1px solid var(--border)' }}
-                              />
-                            ))}
-                          </div>
-                        )}
-                        {m.docNames && m.docNames.length > 0 && (
-                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '6px' }}>
-                            {m.docNames.map((n) => (
-                              <span key={n} style={{ fontSize: '10px', padding: '2px 6px',
-                                                     borderRadius: 'var(--r-sm)', border: '1px solid var(--border)' }}>
-                                📄 {n}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div>
-                        <Markdown content={m.content} />
-                        {findTaskIds(m.content).map(tid => (
-                          <InlineTaskCard
-                            key={tid}
-                            taskId={tid}
-                            tasks={tasks}
-                            confirming={!!confirmingMap[tid]}
-                            onConfirm={(approved) => handleConfirmTask(tid, approved)}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-
-                {/* Streaming in preview — only on the thread that asked */}
-                {showStream && (
-                  <div className="chat-preview-card">
-                    <div className="chat-preview-header" style={{ animation: 'cyber-blink 1s infinite' }}>
-                      INCOMING STREAM READOUT...
-                    </div>
-                    {streamContent ? (
-                      <div>
-                        <Markdown content={streamContent} />
-                        {findTaskIds(streamContent).map(tid => (
-                          <InlineTaskCard
-                            key={tid}
-                            taskId={tid}
-                            tasks={tasks}
-                            confirming={!!confirmingMap[tid]}
-                            onConfirm={(approved) => handleConfirmTask(tid, approved)}
-                          />
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="electric-thinking">
-                        <span className="electric-label">MENYIAPKAN JAWABAN</span>
-                        <div className="electric-wire">
-                          <div className="electric-current" />
-                          <div className="electric-current electric-current--2" />
-                          <svg className="electric-bolt" viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M13 2 L4 14 L11 14 L9 22 L20 9 L13 9 Z" />
-                          </svg>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* Pulsing AI avatar orb */}
-        <div>
-          <div className="right-section-title">
-            <span>Hologram Link</span>
-            <span>Online</span>
-          </div>
-          <div className="avatar-stream-container">
-            <div className="avatar-stream-overlay">
-              AI_COGNITIVE_CORE: ACTIVE
-            </div>
-            <div className="avatar-glowing-circle" style={{
-              animationDuration: voiceState === 'listen' ? '6s'
-                : voiceState === 'think' ? '3s'
-                : voiceState === 'speak' ? '1.5s'
-                : '12s'
-            }}></div>
-          </div>
-        </div>
-
-      </div>
-
+      </aside>
     </div>
   );
 }
+
