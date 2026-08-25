@@ -7,6 +7,7 @@ import {
   MessageSquare,
   FolderGit2,
   Mic,
+  Send,
   Zap,
   Globe,
   Keyboard,
@@ -26,6 +27,7 @@ import { ConfigChat } from '../views/ConfigChat';
 import { ConfigEngines } from '../views/ConfigEngines';
 import { ConfigTimeouts } from '../views/ConfigTimeouts';
 import { ConfigAndroid } from '../views/ConfigAndroid';
+import { ConfigTelegram } from '../views/ConfigTelegram';
 import { ConfigSecrets } from '../views/ConfigSecrets';
 import { ConfigMcp } from '../views/ConfigMcp';
 import { ConfigProjects } from '../views/ConfigProjects';
@@ -41,6 +43,7 @@ export type SettingsTab =
   | 'engine'
   | 'timeouts'
   | 'android'
+  | 'telegram'
   | 'workspace'
   | 'voice'
   | 'providers-keys'
@@ -282,6 +285,15 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
                 <Smartphone size={14} className="nav-icon" />
                 <span>Android & Testing</span>
               </button>
+
+              <button
+                type="button"
+                className={`settings-nav-btn ${activeTab === 'telegram' ? 'active' : ''}`}
+                onClick={() => setActiveTab('telegram')}
+              >
+                <Send size={14} className="nav-icon" />
+                <span>Telegram Bot</span>
+              </button>
             </div>
 
             <div className="settings-sidebar-divider" />
@@ -507,6 +519,13 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
             {activeTab === 'android' && (
               <div className="settings-tab-panel">
                 <ConfigAndroid />
+              </div>
+            )}
+
+            {/* 6. TELEGRAM BOT TAB */}
+            {activeTab === 'telegram' && (
+              <div className="settings-tab-panel">
+                <ConfigTelegram />
               </div>
             )}
 
@@ -770,9 +789,17 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
             {activeTab === 'about' && (
               <div className="settings-tab-panel">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '16px' }}>
-                  <div style={{ padding: '12px', background: 'rgba(59, 130, 246, 0.1)', borderRadius: 'var(--r-md)', color: 'var(--accent)' }}>
-                    <Box size={32} />
-                  </div>
+                  <img
+                    src="/assets/logo-landscape.png"
+                    onError={(e) => {
+                      const target = e.currentTarget as HTMLImageElement;
+                      if (!target.src.endsWith('/logo-landscape.png')) {
+                        target.src = '/logo-landscape.png';
+                      }
+                    }}
+                    alt="Lail Hermes"
+                    style={{ height: '48px', width: 'auto', borderRadius: 'var(--r-md)' }}
+                  />
                   <div>
                     <h2 style={{ fontSize: '18px', fontWeight: 700, margin: 0, letterSpacing: '0.05em' }}>LAIL HERMES</h2>
                     <div style={{ fontSize: '12px', color: 'var(--text-dim)', marginTop: '4px' }}>

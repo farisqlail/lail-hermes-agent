@@ -81,8 +81,8 @@ export function ConfigEngines() {
     setSaving(true);
     const finalSettings: Settings = {
       ...formState,
-      claude_model: claudeModelMode === 'custom' ? claudeCustomVal : formState.claude_model,
-      agy_model: agyModelMode === 'custom' ? agyCustomVal : formState.agy_model,
+      claude_model: (claudeModelMode === 'custom' ? claudeCustomVal : formState.claude_model || '').trim(),
+      agy_model: (agyModelMode === 'custom' ? agyCustomVal : formState.agy_model || '').trim(),
     };
 
     try {

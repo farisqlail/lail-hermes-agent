@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node node_modules/next/dist/bin/next build && node build.mjs --copy-out",
+    "build": "node build.mjs",
     "dev": "node node_modules/next/dist/bin/next dev",
     "next:build": "node node_modules/next/dist/bin/next build",
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="desktop/assets/logo-landscape.png" alt="Lail Hermes Agent" width="100%" style="border-radius: 8px;" />
+</p>
+
 # 🏛️ Lail Hermes Agent
 
 > **Autonomous AI Developer, UI/UX Designer & Task Orchestrator** for Windows.  

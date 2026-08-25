@@ -230,6 +230,13 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR), check_dir=False), name="static")
     app.mount("/_next", StaticFiles(directory=str(STATIC_DIR / "_next"), check_dir=False), name="next_static")
 
+    @app.get("/logo-landscape.png")
+    def get_logo():
+        logo_path = STATIC_DIR / "logo-landscape.png"
+        if logo_path.exists():
+            return FileResponse(str(logo_path), media_type="image/png")
+        raise HTTPException(status_code=404, detail="Logo not found")
+
     # Voice output has no dependency on store/bridge/ask_registry, so it lives
     # in its own module instead of this factory's closure.
     app.include_router(voice.router)
