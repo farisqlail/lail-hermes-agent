@@ -226,14 +226,19 @@ class Settings(BaseModel):
     @field_validator("agy_model")
     @classmethod
     def _agy_model_shape(cls, v: str) -> str:
-        # agy models are display names with spaces — its own settings.json
-        # stores e.g. "Gemini 3.5 Flash (High)" — and argv goes through
-        # create_subprocess_exec (no shell), so spaces are safe. Still ASCII
-        # (smart quotes) and printable (no newlines/control chars) only.
-        if v and (not v.isascii() or not v.isprintable()):
-            raise ValueError(
-                "agy model must be printable ASCII, e.g. 'Gemini 3.5 Flash "
-                "(High)' — check for smart quotes or line breaks")
+        if not v:
+            return ""
+        # Auto-sanitize ANSI escape codes and smart quotes to printable ASCII
+        v = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", v).strip()
+        v = (
+            v.replace("’", "'")
+            .replace("‘", "'")
+            .replace("“", '"')
+            .replace("”", '"')
+            .replace("–", "-")
+            .replace("—", "-")
+        )
+        v = "".join(c for c in v if c.isascii() and c.isprintable()).strip()
         return v
 
     @field_validator("stt_language")

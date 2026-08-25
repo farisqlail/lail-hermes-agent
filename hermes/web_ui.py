@@ -136,8 +136,19 @@ def list_agy_models(timeout_s: float = 10.0) -> list[str] | None:
     if res.returncode != 0:
         return None
     models = []
+    ansi_re = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
     for line in res.stdout.splitlines():
-        line = line.strip().lstrip("*-• ").strip()
+        line = ansi_re.sub("", line)
+        line = line.strip().lstrip("*-•·> ").strip()
+        line = (
+            line.replace("’", "'")
+            .replace("‘", "'")
+            .replace("“", '"')
+            .replace("”", '"')
+            .replace("–", "-")
+            .replace("—", "-")
+        )
+        line = "".join(c for c in line if c.isascii() and c.isprintable()).strip()
         # skip blanks and header-ish lines ("Available models:", "Usage: ...")
         if not line or line.endswith(":") or line.lower().startswith("usage"):
             continue

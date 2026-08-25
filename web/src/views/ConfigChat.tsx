@@ -21,10 +21,10 @@ export function ConfigChat() {
     }
   }, [settings]);
 
-  if (error) {
+  if (error && !formState) {
     return (
       <div style={{ padding: '14px', backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--err)', borderRadius: '6px', color: 'var(--err)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        <span>Gagal memuat pengaturan: {error}</span>
+        <span>Gagal memuat pengaturan: {String(error)}</span>
         <Button variant="danger" type="button" onClick={refresh}>Coba Lagi</Button>
       </div>
     );
@@ -71,6 +71,11 @@ export function ConfigChat() {
 
   return (
     <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      {error && (
+        <div style={{ padding: '10px 14px', backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--err)', borderRadius: '6px', color: 'var(--err)', fontSize: '12px' }}>
+          {String(error)}
+        </div>
+      )}
       <div>
         <h3 className="settings-section-heading">Chat & Persona Settings</h3>
         <p className="settings-panel-desc">Konfigurasi nama identitas asisten, kreativitas respons obrolan, dan kalender.</p>
