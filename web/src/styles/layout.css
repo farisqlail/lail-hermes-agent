@@ -123,13 +123,80 @@
   height: 100%;
   position: relative;
   z-index: 20;
-  transition: transform 0.2s ease, width 0.2s ease;
+  overflow: hidden;
+  transition: width 0.2s cubic-bezier(0.19, 1, 0.22, 1), min-width 0.2s cubic-bezier(0.19, 1, 0.22, 1), max-width 0.2s cubic-bezier(0.19, 1, 0.22, 1);
 }
 
+/* --------------------------------------------------------------------------
+   Sleek Responsive Collapsed Sidebar (Mini Icon Rail)
+   -------------------------------------------------------------------------- */
 .sidebar.collapsed {
-  transform: translateX(-100%);
-  width: 0;
-  min-width: 0;
+  width: 52px;
+  min-width: 52px;
+  max-width: 52px;
+}
+
+.sidebar.collapsed .sidebar-tabs,
+.sidebar.collapsed .sidebar-search-box,
+.sidebar.collapsed .pinned-section,
+.sidebar.collapsed .sidebar-section-header,
+.sidebar.collapsed .session-list-scroll,
+.sidebar.collapsed .sidebar-bot-card,
+.sidebar.collapsed .sidebar-status-bar {
+  display: none !important;
+}
+
+.sidebar.collapsed .sidebar-actions-menu {
+  padding: 8px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar.collapsed .sidebar-action-item {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  justify-content: center;
+  border-radius: var(--r-sm);
+}
+
+.sidebar.collapsed .action-item-left {
+  gap: 0;
+  justify-content: center;
+}
+
+.sidebar.collapsed .action-item-left span,
+.sidebar.collapsed .kbd-shortcut-badge {
+  display: none !important;
+}
+
+.sidebar.collapsed .sidebar-footer-container {
+  margin-top: auto;
+  padding: 10px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.sidebar.collapsed .sidebar-icon-bar {
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  align-items: center;
+}
+
+.sidebar.collapsed .sidebar-icon-group {
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+
+.sidebar.collapsed .sidebar-footer-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-sm);
 }
 
 /* Top Tabs (SESSIONS / BOTS) */
