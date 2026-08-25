@@ -4,10 +4,22 @@ export class ApiError extends Error {
   status: number;
   detail: string;
 
-  constructor(status: number, detail: string) {
-    super(`API Error ${status}: ${detail}`);
+  constructor(status: number, detail: any) {
+    let msg = 'Unknown error';
+    if (typeof detail === 'string') {
+      msg = detail;
+    } else if (Array.isArray(detail)) {
+      msg = detail.map((d: any) => {
+        if (typeof d === 'string') return d;
+        const loc = d.loc ? d.loc.filter((p: any) => p !== 'body').join('.') : '';
+        return `${loc ? loc + ': ' : ''}${d.msg || JSON.stringify(d)}`;
+      }).join('; ');
+    } else if (detail && typeof detail === 'object') {
+      msg = detail.msg || detail.detail || JSON.stringify(detail);
+    }
+    super(`API Error ${status}: ${msg}`);
     this.status = status;
-    this.detail = detail;
+    this.detail = String(msg);
     this.name = 'ApiError';
   }
 }
@@ -16,15 +28,23 @@ export class ApiError extends Error {
  *  sent one, the thrown Error's message otherwise. The validators in config.py
  *  and web_ui.py write text meant to be read, so `detail` wins over `message`. */
 export function errorMessage(err: unknown, fallback: string): string {
-  if (err instanceof ApiError) return err.detail || fallback;
-  if (err instanceof Error) return err.message || fallback;
+  if (err instanceof ApiError) return String(err.detail || fallback);
+  if (err instanceof Error) return String(err.message || fallback);
+  if (typeof err === 'string') return err;
+  if (Array.isArray(err)) {
+    return err.map((d: any) => (typeof d === 'string' ? d : d.msg || JSON.stringify(d))).join('; ');
+  }
+  if (err && typeof err === 'object') {
+    return (err as any).msg || (err as any).detail || JSON.stringify(err);
+  }
   return fallback;
 }
 
 /** FastAPI's `detail` alone, for routing a validator message to the field that
  *  caused it. Null when the failure did not come from the API at all. */
 export function errorDetail(err: unknown): string | null {
-  return err instanceof ApiError ? err.detail : null;
+  if (err instanceof ApiError) return typeof err.detail === 'string' ? err.detail : String(err.detail);
+  return null;
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -37,10 +57,10 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   });
 
   if (!res.ok) {
-    let detail = 'Unknown error';
+    let detail: any = 'Unknown error';
     try {
       const data = await res.json();
-      detail = data.detail || JSON.stringify(data);
+      detail = data.detail || data;
     } catch {
       try {
         detail = await res.text();
