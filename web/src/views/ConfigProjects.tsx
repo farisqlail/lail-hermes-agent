@@ -4,7 +4,16 @@ import { Project } from '../api/types';
 import { Field } from '../components/Field';
 import { Button } from '../components/Button';
 import { Modal } from '../components/Modal';
+import { ConfirmModal } from '../components/ConfirmModal';
 import { useToast } from '../components/Toast';
+import {
+  FolderGit2,
+  Plus,
+  Edit2,
+  Trash2,
+  CheckCircle2,
+  AlertTriangle,
+} from 'lucide-react';
 
 export function ConfigProjects() {
   const { toast } = useToast();
@@ -12,13 +21,13 @@ export function ConfigProjects() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Modal / Form state
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingName, setEditingName] = useState<string | null>(null); // null means adding
+  const [editingName, setEditingName] = useState<string | null>(null);
   const [projectName, setProjectName] = useState('');
   const [projectPath, setProjectPath] = useState('');
   const [saving, setSaving] = useState(false);
   const [fieldError, setFieldError] = useState<string | null>(null);
+  const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
 
   const fetchProjects = async () => {
     setLoading(true);
@@ -66,24 +75,19 @@ export function ConfigProjects() {
       return;
     }
 
-    // Build the updated dictionary payload
     const payload: Record<string, string> = {};
-    
-    // Add existing projects except the one being edited (if name is changing)
     projects.forEach((p) => {
       if (p.name !== editingName) {
         payload[p.name] = p.path;
       }
     });
-
-    // Add / overwrite the current project
     payload[nameKey] = pathVal;
 
     try {
       const res = await api.saveProjects(payload);
       if (res.ok) {
         toast(editingName ? 'Proyek berhasil diperbarui!' : 'Proyek baru berhasil ditambahkan!', 'ok');
-        await fetchProjects(); // reload from backend to get verified `exists` disk status
+        await fetchProjects();
         setIsModalOpen(false);
       }
     } catch (err) {
@@ -94,8 +98,9 @@ export function ConfigProjects() {
     }
   };
 
-  const handleDeleteProject = async (name: string) => {
-    if (!window.confirm(`Hapus pendaftaran proyek "${name}"?`)) return;
+  const confirmDeleteProject = async () => {
+    if (!projectToDelete) return;
+    const name = projectToDelete;
 
     const payload: Record<string, string> = {};
     projects.forEach((p) => {
@@ -125,22 +130,24 @@ export function ConfigProjects() {
   }
 
   if (loading) {
-    return <div style={{ color: 'var(--text-dim)' }}>Memuat daftar proyek...</div>;
+    return <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>Memuat daftar proyek...</div>;
   }
 
   return (
     <div className="cyber-section">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-        <h3 className="cyber-section-header" style={{ borderBottom: 'none', paddingBottom: 0, marginBottom: 0 }}>
-          📁 Registered Projects
+        <h3 className="cyber-section-header" style={{ borderBottom: 'none', paddingBottom: 0, marginBottom: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <FolderGit2 size={16} style={{ color: 'var(--accent)' }} />
+          <span>Registered Projects & Workspaces</span>
         </h3>
-        <Button variant="primary" onClick={openAddModal}>
-          + Register Project
+        <Button variant="primary" onClick={openAddModal} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+          <Plus size={14} />
+          <span>Register Project</span>
         </Button>
       </div>
 
       {projects.length === 0 ? (
-        <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
+        <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: '12px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
           NO REGISTERED PROJECTS DETECTED. USE THE BUTTON ABOVE TO REGISTER A PROJECT.
         </div>
       ) : (
@@ -160,7 +167,7 @@ export function ConfigProjects() {
                   <td style={{ padding: '12px 16px', fontWeight: 'bold', color: 'var(--text)', fontFamily: 'var(--font-mono)' }}>
                     @{p.name}
                   </td>
-                  <td style={{ padding: '12px 16px', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
+                  <td style={{ padding: '12px 16px', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
                     {p.path}
                   </td>
                   <td style={{ padding: '12px 16px' }}>
@@ -168,6 +175,7 @@ export function ConfigProjects() {
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
+                        gap: '4px',
                         fontSize: '10px',
                         fontFamily: 'var(--font-mono)',
                         fontWeight: 'bold',
@@ -178,15 +186,18 @@ export function ConfigProjects() {
                         border: `1px solid ${p.exists ? 'var(--ok)' : 'var(--err)'}`,
                       }}
                     >
+                      {p.exists ? <CheckCircle2 size={10} /> : <AlertTriangle size={10} />}
                       {p.exists ? 'OK' : 'MISSING'}
                     </span>
                   </td>
                   <td style={{ padding: '12px 16px', textAlign: 'right', display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                    <Button variant="secondary" onClick={() => openEditModal(p)} style={{ minHeight: '30px', height: '30px', padding: '0 12px' }}>
-                      Edit
+                    <Button variant="secondary" onClick={() => openEditModal(p)} style={{ minHeight: '30px', height: '30px', padding: '0 10px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      <Edit2 size={12} />
+                      <span>Edit</span>
                     </Button>
-                    <Button variant="danger" onClick={() => handleDeleteProject(p.name)} style={{ minHeight: '30px', height: '30px', padding: '0 12px' }}>
-                      Delete
+                    <Button variant="danger" onClick={() => setProjectToDelete(p.name)} style={{ minHeight: '30px', height: '30px', padding: '0 10px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      <Trash2 size={12} />
+                      <span>Delete</span>
                     </Button>
                   </td>
                 </tr>
@@ -220,7 +231,7 @@ export function ConfigProjects() {
               onChange={(e) => setProjectName(e.target.value)}
               placeholder="myprofit"
               required
-              disabled={editingName !== null} // Name is project key, cannot edit key
+              disabled={editingName !== null}
             />
           </Field>
 
@@ -248,6 +259,18 @@ export function ConfigProjects() {
           </div>
         </form>
       </Modal>
+
+      <ConfirmModal
+        isOpen={projectToDelete !== null}
+        onClose={() => setProjectToDelete(null)}
+        onConfirm={async () => {
+          await confirmDeleteProject();
+          setProjectToDelete(null);
+        }}
+        title="Hapus Proyek"
+        message={`Apakah Anda yakin ingin menghapus pendaftaran proyek "${projectToDelete}"? Berkas di disk tidak akan dihapus.`}
+        confirmText="Hapus Proyek"
+      />
     </div>
   );
 }

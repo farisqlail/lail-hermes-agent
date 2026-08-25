@@ -6,6 +6,7 @@ import { errorMessage, api } from '../api/client';
 import { Markdown } from '../components/Markdown';
 import { Button } from '../components/Button';
 import { Modal } from '../components/Modal';
+import { ConfirmModal } from '../components/ConfirmModal';
 import { CameraCapture, CameraHandle } from '../components/CameraCapture';
 import { useToast } from '../components/Toast';
 import { useTasksContext } from '../api/events';
@@ -23,6 +24,18 @@ import { STOP_ACK, CAMERA_ACK, matchLocalCommand } from '../commands';
 import { VoiceTagExtractor } from '../voicetag';
 import { WaveConstellationGraph } from '../components/WaveConstellationGraph';
 import { taskLinkTarget } from '../graph';
+import {
+  Plus,
+  Mic,
+  Volume2,
+  VolumeX,
+  Volume1,
+  Zap,
+  Square,
+  X,
+  Activity,
+  AlertTriangle,
+} from 'lucide-react';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -477,6 +490,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
   }, [pushToTalkStart, pushToTalkStop]);
 
   const [streaming, setStreaming] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [streamContent, setStreamContent] = useState('');
   const [streamUsage, setStreamUsage] = useState<{ total: number } | null>(null);
   const [confirmingMap, setConfirmingMap] = useState<Record<string, boolean>>({});
@@ -941,9 +955,12 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
     }
   };
 
-  const handleReset = async () => {
+  const handleReset = () => {
     shutUp();
-    if (!window.confirm('Hapus seluruh percakapan?')) return;
+    setShowClearConfirm(true);
+  };
+
+  const confirmResetMessages = async () => {
     try {
       const url = sessionId ? `/api/chat/reset?session_id=${sessionId}` : '/api/chat/reset';
       const res = await fetch(url, { method: 'POST' });
@@ -953,6 +970,8 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
       }
     } catch (err) {
       toast('Gagal me-reset percakapan', 'err');
+    } finally {
+      setShowClearConfirm(false);
     }
   };
 
@@ -1252,7 +1271,10 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
             zIndex: 40,
           }}
         >
-          ⚠️ COGNITIVE SERVER DISCONNECTED. RECONNECTING...
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <AlertTriangle size={12} />
+            COGNITIVE SERVER DISCONNECTED. RECONNECTING...
+          </span>
         </div>
       )}
 
@@ -1266,7 +1288,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
           /* Empty Session — Hero Display */
           <div className="hermes-hero-container">
             <h1 className="hermes-hero-title">
-              HERMES AGENT
+              LAIL HERMES
             </h1>
             <p className="hermes-hero-subtitle">
               Type a task, question, or snippet. I remember the session, cite my sources, and stop to ask when I'm unsure.
@@ -1452,7 +1474,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onPaste={(e) => addFiles(e.clipboardData.files)}
-            placeholder="Give Hermes a task"
+            placeholder="Give Lail Hermes a task"
             disabled={streaming}
           />
 
@@ -1492,7 +1514,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
                 else pushToTalkStart();
               }}
             >
-              🎙️
+              <Mic size={14} />
             </button>
 
             {/* Speaker / Mute Button */}
@@ -1502,7 +1524,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
               title={speaking ? 'Hentikan Suara' : ttsEnabled ? 'Suara Aktif' : 'Suara Nonaktif'}
               onClick={speaking ? shutUp : () => setTtsEnabled(!ttsEnabled)}
             >
-              {speaking ? '🔇' : ttsEnabled ? '🔊' : '🔈'}
+              {speaking ? <VolumeX size={14} /> : ttsEnabled ? <Volume2 size={14} /> : <Volume1 size={14} />}
             </button>
 
             {/* Engine Mode Action Button */}
@@ -1515,27 +1537,41 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
                 handleEngineChange(nextEng);
               }}
             >
-              ⚡
+              <Zap size={14} />
             </button>
 
             {/* White Circular Action Button */}
             {streaming ? (
               <button type="button" className="hermes-circle-action-btn stop" onClick={handleStop} title="Hentikan">
-                ⏹
+                <Square size={11} fill="currentColor" />
               </button>
             ) : (
               <button
                 type="submit"
                 className="hermes-circle-action-btn"
                 disabled={!inputText.trim() && attached.length === 0}
-                title="Kirim"
+                title="Kirim (Enter)"
               >
-                ~
+                <Activity size={13} style={{ strokeWidth: 2.5 }} />
               </button>
             )}
           </div>
         </form>
+
+        {/* Bottom Right version badge (Matching Reference Screenshot) */}
+        <div style={{ position: 'absolute', bottom: '8px', right: '20px', fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--accent)', opacity: 0.8, pointerEvents: 'none', zIndex: 10 }}>
+          # v0.20.5 (+21) 3f5d375
+        </div>
       </div>
+
+      <ConfirmModal
+        isOpen={showClearConfirm}
+        onClose={() => setShowClearConfirm(false)}
+        onConfirm={confirmResetMessages}
+        title="Bersihkan Percakapan"
+        message="Apakah Anda yakin ingin me-reset seluruh pesan pada sesi percakapan ini?"
+        confirmText="Reset Percakapan"
+      />
 
       {/* Confirmation Modal for Parked Actions */}
       <Modal

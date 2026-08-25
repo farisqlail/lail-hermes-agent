@@ -5,6 +5,7 @@ import { errorMessage, errorDetail } from '../api/client';
 import { Field } from '../components/Field';
 import { Button } from '../components/Button';
 import { useToast } from '../components/Toast';
+import { Key, Save } from 'lucide-react';
 
 export function ConfigSecrets() {
   const { status, loading, error, saveSecrets, refresh } = useSecrets();
@@ -32,7 +33,7 @@ export function ConfigSecrets() {
   }
 
   if (loading || !status) {
-    return <div style={{ color: 'var(--text-dim)' }}>Memuat data kredensial...</div>;
+    return <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>Memuat data kredensial...</div>;
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -57,7 +58,6 @@ export function ConfigSecrets() {
       }
     } catch (err) {
       toast(errorMessage(err, 'Gagal menyimpan kredensial.'), 'err');
-      // SecretsUpdate's validators say which secret was rejected (web_ui.py:126-147).
       const detail = errorDetail(err);
       if (detail) {
         const lowered = detail.toLowerCase();
@@ -73,14 +73,17 @@ export function ConfigSecrets() {
   };
 
   return (
-    <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '600px' }}>
+    <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '600px' }}>
       <section className="cyber-section">
-        <h3 className="cyber-section-header">🔑 API Keys & Bot Tokens</h3>
+        <h3 className="cyber-section-header" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Key size={16} style={{ color: 'var(--accent)' }} />
+          <span>API Keys & Bot Tokens</span>
+        </h3>
 
         <Field
           label="AI API Key (NVIDIA NIM / DeepSeek / Custom)"
           error={fieldErrors.nvidia_api_key}
-          helpText="Masukkan NVIDIA API Key (format 'nvapi-...') atau DeepSeek API Key (format 'sk-...')"
+          helpText="Masukkan NVIDIA API Key ('nvapi-...') atau DeepSeek API Key ('sk-...')"
         >
           <input
             type="password"
@@ -108,9 +111,10 @@ export function ConfigSecrets() {
         </Field>
       </section>
 
-      <div>
-        <Button variant="primary" type="submit" loading={saving} style={{ width: '150px' }}>
-          Simpan Kredensial
+      <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+        <Button variant="primary" type="submit" loading={saving} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '10px 20px' }}>
+          <Save size={14} />
+          <span>Simpan Kredensial</span>
         </Button>
       </div>
     </form>

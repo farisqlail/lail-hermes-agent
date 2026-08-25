@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import * as esbuild from 'esbuild';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,6 +28,7 @@ async function run() {
   const hermesStaticDir = path.join(__dirname, '../hermes/static');
   const distBackendStaticDir = path.join(__dirname, '../dist-backend/hermes-engine/_internal/hermes/static');
 
+  // 1. Sync Next.js static export
   if (fs.existsSync(outDir)) {
     copyDirRecursive(outDir, hermesStaticDir);
     console.log(`[build] Successfully synced Next.js export from ${outDir} to ${hermesStaticDir}`);
@@ -38,9 +40,25 @@ async function run() {
   } else {
     console.warn(`[build] Warning: ${outDir} does not exist yet.`);
   }
+
+  // 2. Also bundle SPA fallback via esbuild into hermes/static
+  try {
+    await esbuild.build({
+      entryPoints: [path.join(__dirname, 'src/main.tsx')],
+      bundle: true,
+      outfile: path.join(hermesStaticDir, 'app.js'),
+      sourcemap: true,
+      loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
+      define: { 'process.env.NODE_ENV': '"production"' },
+    });
+    console.log(`[build] Successfully bundled SPA app.js and app.css to ${hermesStaticDir}`);
+  } catch (e) {
+    console.warn('[build] Note: esbuild fallback bundle skipped:', e.message);
+  }
 }
 
 run().catch((err) => {
   console.error(err);
   process.exit(1);
 });
+

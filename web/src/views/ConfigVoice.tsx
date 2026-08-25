@@ -5,6 +5,17 @@ import { useToast } from '../components/Toast';
 import { api, errorMessage } from '../api/client';
 import { SttStatus, fetchSttStatus } from '../stt';
 import {
+  Volume2,
+  Brain,
+  MessageSquare,
+  Mic,
+  Radio,
+  Play,
+  Save,
+  Activity,
+  AlertCircle,
+} from 'lucide-react';
+import {
   TtsVoice,
   TTS_VOICES_FALLBACK,
   TtsMode,
@@ -38,10 +49,6 @@ export function ConfigVoice() {
   const [testLoading, setTestLoading] = useState(false);
   const [voice, setVoice] = useState<VoiceSettings>(VOICE_SETTINGS_DEFAULT);
 
-
-  // Voice input lives in server Settings, not localStorage: the model runs on
-  // the server, and a wake-word service later will need to read the same
-  // values without a browser.
   const [sttEnabled, setSttEnabled] = useState(true);
   const [sttLanguage, setSttLanguage] = useState('id');
   const [sttModel, setSttModel] = useState<'tiny' | 'base' | 'small' | 'medium' | 'large'>('base');
@@ -54,7 +61,6 @@ export function ConfigVoice() {
       })
       .catch(() => setSttStatus(null));
 
-    // Load TTS settings from server
     loadTtsSettings().then((s) => {
       setTtsEnabled(s.tts_enabled);
       setTtsVoice(s.tts_voice);
@@ -66,17 +72,14 @@ export function ConfigVoice() {
       setPersonality(s.tts_personality);
     }).catch(() => {});
 
-    // Load STT settings from server
     api.getSettings().then((s) => {
       setSttEnabled(s.stt_enabled);
       setSttLanguage(s.stt_language);
       setSttModel(s.stt_model ?? 'base');
     }).catch(() => {});
 
-    // Load voice settings from server
     loadVoiceSettings().then(setVoice).catch(() => {});
   }, []);
-
 
   useEffect(() => {
     fetch('/api/tts/voices')
@@ -150,29 +153,32 @@ export function ConfigVoice() {
 
   const sectionStyle: React.CSSProperties = {
     backgroundColor: 'var(--surface-1)',
-    padding: '20px',
+    padding: '18px 20px',
     borderRadius: 'var(--r-lg)',
     border: '1px solid var(--border)',
   };
 
   const headingStyle: React.CSSProperties = {
     fontFamily: 'var(--font-title)',
-    fontSize: 'var(--t-lg)',
+    fontSize: '15px',
     fontWeight: '600',
     marginBottom: '16px',
-    color: 'var(--accent)',
+    color: 'var(--text)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
   };
 
   const checkboxStyle: React.CSSProperties = {
-    width: '18px',
-    height: '18px',
+    width: '16px',
+    height: '16px',
     accentColor: 'var(--accent)',
     cursor: 'pointer',
   };
 
   const selectStyle: React.CSSProperties = {
     width: '100%',
-    padding: '10px 14px',
+    padding: '9px 12px',
     borderRadius: 'var(--r-md)',
     backgroundColor: 'var(--surface-2)',
     color: 'var(--text)',
@@ -182,10 +188,13 @@ export function ConfigVoice() {
   };
 
   return (
-    <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '600px' }}>
+    <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '650px' }}>
       {/* Section 1: Basic Voice Settings */}
       <section style={sectionStyle}>
-        <h3 style={headingStyle}>🔊 Voice Output (TTS) Settings</h3>
+        <h3 style={headingStyle}>
+          <Volume2 size={16} style={{ color: 'var(--accent)' }} />
+          <span>Voice Output (TTS) Settings</span>
+        </h3>
 
         <Field
           label="Status Suara Asisten"
@@ -204,11 +213,11 @@ export function ConfigVoice() {
           </div>
         </Field>
 
-        <div style={{ height: '20px' }} />
+        <div style={{ height: '16px' }} />
 
         <Field
           label="Model Suara (Voice Model)"
-          helpText="Pilih model suara neural yang digunakan untuk berbicara (Ryan beraksen Inggris khas Jarvis)"
+          helpText="Pilih model suara neural yang digunakan untuk berbicara"
         >
           <select
             className="field-select"
@@ -223,9 +232,12 @@ export function ConfigVoice() {
         </Field>
       </section>
 
-      {/* Section 2: Smart TTS Mode (Jarvis) */}
+      {/* Section 2: Smart TTS Mode */}
       <section style={sectionStyle}>
-        <h3 style={headingStyle}>🧠 Mode Suara Cerdas (Jarvis)</h3>
+        <h3 style={headingStyle}>
+          <Brain size={16} style={{ color: 'var(--accent)' }} />
+          <span>Mode Suara Cerdas (Smart TTS)</span>
+        </h3>
 
         <Field
           label="Mode Respons Suara"
@@ -241,7 +253,7 @@ export function ConfigVoice() {
                 onChange={() => setTtsMode('smart')}
                 style={{ accentColor: 'var(--accent)' }}
               />
-              <span>🤖 Smart (Jarvis) — Ringkasan cerdas</span>
+              <span>Smart — Ringkasan cerdas</span>
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: 'var(--text)' }}>
               <input
@@ -252,7 +264,7 @@ export function ConfigVoice() {
                 onChange={() => setTtsMode('verbatim')}
                 style={{ accentColor: 'var(--accent)' }}
               />
-              <span>📖 Verbatim — Baca semua</span>
+              <span>Verbatim — Baca lengkap</span>
             </label>
           </div>
         </Field>
@@ -291,9 +303,9 @@ export function ConfigVoice() {
                 onChange={(e) => setPersonality(e.target.value as TtsPersonality)}
                 style={selectStyle}
               >
-                <option value="professional">🎯 Professional — Formal, ringkas, to-the-point</option>
-                <option value="friendly">😊 Friendly — Santai, hangat, supportive</option>
-                <option value="jarvis">🎩 Jarvis Classic — Formal British, elegan</option>
+                <option value="professional">Professional — Formal, ringkas, to-the-point</option>
+                <option value="friendly">Friendly — Santai, hangat, supportive</option>
+                <option value="jarvis">Classic — Formal British, elegan</option>
               </select>
             </Field>
           </>
@@ -302,11 +314,14 @@ export function ConfigVoice() {
 
       {/* Section 3: Proactive Voice Features */}
       <section style={sectionStyle}>
-        <h3 style={headingStyle}>💬 Suara Proaktif</h3>
+        <h3 style={headingStyle}>
+          <MessageSquare size={16} style={{ color: 'var(--accent)' }} />
+          <span>Suara Proaktif</span>
+        </h3>
 
         <Field
           label="Greeting Otomatis"
-          helpText="Asisten menyapa saat sesi baru dibuka (mis. 'Selamat siang! Ada yang bisa dibantu?')"
+          helpText="Asisten menyapa saat sesi baru dibuka"
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '8px' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: 'var(--text)' }}>
@@ -344,7 +359,7 @@ export function ConfigVoice() {
 
         <Field
           label="Narasi Langkah"
-          helpText="Asisten mengucapkan setiap langkah saat dimulai — misalnya 'Saya jalankan build sekarang' — bukan hanya hasil akhirnya. Task dengan banyak langkah jadi banyak bicara."
+          helpText="Asisten mengucapkan setiap langkah saat dimulai"
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '8px' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: 'var(--text)' }}>
@@ -360,13 +375,16 @@ export function ConfigVoice() {
         </Field>
       </section>
 
-      {/* Section 5: Percakapan */}
+      {/* Section 4: Percakapan & VAD */}
       <section style={sectionStyle}>
-        <h3 style={headingStyle}>🗣️ Percakapan</h3>
+        <h3 style={headingStyle}>
+          <Activity size={16} style={{ color: 'var(--accent)' }} />
+          <span>Percakapan & Interupsi (Barge-in)</span>
+        </h3>
 
         <Field
           label="Sela Otomatis (Barge-in)"
-          helpText="Bicara kapan saja untuk menghentikan asisten yang sedang berbicara. Butuh mikrofon dengan peredam gema — pakai headset bila suara asisten menyela dirinya sendiri."
+          helpText="Bicara kapan saja untuk menghentikan asisten yang sedang berbicara."
         >
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: 'var(--text)', marginTop: '8px' }}>
             <input
@@ -383,7 +401,7 @@ export function ConfigVoice() {
 
         <Field
           label="Mode Bebas Tangan (Hands-free)"
-          helpText="Mikrofon terus mendengar; ucapan dikirim otomatis saat Anda berhenti bicara — tanpa menahan Ctrl+Space."
+          helpText="Mikrofon terus mendengar; ucapan dikirim otomatis saat Anda berhenti bicara."
         >
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: 'var(--text)', marginTop: '8px' }}>
             <input
@@ -400,7 +418,7 @@ export function ConfigVoice() {
 
         <Field
           label={`Jeda Akhir Bicara: ${voice.voice_silence_ms} ms`}
-          helpText="Berapa lama hening sebelum ucapan dianggap selesai dan dikirim"
+          helpText="Berapa lama hening sebelum ucapan dianggap selesai"
         >
           <input
             type="range"
@@ -417,7 +435,7 @@ export function ConfigVoice() {
 
         <Field
           label="Sensitivitas Mikrofon"
-          helpText="Turunkan bila ruangan berisik dan asisten sering terpotong sendiri"
+          helpText="Turunkan bila ruangan berisik"
         >
           <select
             className="field-select"
@@ -432,17 +450,14 @@ export function ConfigVoice() {
         </Field>
       </section>
 
-      {/* Section 3b: Wake Word (native tray helper) */}
+      {/* Section 5: Wake Word */}
       <section style={sectionStyle}>
-        <h3 style={headingStyle}>🛰️ Kata Pemicu (Wake Word) — Mode Siaga</h3>
+        <h3 style={headingStyle}>
+          <Radio size={16} style={{ color: 'var(--accent)' }} />
+          <span>Kata Pemicu (Wake Word) — Mode Siaga</span>
+        </h3>
         <p style={{ color: 'var(--text-faint)', marginBottom: '12px', fontSize: 'var(--t-sm)' }}>
-          Dijalankan oleh tray helper: <code>python -m hermes.tray</code> (butuh{' '}
-          <code>pip install -e .[desktop]</code>). Mikrofon tetap hidup meski jendela
-          browser ditutup; ucapkan "Hey [nama agent]" untuk mulai bicara. Model{' '}
-          <code>auto</code> mengikuti Nama Agent: <b>Jarvis</b> langsung pakai model
-          bawaan <code>hey_jarvis</code>. Nama lain (mis. <b>Ev</b>) perlu model
-          terlatih <code>hey_ev.onnx</code> di folder <code>wakewords</code> pada
-          HERMES_HOME — sampai itu ada, wake word mati (tetap bisa Picu manual).
+          Dijalankan oleh tray helper: <code>python -m hermes.tray</code>.
         </p>
 
         <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', cursor: 'pointer', color: 'var(--text)' }}>
@@ -457,7 +472,7 @@ export function ConfigVoice() {
 
         <Field
           label="Model Wake Word"
-          helpText="'auto' = ikut Nama Agent. Atau paksa: nama bawaan openWakeWord (hey_jarvis, alexa, hey_mycroft) / path ke file .onnx/.tflite kustom"
+          helpText="'auto' = ikut Nama Agent atau nama bawaan openWakeWord"
         >
           <input
             type="text"
@@ -468,50 +483,19 @@ export function ConfigVoice() {
             style={{ width: '100%' }}
           />
         </Field>
-
-        <div style={{ height: '16px' }} />
-
-        <Field
-          label={`Ambang Deteksi: ${voice.wakeword_threshold.toFixed(2)}`}
-          helpText="Naikkan bila sering salah picu; turunkan bila kata pemicu sering tak terdeteksi"
-        >
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={voice.wakeword_threshold}
-            onChange={(e) => setVoice({ ...voice, wakeword_threshold: parseFloat(e.target.value) })}
-            style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }}
-          />
-        </Field>
-
-        <div style={{ height: '16px' }} />
-
-        <Field
-          label={`Jeda Anti-Ulang: ${voice.wakeword_cooldown_ms} ms`}
-          helpText="Abaikan pemicu berulang dalam rentang ini, supaya satu 'Hey Ev' memicu sekali"
-        >
-          <input
-            type="range"
-            min={0}
-            max={10000}
-            step={250}
-            value={voice.wakeword_cooldown_ms}
-            onChange={(e) => setVoice({ ...voice, wakeword_cooldown_ms: parseInt(e.target.value, 10) })}
-            style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }}
-          />
-        </Field>
       </section>
 
-      {/* Section 4: Voice Input (STT) */}
+      {/* Section 6: Voice Input (STT) */}
       <section style={sectionStyle}>
-        <h3 style={headingStyle}>🎤 Voice Input (STT)</h3>
+        <h3 style={headingStyle}>
+          <Mic size={16} style={{ color: 'var(--accent)' }} />
+          <span>Voice Input (STT)</span>
+        </h3>
 
         {sttStatus && !sttStatus.available && (
-          <p style={{ color: 'var(--warn)', marginBottom: '12px' }}>
-            faster-whisper belum terinstal. Jalankan <code>pip install -e .[voice]</code> lalu
-            restart Hermes.
+          <p style={{ color: 'var(--warn)', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <AlertCircle size={14} />
+            faster-whisper belum terinstal.
           </p>
         )}
 
@@ -522,10 +506,10 @@ export function ConfigVoice() {
             checked={sttEnabled}
             onChange={(e) => setSttEnabled(e.target.checked)}
           />
-          <span>Aktifkan input suara (tombol mic dan Ctrl+Space)</span>
+          <span>Aktifkan input suara (tombol mic)</span>
         </label>
 
-        <label style={{ display: 'block', marginBottom: '8px' }}>Bahasa Ucapan</label>
+        <label style={{ display: 'block', marginBottom: '8px', fontSize: '13px', color: 'var(--text-dim)' }}>Bahasa Ucapan</label>
         <select
           style={selectStyle}
           value={sttLanguage}
@@ -536,7 +520,7 @@ export function ConfigVoice() {
           <option value="">Deteksi otomatis</option>
         </select>
 
-        <label style={{ display: 'block', margin: '16px 0 8px' }}>
+        <label style={{ display: 'block', margin: '16px 0 8px', fontSize: '13px', color: 'var(--text-dim)' }}>
           Model Transkripsi (kecepatan vs akurasi)
         </label>
         <select
@@ -546,27 +530,20 @@ export function ConfigVoice() {
         >
           <option value="tiny">Tiny — tercepat, akurasi rendah</option>
           <option value="base">Base — cepat, seimbang (default)</option>
-          <option value="small">Small — lebih akurat, ~3x lebih lambat</option>
-          <option value="medium">Medium — paling akurat, paling lambat</option>
+          <option value="small">Small — lebih akurat</option>
+          <option value="medium">Medium — paling akurat</option>
         </select>
-        <p style={{ opacity: 0.7, marginTop: '6px', fontSize: 'var(--t-sm)' }}>
-          Turunkan bila jeda sebelum asisten menjawab terasa lama. Nama seperti
-          "Jarvis" tetap terbantu oleh hotwords meski di <code>base</code>.
-        </p>
-
-        <p style={{ opacity: 0.7, marginTop: '12px', fontSize: 'var(--t-sm)' }}>
-          Model: <code>{sttStatus?.model ?? '—'}</code>
-          {sttStatus?.loaded === false && ' · transkripsi pertama lebih lambat karena model dimuat dulu'}
-        </p>
       </section>
 
       {/* Action buttons */}
       <div style={{ display: 'flex', gap: '12px' }}>
-        <Button variant="primary" type="submit" loading={saving} style={{ width: '180px' }}>
-          Simpan Konfigurasi
+        <Button variant="primary" type="submit" loading={saving} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '10px 20px' }}>
+          <Save size={14} />
+          <span>Simpan Konfigurasi</span>
         </Button>
-        <Button variant="secondary" type="button" onClick={testVoice} loading={testLoading} style={{ width: '140px' }}>
-          ▶ Test Voice
+        <Button variant="secondary" type="button" onClick={testVoice} loading={testLoading} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '10px 16px' }}>
+          <Play size={14} />
+          <span>Test Voice</span>
         </Button>
       </div>
     </form>

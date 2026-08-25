@@ -1,5 +1,4 @@
 'use client';
-
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRoute } from '../router';
 import { ConfigGeneral } from '../views/ConfigGeneral';
@@ -13,70 +12,78 @@ import { ToastProvider, useToast } from '../components/Toast';
 import { TasksProvider, useTasksContext } from '../api/events';
 import { useSecrets } from '../hooks/useSecrets';
 import { ErrorBoundary } from '../components/ErrorBoundary';
+import { Modal } from '../components/Modal';
+import { ConfirmModal } from '../components/ConfirmModal';
+import { SettingsModal } from '../components/SettingsModal';
+import {
+  PlusCircle,
+  Plus,
+  Zap,
+  MessageSquare,
+  FileText,
+  Clock,
+  Search,
+  Pin,
+  List,
+  SlidersHorizontal,
+  Home as HomeIcon,
+  GitBranch,
+  Settings,
+  MoreHorizontal,
+  PanelLeft,
+  X,
+  Send,
+  Sparkles,
+} from 'lucide-react';
 
+import '../styles/tokens.css';
+import '../styles/base.css';
+import '../styles/layout.css';
 function formatRelativeTime(unixSeconds: number | undefined): string {
-  if (!unixSeconds) return 'now';
+  if (!unixSeconds) return '';
   const now = Math.floor(Date.now() / 1000);
   const diff = Math.max(0, now - unixSeconds);
   if (diff < 60) return `${diff}s`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
-  if (diff < 604800) return `${Math.floor(diff / 86400)}d`;
-  const date = new Date(unixSeconds * 1000);
-  return `${date.getMonth() + 1}/${date.getDate()}`;
+  return `${Math.floor(diff / 86400)}d`;
 }
-
-type ModalType = 'capabilities' | 'messaging' | 'artifacts' | 'jobs' | 'settings' | null;
 
 function AppContent() {
   const { path, taskId, sessionId, navigate } = useRoute();
   const { status: secretsStatus } = useSecrets();
-  const { tasks } = useTasksContext();
   const { toast } = useToast();
 
-  const [sidebarTab, setSidebarTab] = useState<'sessions' | 'bots'>('sessions');
   const [sessions, setSessions] = useState<{ session_id: string; title: string; created: number }[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(true);
+  const [sidebarTab, setSidebarTab] = useState<'sessions' | 'bots'>('sessions');
   const [searchQuery, setSearchQuery] = useState('');
-  const [pinnedSessionIds, setPinnedSessionIds] = useState<string[]>([]);
-  
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [activeModal, setActiveModal] = useState<ModalType>(null);
-  const [configSubTab, setConfigSubTab] = useState<'general' | 'secrets' | 'mcp' | 'projects' | 'voice'>('general');
-  const [version, setVersion] = useState('v0.20.5');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  // Load pinned sessions from localStorage
-  useEffect(() => {
+  // Modals for capabilities / artifacts / scheduled jobs
+  const [activeModal, setActiveModal] = useState<'capabilities' | 'messaging' | 'artifacts' | 'jobs' | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
+
+  // Pinned session IDs saved to localStorage
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
     try {
-      const stored = localStorage.getItem('hermes_pinned_sessions');
-      if (stored) setPinnedSessionIds(JSON.parse(stored));
-    } catch {}
-  }, []);
-
-  const savePinnedSessions = (ids: string[]) => {
-    setPinnedSessionIds(ids);
-    try {
-      localStorage.setItem('hermes_pinned_sessions', JSON.stringify(ids));
-    } catch {}
-  };
-
-  const togglePinSession = (sid: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    if (pinnedSessionIds.includes(sid)) {
-      savePinnedSessions(pinnedSessionIds.filter((id) => id !== sid));
-      toast('Sesi dilepas dari Pinned', 'ok');
-    } else {
-      savePinnedSessions([...pinnedSessionIds, sid]);
-      toast('Sesi disematkan ke Pinned', 'ok');
+      return JSON.parse(localStorage.getItem('hermes_pinned_sessions') || '[]');
+    } catch {
+      return [];
     }
-  };
+  });
 
-  // Get app version if desktop
-  useEffect(() => {
-    if (typeof window !== 'undefined' && window.hermesDesktop) {
-      window.hermesDesktop.getAppVersion().then((v) => setVersion(`v${v}`)).catch(() => {});
-    }
+  const togglePinSession = useCallback((sid: string) => {
+    setPinnedIds((prev) => {
+      const next = prev.includes(sid) ? prev.filter((id) => id !== sid) : [...prev, sid];
+      try {
+        localStorage.setItem('hermes_pinned_sessions', JSON.stringify(next));
+      } catch (err) {
+        console.error('Failed to save pinned sessions:', err);
+      }
+      return next;
+    });
   }, []);
 
   const fetchSessions = useCallback(async () => {
@@ -104,184 +111,71 @@ function AppContent() {
         const data = await res.json();
         await fetchSessions();
         navigate(`#/session/${data.session_id}`);
-        toast('Sesi baru dibuat', 'ok');
       }
     } catch (err) {
       console.error('Gagal membuat sesi baru:', err);
     }
-  }, [fetchSessions, navigate, toast]);
+  }, [fetchSessions, navigate]);
 
-  // Global keyboard shortcut: Ctrl+N / Cmd+N for New Session
+  const confirmDeleteSession = useCallback(async () => {
+    if (!sessionToDelete) return;
+    try {
+      const res = await fetch(`/api/sessions/${sessionToDelete}`, { method: 'DELETE' });
+      if (res.ok) {
+        await fetchSessions();
+        if (sessionId === sessionToDelete) {
+          navigate('#/');
+        }
+      }
+    } catch (err) {
+      console.error('Gagal menghapus sesi:', err);
+    }
+  }, [fetchSessions, sessionId, navigate, sessionToDelete]);
+
+  // Global shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'n' || e.key === 'N')) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         createNewSession();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+        e.preventDefault();
+        setIsSettingsOpen((prev) => !prev);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [createNewSession]);
 
-  const handleDeleteSession = useCallback(async (sid: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    if (!window.confirm('Hapus percakapan ini beserta seluruh tugas di dalamnya?')) return;
-    try {
-      const res = await fetch(`/api/sessions/${sid}`, { method: 'DELETE' });
-      if (res.ok) {
-        savePinnedSessions(pinnedSessionIds.filter((id) => id !== sid));
-        await fetchSessions();
-        if (sessionId === sid) {
-          navigate('#/');
-        }
-        toast('Sesi berhasil dihapus', 'ok');
-      }
-    } catch (err) {
-      console.error('Gagal menghapus sesi:', err);
-    }
-  }, [fetchSessions, sessionId, navigate, pinnedSessionIds, toast]);
-
-  useEffect(() => {
-    if (path === '/' && !sessionId && !loadingSessions) {
-      if (sessions.length > 0) {
-        navigate(`#/session/${sessions[0].session_id}`);
-      } else {
-        createNewSession();
-      }
-    }
-  }, [path, sessionId, loadingSessions, sessions, navigate, createNewSession]);
-
   const handleNavClick = (e: React.MouseEvent<HTMLAnchorElement>, hash: string) => {
     e.preventDefault();
     navigate(hash);
   };
 
-  // Filtered Sessions
+  // Filtered session lists
   const filteredSessions = useMemo(() => {
     if (!searchQuery.trim()) return sessions;
     const q = searchQuery.toLowerCase();
-    return sessions.filter((s) => s.title.toLowerCase().includes(q));
+    return sessions.filter((s) => s.title.toLowerCase().includes(q) || s.session_id.toLowerCase().includes(q));
   }, [sessions, searchQuery]);
 
-  const pinnedSessionsList = useMemo(() => {
-    return filteredSessions.filter((s) => pinnedSessionIds.includes(s.session_id));
-  }, [filteredSessions, pinnedSessionIds]);
+  const pinnedSessions = useMemo(() => {
+    return filteredSessions.filter((s) => pinnedIds.includes(s.session_id));
+  }, [filteredSessions, pinnedIds]);
 
-  const unpinnedSessionsList = useMemo(() => {
-    return filteredSessions.filter((s) => !pinnedSessionIds.includes(s.session_id));
-  }, [filteredSessions, pinnedSessionIds]);
-
-  // Window control actions
-  const handleMinimize = () => window.hermesDesktop?.minimize();
-  const handleMaximize = () => window.hermesDesktop?.maximize();
-  const handleClose = () => window.hermesDesktop?.close();
+  const unpinnedSessions = useMemo(() => {
+    return filteredSessions.filter((s) => !pinnedIds.includes(s.session_id));
+  }, [filteredSessions, pinnedIds]);
 
   const isConfigRoute = path.startsWith('/config');
 
   return (
     <div className="app-container">
-      {/* ------------------------------------------------------------------
-          Top Window Title Bar
-          ------------------------------------------------------------------ */}
-      <header className="window-titlebar">
-        <div className="titlebar-left">
-          {/* Sidebar Toggle Button [ | ] */}
-          <button
-            type="button"
-            className={`titlebar-btn ${isSidebarOpen ? 'active' : ''}`}
-            title="Toggle sidebar"
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-          >
-            ◫
-          </button>
-          {/* Refresh / Switch Button ⇄ */}
-          <button
-            type="button"
-            className="titlebar-btn"
-            title="Refresh sesi dan data"
-            onClick={() => fetchSessions()}
-          >
-            ⇄
-          </button>
-        </div>
-
-        <div className="titlebar-center">
-          {sessionId && (
-            <span>
-              {sessions.find((s) => s.session_id === sessionId)?.title || 'Hermes Agent Session'}
-            </span>
-          )}
-        </div>
-
-        <div className="titlebar-right">
-          {/* Side Panel / Inspector Toggle [ | ] */}
-          <button
-            type="button"
-            className={`titlebar-btn ${isDrawerOpen ? 'active' : ''}`}
-            title="Toggle Inspector & Constellation Graph"
-            onClick={() => setIsDrawerOpen(!isDrawerOpen)}
-          >
-            ◫
-          </button>
-          {/* Chat Focus / View Toggle */}
-          <button
-            type="button"
-            className="titlebar-btn active"
-            title="Chat view"
-            onClick={() => {
-              if (sessionId) navigate(`#/session/${sessionId}`);
-              else navigate('#/');
-            }}
-          >
-            💬
-          </button>
-          {/* Sound / Voice Toggle */}
-          <button
-            type="button"
-            className="titlebar-btn"
-            title="Pengaturan Suara"
-            onClick={() => {
-              setConfigSubTab('voice');
-              setActiveModal('settings');
-            }}
-          >
-            🔊
-          </button>
-          {/* Settings Gear ⚙️ */}
-          <button
-            type="button"
-            className="titlebar-btn"
-            title="Pengaturan Konfigurasi"
-            onClick={() => {
-              setConfigSubTab('general');
-              setActiveModal('settings');
-            }}
-          >
-            ⚙️
-          </button>
-
-          {/* Desktop Window Controls */}
-          <div className="window-controls">
-            <button type="button" className="window-control-btn" title="Minimize" onClick={handleMinimize}>
-              —
-            </button>
-            <button type="button" className="window-control-btn" title="Maximize" onClick={handleMaximize}>
-              □
-            </button>
-            <button type="button" className="window-control-btn close" title="Close" onClick={handleClose}>
-              ✕
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* ------------------------------------------------------------------
-          App Body Layout (Sidebar + Main Content View)
-          ------------------------------------------------------------------ */}
+      {/* Main App Body (Sidebar + Content) */}
       <div className="app-body">
-        {/* Left Sidebar */}
-        <aside className={`sidebar ${isSidebarOpen ? '' : 'collapsed'}`}>
-          {/* Tabs: SESSIONS / BOTS */}
+        {/* Left Sidebar (Matching Screenshot Reference) */}
+        <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
+          {/* Top Tabs: SESSIONS / BOTS */}
           <div className="sidebar-tabs">
             <button
               type="button"
@@ -299,17 +193,16 @@ function AppContent() {
             </button>
           </div>
 
-          {/* Sidebar Action Menu */}
+          {/* Primary Action Menu */}
           <div className="sidebar-actions-menu">
-            {/* New Session Button */}
             <button
               type="button"
               className="sidebar-action-item"
               onClick={createNewSession}
-              title="Buat sesi percakapan baru (Ctrl+N)"
+              title="Create new conversation (Ctrl+N)"
             >
               <div className="action-item-left">
-                <span className="action-item-icon">👤</span>
+                <PlusCircle size={14} className="action-item-icon" />
                 <span>New session</span>
               </div>
               <div className="kbd-shortcut-badge">
@@ -318,50 +211,50 @@ function AppContent() {
               </div>
             </button>
 
-            {/* Capabilities */}
             <button
               type="button"
               className="sidebar-action-item"
               onClick={() => setActiveModal('capabilities')}
+              title="Capabilities & Tools"
             >
               <div className="action-item-left">
-                <span className="action-item-icon">🧩</span>
+                <Zap size={14} className="action-item-icon" />
                 <span>Capabilities</span>
               </div>
             </button>
 
-            {/* Messaging */}
             <button
               type="button"
               className="sidebar-action-item"
               onClick={() => setActiveModal('messaging')}
+              title="Messaging & Telegram Integration"
             >
               <div className="action-item-left">
-                <span className="action-item-icon">💬</span>
+                <MessageSquare size={14} className="action-item-icon" />
                 <span>Messaging</span>
               </div>
             </button>
 
-            {/* Artifacts */}
             <button
               type="button"
               className="sidebar-action-item"
               onClick={() => setActiveModal('artifacts')}
+              title="Generated Artifacts"
             >
               <div className="action-item-left">
-                <span className="action-item-icon">📄</span>
+                <FileText size={14} className="action-item-icon" />
                 <span>Artifacts</span>
               </div>
             </button>
 
-            {/* Scheduled jobs */}
             <button
               type="button"
               className="sidebar-action-item"
               onClick={() => setActiveModal('jobs')}
+              title="Scheduled Tasks & Background Jobs"
             >
               <div className="action-item-left">
-                <span className="action-item-icon">⏱</span>
+                <Clock size={14} className="action-item-icon" />
                 <span>Scheduled jobs</span>
               </div>
             </button>
@@ -369,7 +262,7 @@ function AppContent() {
 
           {/* Search Box */}
           <div className="sidebar-search-box">
-            <span className="sidebar-search-icon">🔍</span>
+            <Search size={13} className="sidebar-search-icon" style={{ opacity: 0.6 }} />
             <input
               type="text"
               className="sidebar-search-input"
@@ -381,152 +274,122 @@ function AppContent() {
               <button
                 type="button"
                 onClick={() => setSearchQuery('')}
-                style={{ background: 'transparent', border: 'none', color: 'var(--text-faint)', cursor: 'pointer', fontSize: '10px' }}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-faint)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 0 }}
               >
-                ✕
+                <X size={12} />
               </button>
             )}
           </div>
 
-          {sidebarTab === 'sessions' ? (
-            <div className="session-list-scroll">
-              {/* PINNED Section */}
-              <div className="pinned-section">
-                <div className="sidebar-section-header">
-                  <div className="section-header-title">
-                    <span className="section-square-bullet">■</span>
-                    <span>PINNED</span>
-                  </div>
-                </div>
-
-                {pinnedSessionsList.length === 0 ? (
-                  <div className="pinned-empty-hint">
-                    <span style={{ fontSize: '10px', color: 'var(--text-faint)' }}>📌</span>
-                    <span>Shift-click a chat to pin</span>
-                  </div>
-                ) : (
-                  pinnedSessionsList.map((s) => (
-                    <div
-                      key={s.session_id}
-                      className={`session-row ${sessionId === s.session_id ? 'active' : ''}`}
-                      onClick={(e) => {
-                        if (e.shiftKey) {
-                          togglePinSession(s.session_id, e);
-                        } else {
-                          navigate(`#/session/${s.session_id}`);
-                        }
-                      }}
-                      title="Shift-click untuk unpin"
-                    >
-                      <div className="session-row-left">
-                        <span className="session-bullet" style={{ color: 'var(--accent)' }}>📌</span>
-                        <span className="session-title-text">{s.title || 'Untitled Session'}</span>
-                      </div>
-                      <div className="session-row-right">
-                        <span className="session-time">{formatRelativeTime(s.created)}</span>
-                        <button
-                          type="button"
-                          className="session-action-btn"
-                          title="Hapus sesi"
-                          onClick={(e) => handleDeleteSession(s.session_id, e)}
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )}
+          {/* PINNED Section */}
+          <div className="pinned-section">
+            <div className="sidebar-section-header">
+              <div className="section-header-title">
+                <Pin size={11} style={{ transform: 'rotate(45deg)', opacity: 0.8 }} />
+                <span>PINNED</span>
               </div>
+            </div>
 
-              {/* SESSIONS Section */}
-              <div className="sidebar-section-header" style={{ marginTop: '6px' }}>
-                <div className="section-header-title">
-                  <span className="section-square-bullet">■</span>
-                  <span>SESSIONS</span>
-                </div>
-                <button
-                  type="button"
-                  className="section-header-action-btn"
-                  title="Urutkan sesi"
-                  onClick={() => setSessions((prev) => [...prev].reverse())}
+            {pinnedSessions.length === 0 ? (
+              <div className="pinned-empty-hint">
+                <span style={{ transform: 'rotate(180deg)', display: 'inline-block', fontSize: '11px' }}>↳</span>
+                <span>Shift-click a chat to pin</span>
+              </div>
+            ) : (
+              pinnedSessions.map((s) => (
+                <div
+                  key={s.session_id}
+                  className={`session-row ${sessionId === s.session_id ? 'active' : ''}`}
+                  onClick={(e) => {
+                    if (e.shiftKey) {
+                      e.preventDefault();
+                      togglePinSession(s.session_id);
+                    } else {
+                      handleNavClick(e as any, `#/session/${s.session_id}`);
+                    }
+                  }}
+                  title="Shift-click to unpin"
                 >
-                  ▼
-                </button>
-              </div>
+                  <div className="session-row-left">
+                    <Pin size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                    <span className="session-title-text">{s.title || 'Untitled session'}</span>
+                  </div>
+                  <div className="session-row-right">
+                    <span className="session-time">{formatRelativeTime(s.created)}</span>
+                    <button
+                      type="button"
+                      className="session-action-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSessionToDelete(s.session_id);
+                      }}
+                      title="Delete session"
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
 
-              {loadingSessions ? (
-                <div style={{ padding: '8px 12px', fontSize: '11px', color: 'var(--text-faint)' }}>
-                  Memuat sesi...
-                </div>
-              ) : unpinnedSessionsList.length === 0 ? (
-                <div style={{ padding: '8px 12px', fontSize: '11px', color: 'var(--text-faint)' }}>
-                  {searchQuery ? 'Tidak ada sesi yang cocok' : 'Belum ada sesi'}
-                </div>
-              ) : (
-                unpinnedSessionsList.map((s) => (
-                  <div
-                    key={s.session_id}
-                    className={`session-row ${sessionId === s.session_id ? 'active' : ''}`}
-                    onClick={(e) => {
-                      if (e.shiftKey) {
-                        togglePinSession(s.session_id, e);
-                      } else {
-                        navigate(`#/session/${s.session_id}`);
-                      }
-                    }}
-                    title="Shift-click untuk sematkan (Pin)"
-                  >
-                    <div className="session-row-left">
-                      <span className="session-bullet">•</span>
-                      <span className="session-title-text">{s.title || 'Untitled Session'}</span>
-                    </div>
-                    <div className="session-row-right">
-                      <span className="session-time">{formatRelativeTime(s.created)}</span>
-                      <button
-                        type="button"
-                        className="session-action-btn"
-                        title="Hapus sesi"
-                        onClick={(e) => handleDeleteSession(s.session_id, e)}
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
+          {/* SESSIONS List Section */}
+          <div className="sidebar-section-header" style={{ marginTop: '4px' }}>
+            <div className="section-header-title">
+              <List size={12} style={{ opacity: 0.8 }} />
+              <span>SESSIONS</span>
             </div>
-          ) : (
-            /* BOTS Tab Content */
-            <div className="session-list-scroll" style={{ padding: '8px 12px' }}>
-              <div className="sidebar-section-header">
-                <div className="section-header-title">
-                  <span className="section-square-bullet">■</span>
-                  <span>AVAILABLE AGENTS</span>
-                </div>
+            <button type="button" className="section-header-action-btn" title="Sort & Filter">
+              <SlidersHorizontal size={11} />
+            </button>
+          </div>
+
+          <div className="session-list-scroll">
+            {loadingSessions ? (
+              <div style={{ padding: '8px 12px', color: 'var(--text-faint)', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
+                CONNECTING TO SESSIONS...
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px' }}>
-                <div className="session-row active" style={{ margin: 0 }}>
-                  <div className="session-row-left">
-                    <span style={{ fontSize: '14px' }}>⚡</span>
-                    <span className="session-title-text">Hermes Core Agent</span>
-                  </div>
-                  <span className="session-time">Ready</span>
-                </div>
-                <div className="session-row" style={{ margin: 0 }}>
-                  <div className="session-row-left">
-                    <span style={{ fontSize: '14px' }}>🟧</span>
-                    <span className="session-title-text">Claude Code Engine</span>
-                  </div>
-                </div>
-                <div className="session-row" style={{ margin: 0 }}>
-                  <div className="session-row-left">
-                    <span style={{ fontSize: '14px' }}>🟩</span>
-                    <span className="session-title-text">Antigravity Engine</span>
-                  </div>
-                </div>
+            ) : unpinnedSessions.length === 0 ? (
+              <div style={{ padding: '8px 12px', color: 'var(--text-faint)', fontSize: '11px', fontStyle: 'italic' }}>
+                {searchQuery ? 'No matching sessions' : 'No recent sessions'}
               </div>
-            </div>
-          )}
+            ) : (
+              unpinnedSessions.map((s) => (
+                <div
+                  key={s.session_id}
+                  className={`session-row ${sessionId === s.session_id ? 'active' : ''}`}
+                  onClick={(e) => {
+                    if (e.shiftKey) {
+                      e.preventDefault();
+                      togglePinSession(s.session_id);
+                    } else {
+                      handleNavClick(e as any, `#/session/${s.session_id}`);
+                    }
+                  }}
+                  title="Shift-click to pin this chat"
+                >
+                  <div className="session-row-left">
+                    <span className="session-bullet">•</span>
+                    <span className="session-title-text">{s.title || 'Initial greeting and hello'}</span>
+                  </div>
+                  <div className="session-row-right">
+                    <span className="session-time">{formatRelativeTime(s.created)}</span>
+                    <button
+                      type="button"
+                      className="session-action-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSessionToDelete(s.session_id);
+                      }}
+                      title="Delete session"
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
 
           {/* Sidebar Footer */}
           <div className="sidebar-footer-container">
@@ -535,46 +398,53 @@ function AppContent() {
                 <button
                   type="button"
                   className="sidebar-footer-btn"
-                  title="Dashboard Beranda"
                   onClick={() => navigate('#/')}
+                  title="Dashboard Home"
                 >
-                  ⌂
+                  <HomeIcon size={14} />
                 </button>
                 <button
                   type="button"
                   className="sidebar-footer-btn"
-                  title="Sesi Baru (+)"
                   onClick={createNewSession}
+                  title="New Session (Ctrl+N)"
                 >
-                  +
+                  <Plus size={14} />
                 </button>
                 <button
                   type="button"
                   className="sidebar-footer-btn"
-                  title="Artifacts"
-                  onClick={() => setActiveModal('artifacts')}
+                  onClick={() => navigate('#/config/projects')}
+                  title="Projects & Git Workspace"
                 >
-                  📄
+                  <GitBranch size={14} />
                 </button>
               </div>
+
               <div className="sidebar-icon-group">
                 <button
                   type="button"
                   className="sidebar-footer-btn"
-                  title="Pengaturan"
-                  onClick={() => {
-                    setConfigSubTab('general');
-                    setActiveModal('settings');
-                  }}
+                  onClick={() => setIsSettingsOpen(true)}
+                  title="Settings & Models (Ctrl+,)"
                 >
-                  ···
+                  <Settings size={14} />
                 </button>
                 <button
                   type="button"
                   className="sidebar-footer-btn"
-                  title={`Status Gateway: ${secretsStatus?.nvidia_api_key_set ? 'Online' : 'Offline'}`}
+                  onClick={() => setIsSettingsOpen(true)}
+                  title="More Settings"
                 >
-                  ⑂
+                  <MoreHorizontal size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="sidebar-footer-btn"
+                  onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                  title="Pin / Toggle Sidebar"
+                >
+                  <PanelLeft size={14} />
                 </button>
               </div>
             </div>
@@ -582,9 +452,10 @@ function AppContent() {
             <div className="sidebar-status-bar">
               <div className="status-left">
                 <span className="gateway-pulse-dot" />
+                <Sparkles size={11} style={{ color: 'var(--accent)' }} />
                 <span>Gateway ready</span>
               </div>
-              <span className="status-version"># {version}</span>
+              <span className="status-version"># v0.20.5</span>
             </div>
           </div>
         </aside>
@@ -593,12 +464,7 @@ function AppContent() {
         <main className="main-content">
           <div className="page-container">
             {path === '/' && (
-              <Dashboard
-                sessionId={sessionId}
-                onRefreshSessions={fetchSessions}
-                isDrawerOpen={isDrawerOpen}
-                onToggleDrawer={() => setIsDrawerOpen(!isDrawerOpen)}
-              />
+              <Dashboard sessionId={sessionId} onRefreshSessions={fetchSessions} />
             )}
 
             {path === '/task' && (
@@ -614,6 +480,7 @@ function AppContent() {
                   <p className="page-subtitle">Atur setting utama, API keys, MCP servers, dan proyek Anda</p>
                 </header>
 
+                {/* Sub-navigation for configuration tabs */}
                 <div className="config-tab-bar">
                   <a
                     href="#/config/general"
@@ -665,185 +532,140 @@ function AppContent() {
         </main>
       </div>
 
-      {/* ------------------------------------------------------------------
-          Interactive Modals (Capabilities, Messaging, Artifacts, Jobs, Settings)
-          ------------------------------------------------------------------ */}
-      {activeModal && (
-        <div className="hermes-modal-overlay" onClick={() => setActiveModal(null)}>
-          <div className="hermes-modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="hermes-modal-header">
-              <div className="hermes-modal-title">
-                {activeModal === 'capabilities' && <><span>🧩</span> Capabilities & Skills</>}
-                {activeModal === 'messaging' && <><span>💬</span> Messaging Channels</>}
-                {activeModal === 'artifacts' && <><span>📄</span> Generated Artifacts</>}
-                {activeModal === 'jobs' && <><span>⏱</span> Scheduled Jobs & Background Tasks</>}
-                {activeModal === 'settings' && <><span>⚙️</span> Configuration & Settings</>}
-              </div>
-              <button
-                type="button"
-                className="hermes-modal-close-btn"
-                onClick={() => setActiveModal(null)}
-              >
-                ✕
-              </button>
+      {/* Capabilities Modal */}
+      <Modal
+        isOpen={activeModal === 'capabilities'}
+        onClose={() => setActiveModal(null)}
+        title="⚡ Lail Hermes Capabilities"
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '13px' }}>
+          <p style={{ color: 'var(--text-dim)' }}>
+            Lail Hermes dilengkapi dengan berbagai modul perencanaan mandiri dan eksekusi coding:
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+            <div style={{ padding: '12px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
+              <div style={{ fontWeight: 600, color: 'var(--accent)', marginBottom: '4px' }}>🤖 LLM Planner</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>Perencana multi-langkah otonom dengan konfirmasi tindakan berisiko.</div>
             </div>
-
-            <div className="hermes-modal-body">
-              {activeModal === 'capabilities' && (
-                <div>
-                  <p style={{ color: 'var(--text-dim)', fontSize: '13px', marginBottom: '16px' }}>
-                    Hermes Agent dilengkapi dengan kemampuan eksekusi MCP tools, coding engine (Claude & Antigravity), vision camera recognition, dan TTS voice.
-                  </p>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
-                    <div style={{ padding: '12px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
-                      <div style={{ fontWeight: 600, color: 'var(--accent)', marginBottom: '4px' }}>⚡ Auto Coding Engines</div>
-                      <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>Claude Code (!claude) & Antigravity (!agy)</div>
-                    </div>
-                    <div style={{ padding: '12px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
-                      <div style={{ fontWeight: 600, color: 'var(--accent)', marginBottom: '4px' }}>📷 Object Vision & Camera</div>
-                      <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>Deteksi kamera real-time COCO-SSD & WebGPU</div>
-                    </div>
-                    <div style={{ padding: '12px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
-                      <div style={{ fontWeight: 600, color: 'var(--accent)', marginBottom: '4px' }}>🎙️ Voice STT & Neural TTS</div>
-                      <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>Voice recognition & Microsoft Edge TTS Neural</div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {activeModal === 'messaging' && (
-                <div>
-                  <p style={{ color: 'var(--text-dim)', fontSize: '13px', marginBottom: '16px' }}>
-                    Status koneksi integrasi bot perpesanan:
-                  </p>
-                  <div style={{ padding: '14px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                      <span style={{ fontWeight: 600 }}>Telegram Bot Integration</span>
-                      <span style={{ fontSize: '11px', color: secretsStatus?.telegram_bot_token_set ? 'var(--ok)' : 'var(--err)', fontWeight: 'bold' }}>
-                        {secretsStatus?.telegram_bot_token_set ? 'ONLINE' : 'OFFLINE (Token Missing)'}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
-                      Dapat berinteraksi langsung melalui Telegram untuk delegasi tugas coding dan monitoring.
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {activeModal === 'artifacts' && (
-                <div>
-                  <p style={{ color: 'var(--text-dim)', fontSize: '13px', marginBottom: '16px' }}>
-                    Daftar dokumen dan artifak yang dihasilkan oleh Hermes Agent:
-                  </p>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {tasks.length === 0 ? (
-                      <div style={{ color: 'var(--text-faint)', fontSize: '12px', textAlign: 'center', padding: '24px 0' }}>
-                        Belum ada berkas artifak tersimpan.
-                      </div>
-                    ) : (
-                      tasks.slice(0, 10).map((t) => (
-                        <div
-                          key={t.task_id}
-                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}
-                        >
-                          <span style={{ fontSize: '12px', fontFamily: 'var(--font-mono)' }}>Task #{t.task_id.substring(0, 8)}</span>
-                          <span style={{ fontSize: '11px', color: 'var(--accent)' }}>{t.status.toUpperCase()}</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {activeModal === 'jobs' && (
-                <div>
-                  <p style={{ color: 'var(--text-dim)', fontSize: '13px', marginBottom: '16px' }}>
-                    Antrean tugas latar belakang dan cron jobs berkala:
-                  </p>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
-                      <span style={{ fontSize: '12px' }}>Heartbeat Poller</span>
-                      <span style={{ fontSize: '11px', color: 'var(--ok)', fontWeight: 'bold' }}>ACTIVE</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
-                      <span style={{ fontSize: '12px' }}>Cognitive Event Stream</span>
-                      <span style={{ fontSize: '11px', color: 'var(--ok)', fontWeight: 'bold' }}>CONNECTED</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {activeModal === 'settings' && (
-                <div>
-                  <div className="config-tab-bar" style={{ marginBottom: '16px' }}>
-                    <button
-                      type="button"
-                      className={`config-tab-item ${configSubTab === 'general' ? 'active' : ''}`}
-                      onClick={() => setConfigSubTab('general')}
-                    >
-                      General
-                    </button>
-                    <button
-                      type="button"
-                      className={`config-tab-item ${configSubTab === 'secrets' ? 'active' : ''}`}
-                      onClick={() => setConfigSubTab('secrets')}
-                    >
-                      Secrets
-                    </button>
-                    <button
-                      type="button"
-                      className={`config-tab-item ${configSubTab === 'mcp' ? 'active' : ''}`}
-                      onClick={() => setConfigSubTab('mcp')}
-                    >
-                      MCP
-                    </button>
-                    <button
-                      type="button"
-                      className={`config-tab-item ${configSubTab === 'projects' ? 'active' : ''}`}
-                      onClick={() => setConfigSubTab('projects')}
-                    >
-                      Projects
-                    </button>
-                    <button
-                      type="button"
-                      className={`config-tab-item ${configSubTab === 'voice' ? 'active' : ''}`}
-                      onClick={() => setConfigSubTab('voice')}
-                    >
-                      Voice
-                    </button>
-                  </div>
-                  <div>
-                    {configSubTab === 'general' && <ConfigGeneral />}
-                    {configSubTab === 'secrets' && <ConfigSecrets />}
-                    {configSubTab === 'mcp' && <ConfigMcp />}
-                    {configSubTab === 'projects' && <ConfigProjects />}
-                    {configSubTab === 'voice' && <ConfigVoice />}
-                  </div>
-                </div>
-              )}
+            <div style={{ padding: '12px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
+              <div style={{ fontWeight: 600, color: 'var(--accent)', marginBottom: '4px' }}>🔌 MCP Tools</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>Integrasi alat eksternal via Model Context Protocol (stdio & SSE).</div>
+            </div>
+            <div style={{ padding: '12px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
+              <div style={{ fontWeight: 600, color: 'var(--accent)', marginBottom: '4px' }}>🎙️ Voice Loop</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>Voice-in / voice-out interaktif dengan barge-in dan ringkasan suara.</div>
+            </div>
+            <div style={{ padding: '12px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
+              <div style={{ fontWeight: 600, color: 'var(--accent)', marginBottom: '4px' }}>🛠️ Multi-Engine Runner</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>Claude CLI, Antigravity CLI, dan sub-agent runner.</div>
             </div>
           </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '8px' }}>
+            <button
+              type="button"
+              className="config-tab-item active"
+              onClick={() => {
+                setActiveModal(null);
+                navigate('#/config/mcp');
+              }}
+            >
+              Kelola MCP Servers →
+            </button>
+          </div>
         </div>
-      )}
+      </Modal>
+
+      {/* Messaging Modal */}
+      <Modal
+        isOpen={activeModal === 'messaging'}
+        onClose={() => setActiveModal(null)}
+        title="💬 Messaging & Telegram Integration"
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '13px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span style={{ fontSize: '24px' }}>📱</span>
+            <div>
+              <div style={{ fontWeight: 600 }}>Telegram Bot Gateway</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
+                Status Bot:{' '}
+                <strong style={{ color: secretsStatus?.telegram_bot_token_set ? 'var(--ok)' : 'var(--err)' }}>
+                  {secretsStatus?.telegram_bot_token_set ? 'ONLINE & SIAP' : 'TOKEN BELUM DIATUR'}
+                </strong>
+              </div>
+            </div>
+          </div>
+          <p style={{ color: 'var(--text-dim)' }}>
+            Anda dapat berinteraksi dengan Hermes langsung melalui aplikasi Telegram menggunakan bot yang telah dikonfigurasi.
+          </p>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' }}>
+            <button
+              type="button"
+              className="config-tab-item active"
+              onClick={() => {
+                setActiveModal(null);
+                navigate('#/config/secrets');
+              }}
+            >
+              Atur Token Telegram →
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Artifacts Modal */}
+      <Modal
+        isOpen={activeModal === 'artifacts'}
+        onClose={() => setActiveModal(null)}
+        title="📄 Generated Artifacts"
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
+          <p style={{ color: 'var(--text-dim)' }}>
+            Seluruh berkas, dokumen, dan media yang dihasilkan oleh agen tersimpan di direktori artefak sesi Anda.
+          </p>
+          <div style={{ padding: '16px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', textAlign: 'center', color: 'var(--text-faint)', fontStyle: 'italic' }}>
+            Lihat artefak pada tugas di riwayat percakapan atau periksa folder output proyek.
+          </div>
+        </div>
+      </Modal>
+
+      {/* Scheduled Jobs Modal */}
+      <Modal
+        isOpen={activeModal === 'jobs'}
+        onClose={() => setActiveModal(null)}
+        title="⏱ Scheduled Jobs & Cron"
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
+          <p style={{ color: 'var(--text-dim)' }}>
+            Hermes mendukung eksekusi terjadwal dan pemantau latar belakang (QA Watcher, Periodic health checks).
+          </p>
+          <div style={{ padding: '16px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', textAlign: 'center', color: 'var(--text-faint)', fontStyle: 'italic' }}>
+            Tidak ada tugas terjadwal aktif saat ini.
+          </div>
+        </div>
+      </Modal>
+
+      {/* Full-Featured Multi-Category Settings Modal (Matching Reference UI) */}
+      <ConfirmModal
+        isOpen={sessionToDelete !== null}
+        onClose={() => setSessionToDelete(null)}
+        onConfirm={async () => {
+          await confirmDeleteSession();
+          setSessionToDelete(null);
+        }}
+        title="Hapus Percakapan"
+        message="Apakah Anda yakin ingin menghapus sesi percakapan ini beserta seluruh rekaman tugas di dalamnya?"
+        confirmText="Hapus Sesi"
+      />
+
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+      />
     </div>
   );
 }
 
 export default function Home() {
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  if (!mounted) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#08090d', color: '#e5e7eb', fontFamily: 'monospace' }}>
-        LOADING HERMES AGENT INTERFACE...
-      </div>
-    );
-  }
-
   return (
     <ErrorBoundary>
       <ToastProvider>
@@ -854,4 +676,3 @@ export default function Home() {
     </ErrorBoundary>
   );
 }
-

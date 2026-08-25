@@ -6,6 +6,16 @@ import { Field } from '../components/Field';
 import { Toggle } from '../components/Toggle';
 import { Button } from '../components/Button';
 import { useToast } from '../components/Toast';
+import {
+  Brain,
+  Cpu,
+  Terminal,
+  Sparkles,
+  Clock,
+  Smartphone,
+  ShieldCheck,
+  Save,
+} from 'lucide-react';
 
 export function ConfigGeneral() {
   const { settings, loading, error, saveSettings, refresh } = useSettings();
@@ -17,13 +27,11 @@ export function ConfigGeneral() {
   const [saving, setSaving] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
-  // States to handle custom/dropdown choice for models
   const [claudeModelMode, setClaudeModelMode] = useState<'select' | 'custom'>('select');
   const [claudeCustomVal, setClaudeCustomVal] = useState('');
   const [agyModelMode, setAgyModelMode] = useState<'select' | 'custom'>('select');
   const [agyCustomVal, setAgyCustomVal] = useState('');
   
-  // Local state for comma separated user IDs
   const [userIdsText, setUserIdsText] = useState('');
 
   useEffect(() => {
@@ -48,10 +56,8 @@ export function ConfigGeneral() {
     }
   }, [settings]);
 
-  // Adjust custom model fields when formState or engineModels loads
   useEffect(() => {
     if (formState && engineModels) {
-      // Claude model
       if (formState.claude_model === '' || engineModels.claude.includes(formState.claude_model)) {
         setClaudeModelMode('select');
         setClaudeCustomVal('');
@@ -60,7 +66,6 @@ export function ConfigGeneral() {
         setClaudeCustomVal(formState.claude_model);
       }
 
-      // Antigravity model
       if (formState.agy_model === '' || engineModels.agy.includes(formState.agy_model)) {
         setAgyModelMode('select');
         setAgyCustomVal('');
@@ -81,7 +86,7 @@ export function ConfigGeneral() {
   }
 
   if (loading || !formState) {
-    return <div style={{ color: 'var(--text-dim)' }}>Memuat pengaturan...</div>;
+    return <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>Memuat pengaturan...</div>;
   }
 
   const handleChange = (field: keyof Settings, value: string | number | number[] | boolean) => {
@@ -89,7 +94,6 @@ export function ConfigGeneral() {
       if (!prev) return null;
       return { ...prev, [field]: value };
     });
-    // Clear field error
     if (formErrors[field]) {
       setFormErrors((prev) => {
         const copy = { ...prev };
@@ -106,7 +110,6 @@ export function ConfigGeneral() {
     setSaving(true);
     setFormErrors({});
 
-    // Parse user IDs
     const userIds = userIdsText
       .split(',')
       .map((s) => s.trim())
@@ -114,7 +117,6 @@ export function ConfigGeneral() {
       .map((s) => parseInt(s, 10))
       .filter((n) => !isNaN(n));
 
-    // Construct final settings payload
     const finalSettings: Settings = {
       ...formState,
       allowed_user_ids: userIds,
@@ -131,8 +133,6 @@ export function ConfigGeneral() {
       }
     } catch (err) {
       toast(errorMessage(err, 'Gagal menyimpan pengaturan.'), 'err');
-      // The Settings validators name the offending field in their own message
-      // (config.py:62-84), so route it to that field's input when they do.
       const detail = errorDetail(err);
       if (detail) {
         const lowered = detail.toLowerCase();
@@ -150,7 +150,7 @@ export function ConfigGeneral() {
   };
 
   return (
-    <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       {formErrors.general && (
         <div style={{ padding: '12px', backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--err)', borderRadius: 'var(--r-md)', color: 'var(--err)', fontSize: 'var(--t-sm)' }}>
           {formErrors.general}
@@ -158,8 +158,11 @@ export function ConfigGeneral() {
       )}
 
       {/* AI Brain Section */}
-      <section style={{ backgroundColor: 'var(--surface-1)', padding: '20px', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
-        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: 'var(--t-lg)', fontWeight: '600', marginBottom: '16px', color: 'var(--accent)' }}>🧠 LLM Brain Settings (Planner)</h3>
+      <section style={{ backgroundColor: 'var(--surface-1)', padding: '18px 20px', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
+        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: '15px', fontWeight: '600', marginBottom: '16px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Brain size={16} style={{ color: 'var(--accent)' }} />
+          <span>LLM Brain Settings (Planner)</span>
+        </h3>
         
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '16px' }}>
           <Field label="AI Provider" helpText="Pilih penyedia layanan model AI Anda">
@@ -179,7 +182,7 @@ export function ConfigGeneral() {
               }}
               style={{
                 width: '100%',
-                padding: '10px 14px',
+                padding: '9px 12px',
                 borderRadius: 'var(--r-md)',
                 backgroundColor: 'var(--surface-2)',
                 color: 'var(--text)',
@@ -254,11 +257,11 @@ export function ConfigGeneral() {
             />
           </Field>
 
-          <Field label="Agent Name" helpText="Nama identitas asisten chat AI Anda (Default: Lail Agent)">
+          <Field label="Agent Name" helpText="Nama identitas asisten chat AI Anda (Default: Lail Hermes)">
             <input
               type="text"
               className="field-input"
-              placeholder="Lail Agent"
+              placeholder="Lail Hermes"
               value={formState.agent_name || ''}
               onChange={(e) => handleChange('agent_name', e.target.value)}
             />
@@ -266,7 +269,7 @@ export function ConfigGeneral() {
 
           <Field
             label="Calendar iCal URL"
-            helpText="Google Calendar → Setelan kalender → Integrasikan kalender → Alamat rahasia dalam format iCal. Read-only, tanpa OAuth. Rahasiakan: URL ini adalah kuncinya."
+            helpText="Google Calendar → Setelan kalender → Alamat rahasia format iCal."
             error={formErrors.calendar_ics_url}
           >
             <input
@@ -281,14 +284,27 @@ export function ConfigGeneral() {
       </section>
 
       {/* Execution Engines Tuning */}
-      <section style={{ backgroundColor: 'var(--surface-1)', padding: '20px', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
-        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: 'var(--t-lg)', fontWeight: '600', marginBottom: '16px', color: 'var(--accent)' }}>⚙️ Execution Engines (Coding Agents)</h3>
+      <section style={{ backgroundColor: 'var(--surface-1)', padding: '18px 20px', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
+        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: '15px', fontWeight: '600', marginBottom: '16px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Cpu size={16} style={{ color: 'var(--accent)' }} />
+          <span>Execution Engines (Coding Agents)</span>
+        </h3>
         
         <Field label="Default Engine" helpText="Agent pengodean utama">
           <select
             className="field-select"
             value={formState.default_engine}
             onChange={(e) => handleChange('default_engine', e.target.value)}
+            style={{
+              width: '100%',
+              padding: '9px 12px',
+              borderRadius: 'var(--r-md)',
+              backgroundColor: 'var(--surface-2)',
+              color: 'var(--text)',
+              border: '1px solid var(--border)',
+              outline: 'none',
+              cursor: 'pointer'
+            }}
           >
             <option value="auto">Auto (Berdasarkan analisis planner)</option>
             <option value="claude">Claude CLI (claude -p)</option>
@@ -296,11 +312,12 @@ export function ConfigGeneral() {
           </select>
         </Field>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px', marginTop: '16px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', marginTop: '16px' }}>
           {/* Claude CLI tuning */}
           <div style={{ padding: '16px', backgroundColor: 'var(--surface-2)', borderRadius: 'var(--r-md)', border: '1px solid var(--border)' }}>
-            <h4 style={{ fontSize: 'var(--t-base)', fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              🤖 Claude CLI Settings
+            <h4 style={{ fontSize: '13px', fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text)' }}>
+              <Terminal size={14} style={{ opacity: 0.8 }} />
+              <span>Claude CLI Settings</span>
             </h4>
             
             <Field label="Claude Model Alias/ID" error={formErrors.claude_model}>
@@ -316,6 +333,16 @@ export function ConfigGeneral() {
                       setClaudeModelMode('select');
                       handleChange('claude_model', val);
                     }
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: 'var(--r-md)',
+                    backgroundColor: 'var(--surface-1)',
+                    color: 'var(--text)',
+                    border: '1px solid var(--border)',
+                    outline: 'none',
+                    cursor: 'pointer'
                   }}
                 >
                   <option value="">Default CLI Model</option>
@@ -337,28 +364,43 @@ export function ConfigGeneral() {
               </div>
             </Field>
 
-            <Field label="Claude Effort Level" helpText="Beban berpikir model (Hanya didukung di Claude 3.7+)">
-              <select
-                className="field-select"
-                value={formState.claude_effort}
-                onChange={(e) => handleChange('claude_effort', e.target.value)}
-              >
-                <option value="">Default CLI (Off)</option>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-                <option value="xhigh">Extra High</option>
-                <option value="max">Max</option>
-              </select>
-            </Field>
+            <div style={{ marginTop: '12px' }}>
+              <Field label="Claude Effort Level" helpText="Beban berpikir model (Hanya di Claude 3.7+)">
+                <select
+                  className="field-select"
+                  value={formState.claude_effort}
+                  onChange={(e) => handleChange('claude_effort', e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: 'var(--r-md)',
+                    backgroundColor: 'var(--surface-1)',
+                    color: 'var(--text)',
+                    border: '1px solid var(--border)',
+                    outline: 'none',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <option value="">Default CLI (Off)</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High</option>
+                  <option value="max">Max</option>
+                </select>
+              </Field>
+            </div>
           </div>
 
           {/* Antigravity CLI tuning */}
           <div style={{ padding: '16px', backgroundColor: 'var(--surface-2)', borderRadius: 'var(--r-md)', border: '1px solid var(--border)' }}>
-            <h4 style={{ fontSize: 'var(--t-base)', fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span>🛸 Antigravity CLI Settings</span>
+            <h4 style={{ fontSize: '13px', fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--text)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Sparkles size={14} style={{ color: 'var(--accent)' }} />
+                <span>Antigravity CLI Settings</span>
+              </div>
               {engineModels && !engineModels.agy_live && (
-                <span style={{ fontSize: 'var(--t-xs)', padding: '2px 6px', backgroundColor: 'var(--warn)', color: 'var(--surface-0)', borderRadius: 'var(--r-sm)', fontWeight: 'bold' }}>
+                <span style={{ fontSize: '10px', padding: '2px 6px', backgroundColor: 'var(--warn)', color: 'var(--surface-0)', borderRadius: 'var(--r-sm)', fontWeight: 'bold' }}>
                   Offline Fallback
                 </span>
               )}
@@ -377,6 +419,16 @@ export function ConfigGeneral() {
                       setAgyModelMode('select');
                       handleChange('agy_model', val);
                     }
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: 'var(--r-md)',
+                    backgroundColor: 'var(--surface-1)',
+                    color: 'var(--text)',
+                    border: '1px solid var(--border)',
+                    outline: 'none',
+                    cursor: 'pointer'
                   }}
                 >
                   <option value="">Default CLI Model</option>
@@ -397,18 +449,21 @@ export function ConfigGeneral() {
                 )}
               </div>
             </Field>
-            <p style={{ fontSize: 'var(--t-xs)', color: 'var(--text-faint)' }}>
-              Model agy dimuat secara lokal. Jika CLI tidak dapat dihubungi, Hermes akan jatuh ke model default {engineModels && engineModels.agy[0]}.
+            <p style={{ fontSize: '11px', color: 'var(--text-faint)', marginTop: '8px' }}>
+              Model agy dimuat secara lokal. Default: {engineModels && engineModels.agy[0]}.
             </p>
           </div>
         </div>
       </section>
 
       {/* Timeout settings */}
-      <section style={{ backgroundColor: 'var(--surface-1)', padding: '20px', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
-        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: 'var(--t-lg)', fontWeight: '600', marginBottom: '16px', color: 'var(--accent)' }}>⏱️ Executions Timeouts</h3>
+      <section style={{ backgroundColor: 'var(--surface-1)', padding: '18px 20px', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
+        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: '15px', fontWeight: '600', marginBottom: '16px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Clock size={16} style={{ color: 'var(--accent)' }} />
+          <span>Execution Timeouts & Budget</span>
+        </h3>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px' }}>
-          <Field label="Coding Timeout (detik)" helpText="Batas waktu untuk penulisan kode">
+          <Field label="Coding Timeout (detik)" helpText="Batas waktu penulisan kode">
             <input
               type="number"
               className="field-input"
@@ -418,7 +473,7 @@ export function ConfigGeneral() {
             />
           </Field>
 
-          <Field label="Build Timeout (detik)" helpText="Batas waktu pembuatan package/APK">
+          <Field label="Build Timeout (detik)" helpText="Batas waktu build package">
             <input
               type="number"
               className="field-input"
@@ -430,7 +485,7 @@ export function ConfigGeneral() {
 
           <Field
             label="Batas Biaya per Task (USD)"
-            helpText="Hermes berhenti bila satu task sudah menghabiskan segini untuk sesi engine. 0 = tanpa batas."
+            helpText="0 = tanpa batas biaya."
           >
             <input
               type="number"
@@ -443,7 +498,7 @@ export function ConfigGeneral() {
             />
           </Field>
 
-          <Field label="Testing Timeout (detik)" helpText="Batas waktu eksekusi test runner">
+          <Field label="Testing Timeout (detik)" helpText="Batas waktu test runner">
             <input
               type="number"
               className="field-input"
@@ -456,8 +511,11 @@ export function ConfigGeneral() {
       </section>
 
       {/* Android SDK & Testing */}
-      <section style={{ backgroundColor: 'var(--surface-1)', padding: '20px', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
-        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: 'var(--t-lg)', fontWeight: '600', marginBottom: '16px', color: 'var(--accent)' }}>🤖 Android SDK & Emulator Settings</h3>
+      <section style={{ backgroundColor: 'var(--surface-1)', padding: '18px 20px', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
+        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: '15px', fontWeight: '600', marginBottom: '16px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Smartphone size={16} style={{ color: 'var(--accent)' }} />
+          <span>Android SDK & Emulator Settings</span>
+        </h3>
         
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
           <Field label="Android SDK Path" helpText="Lokasi absolut Android SDK di komputer">
@@ -480,11 +538,21 @@ export function ConfigGeneral() {
             />
           </Field>
 
-          <Field label="Default Test Mode" helpText="Media target default untuk runner pengujian">
+          <Field label="Default Test Mode" helpText="Target default runner pengujian">
             <select
               className="field-select"
               value={formState.default_test_mode}
               onChange={(e) => handleChange('default_test_mode', e.target.value)}
+              style={{
+                width: '100%',
+                padding: '9px 12px',
+                borderRadius: 'var(--r-md)',
+                backgroundColor: 'var(--surface-2)',
+                color: 'var(--text)',
+                border: '1px solid var(--border)',
+                outline: 'none',
+                cursor: 'pointer'
+              }}
             >
               <option value="none">None (Tidak ada pengujian)</option>
               <option value="browser">Headless Browser (Playwright)</option>
@@ -495,10 +563,13 @@ export function ConfigGeneral() {
       </section>
 
       {/* Security & Access Whitelist */}
-      <section style={{ backgroundColor: 'var(--surface-1)', padding: '20px', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
-        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: 'var(--t-lg)', fontWeight: '600', marginBottom: '16px', color: 'var(--accent)' }}>🔒 Security & Whitelisting</h3>
+      <section style={{ backgroundColor: 'var(--surface-1)', padding: '18px 20px', borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
+        <h3 style={{ fontFamily: 'var(--font-title)', fontSize: '15px', fontWeight: '600', marginBottom: '16px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <ShieldCheck size={16} style={{ color: 'var(--accent)' }} />
+          <span>Security & Whitelisting</span>
+        </h3>
         
-        <Field label="Telegram User Whitelist" helpText="Daftar ID user numeric Telegram yang diizinkan mengontrol Hermes. Pisahkan dengan koma.">
+        <Field label="Telegram User Whitelist" helpText="Daftar ID user numeric Telegram. Pisahkan dengan koma.">
           <input
             type="text"
             className="field-input"
@@ -513,14 +584,15 @@ export function ConfigGeneral() {
             checked={formState.confirm_risky}
             onChange={(e) => handleChange('confirm_risky', e)}
             label="Confirm Risky Actions"
-            helpText="Tanyakan konfirmasi Telegram sebelum melakukan aksi sensitif seperti git push, menghapus file, atau menyentuh path luar proyek."
+            helpText="Tanyakan konfirmasi sebelum aksi sensitif seperti git push, menghapus berkas, atau akses direktori luar."
           />
         </div>
       </section>
 
-      <div>
-        <Button variant="primary" type="submit" loading={saving} style={{ width: '150px' }}>
-          Simpan Setting
+      <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+        <Button variant="primary" type="submit" loading={saving} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '10px 20px' }}>
+          <Save size={14} />
+          <span>Simpan Setting</span>
         </Button>
       </div>
     </form>
