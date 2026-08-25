@@ -16,6 +16,7 @@ import { Modal } from './components/Modal';
 import { ConfirmModal } from './components/ConfirmModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ArtifactsModal } from './components/ArtifactsModal';
+import { ScheduledJobsModal } from './components/ScheduledJobsModal';
 import {
   PlusCircle,
   Plus,
@@ -620,21 +621,11 @@ function AppContent() {
         onClose={() => setActiveModal(null)}
       />
 
-      {/* Scheduled Jobs Modal */}
-      <Modal
+      {/* Real Interactive Scheduled Jobs Modal */}
+      <ScheduledJobsModal
         isOpen={activeModal === 'jobs'}
         onClose={() => setActiveModal(null)}
-        title="⏱ Scheduled Jobs & Cron"
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
-          <p style={{ color: 'var(--text-dim)' }}>
-            Hermes mendukung eksekusi terjadwal dan pemantau latar belakang (QA Watcher, Periodic health checks).
-          </p>
-          <div style={{ padding: '16px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', textAlign: 'center', color: 'var(--text-faint)', fontStyle: 'italic' }}>
-            Tidak ada tugas terjadwal aktif saat ini.
-          </div>
-        </div>
-      </Modal>
+      />
 
       {/* Full-Featured Multi-Category Settings Modal (Matching Reference UI) */}
       <ConfirmModal
