@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import {
   Box,
+  Cpu,
+  Clock,
+  Smartphone,
   MessageSquare,
   FolderGit2,
   Mic,
@@ -19,7 +22,10 @@ import {
   Plus,
   Save,
 } from 'lucide-react';
-import { ConfigGeneral } from '../views/ConfigGeneral';
+import { ConfigChat } from '../views/ConfigChat';
+import { ConfigEngines } from '../views/ConfigEngines';
+import { ConfigTimeouts } from '../views/ConfigTimeouts';
+import { ConfigAndroid } from '../views/ConfigAndroid';
 import { ConfigSecrets } from '../views/ConfigSecrets';
 import { ConfigMcp } from '../views/ConfigMcp';
 import { ConfigProjects } from '../views/ConfigProjects';
@@ -32,6 +38,9 @@ import { Field } from './Field';
 export type SettingsTab =
   | 'model'
   | 'chat'
+  | 'engine'
+  | 'timeouts'
+  | 'android'
   | 'workspace'
   | 'voice'
   | 'providers-keys'
@@ -227,6 +236,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
         <div className="settings-body-grid">
           {/* Left Navigation Sidebar (Filtered to 100% Functional Tabs) */}
           <aside className="settings-nav-sidebar">
+            {/* Core AI & Persona */}
             <div className="settings-nav-group">
               <button
                 type="button"
@@ -234,7 +244,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
                 onClick={() => setActiveTab('model')}
               >
                 <Box size={14} className="nav-icon" />
-                <span>Model</span>
+                <span>Model & Planner</span>
               </button>
 
               <button
@@ -243,9 +253,41 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
                 onClick={() => setActiveTab('chat')}
               >
                 <MessageSquare size={14} className="nav-icon" />
-                <span>Chat & Engine</span>
+                <span>Chat & Persona</span>
               </button>
 
+              <button
+                type="button"
+                className={`settings-nav-btn ${activeTab === 'engine' ? 'active' : ''}`}
+                onClick={() => setActiveTab('engine')}
+              >
+                <Cpu size={14} className="nav-icon" />
+                <span>Execution Engines</span>
+              </button>
+
+              <button
+                type="button"
+                className={`settings-nav-btn ${activeTab === 'timeouts' ? 'active' : ''}`}
+                onClick={() => setActiveTab('timeouts')}
+              >
+                <Clock size={14} className="nav-icon" />
+                <span>Timeouts & Budget</span>
+              </button>
+
+              <button
+                type="button"
+                className={`settings-nav-btn ${activeTab === 'android' ? 'active' : ''}`}
+                onClick={() => setActiveTab('android')}
+              >
+                <Smartphone size={14} className="nav-icon" />
+                <span>Android & Testing</span>
+              </button>
+            </div>
+
+            <div className="settings-sidebar-divider" />
+
+            {/* Workspace & Audio */}
+            <div className="settings-nav-group">
               <button
                 type="button"
                 className={`settings-nav-btn ${activeTab === 'workspace' ? 'active' : ''}`}
@@ -440,10 +482,31 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
               </div>
             )}
 
-            {/* 2. CHAT & ENGINE TAB */}
+            {/* 2. CHAT & PERSONA TAB */}
             {activeTab === 'chat' && (
               <div className="settings-tab-panel">
-                <ConfigGeneral />
+                <ConfigChat />
+              </div>
+            )}
+
+            {/* 3. EXECUTION ENGINES TAB */}
+            {activeTab === 'engine' && (
+              <div className="settings-tab-panel">
+                <ConfigEngines />
+              </div>
+            )}
+
+            {/* 4. TIMEOUTS & BUDGET TAB */}
+            {activeTab === 'timeouts' && (
+              <div className="settings-tab-panel">
+                <ConfigTimeouts />
+              </div>
+            )}
+
+            {/* 5. ANDROID & EMULATORS TAB */}
+            {activeTab === 'android' && (
+              <div className="settings-tab-panel">
+                <ConfigAndroid />
               </div>
             )}
 
