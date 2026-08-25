@@ -135,20 +135,70 @@ function AppContent() {
     }
   }, [fetchSessions, sessionId, navigate, sessionToDelete]);
 
-  // Global shortcuts
+  // Comprehensive Global Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
+      // 1. New session: Ctrl+N or Cmd+N
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         createNewSession();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+      }
+      // 2. Settings toggle: Ctrl+, or Cmd+,
+      else if ((e.ctrlKey || e.metaKey) && e.key === ',') {
         e.preventDefault();
         setIsSettingsOpen((prev) => !prev);
+      }
+      // 3. Search Settings / Command: Ctrl+K or Cmd+K
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsSettingsOpen(true);
+        setTimeout(() => {
+          const searchInput = document.getElementById('settings-search-input') as HTMLInputElement | null;
+          if (searchInput) {
+            searchInput.focus();
+            searchInput.select();
+          }
+        }, 60);
+      }
+      // 4. Toggle sidebar: Ctrl+B or Cmd+B
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        setSidebarCollapsed((prev) => !prev);
+      }
+      // 5. Open Artifacts: Ctrl+Shift+A or Cmd+Shift+A
+      else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        setActiveModal((prev) => (prev === 'artifacts' ? null : 'artifacts'));
+      }
+      // 6. Open Scheduled Jobs: Ctrl+Shift+J or Cmd+Shift+J
+      else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        setActiveModal((prev) => (prev === 'jobs' ? null : 'jobs'));
+      }
+      // 7. Focus Chat Prompt: Alt+Space
+      else if (e.altKey && (e.code === 'Space' || e.key === ' ')) {
+        e.preventDefault();
+        const inputEl = (document.getElementById('chat-input') ||
+          document.querySelector('.ask-main-input-field')) as HTMLInputElement | null;
+        if (inputEl) {
+          inputEl.focus();
+          inputEl.select();
+        }
+      }
+      // 8. Escape: Close modals
+      else if (e.key === 'Escape') {
+        if (activeModal) {
+          e.preventDefault();
+          setActiveModal(null);
+        } else if (isSettingsOpen) {
+          e.preventDefault();
+          setIsSettingsOpen(false);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [createNewSession]);
+  }, [createNewSession, activeModal, isSettingsOpen]);
 
   const handleNavClick = (e: React.MouseEvent<HTMLAnchorElement>, hash: string) => {
     e.preventDefault();

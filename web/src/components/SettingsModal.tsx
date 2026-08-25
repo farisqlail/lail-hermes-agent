@@ -184,6 +184,11 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
     toast(`Endpoint ${endpointForm.name} berhasil disimpan!`, 'ok');
   };
 
+  const matchesQuery = (text: string) => {
+    if (!searchQuery.trim()) return true;
+    return text.toLowerCase().includes(searchQuery.toLowerCase());
+  };
+
   const isProvidersGroup =
     activeTab === 'providers-keys' || activeTab === 'providers-endpoints';
 
@@ -663,11 +668,23 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
                     <div className="kbd-shortcut-badge"><span className="kbd-key">Ctrl</span><span className="kbd-key">K</span></div>
                   </div>
                   <div className="aux-model-row">
-                    <span className="aux-name">Open Settings</span>
+                    <span className="aux-name">Open / Close Settings</span>
                     <div className="kbd-shortcut-badge"><span className="kbd-key">Ctrl</span><span className="kbd-key">,</span></div>
                   </div>
                   <div className="aux-model-row">
-                    <span className="aux-name">Open / Focus Desktop Window</span>
+                    <span className="aux-name">Toggle Sidebar (Mini Rail)</span>
+                    <div className="kbd-shortcut-badge"><span className="kbd-key">Ctrl</span><span className="kbd-key">B</span></div>
+                  </div>
+                  <div className="aux-model-row">
+                    <span className="aux-name">Open Workspace Artifacts Hub</span>
+                    <div className="kbd-shortcut-badge"><span className="kbd-key">Ctrl</span><span className="kbd-key">Shift</span><span className="kbd-key">A</span></div>
+                  </div>
+                  <div className="aux-model-row">
+                    <span className="aux-name">Open Scheduled Tasks & Cron</span>
+                    <div className="kbd-shortcut-badge"><span className="kbd-key">Ctrl</span><span className="kbd-key">Shift</span><span className="kbd-key">J</span></div>
+                  </div>
+                  <div className="aux-model-row">
+                    <span className="aux-name">Focus Chat Prompt Input</span>
                     <div className="kbd-shortcut-badge"><span className="kbd-key">Alt</span><span className="kbd-key">Space</span></div>
                   </div>
                   <div className="aux-model-row">
@@ -675,8 +692,12 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
                     <div className="kbd-shortcut-badge"><span className="kbd-key">Enter</span></div>
                   </div>
                   <div className="aux-model-row">
-                    <span className="aux-name">Pin / Unpin Chat</span>
+                    <span className="aux-name">Pin / Unpin Chat Session</span>
                     <div className="kbd-shortcut-badge"><span className="kbd-key">Shift</span><span>+ Click</span></div>
+                  </div>
+                  <div className="aux-model-row">
+                    <span className="aux-name">Close Active Modal / Dialog</span>
+                    <div className="kbd-shortcut-badge"><span className="kbd-key">Esc</span></div>
                   </div>
                 </div>
               </div>
