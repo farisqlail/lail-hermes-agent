@@ -15,6 +15,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import { Modal } from '../components/Modal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { SettingsModal } from '../components/SettingsModal';
+import { ArtifactsModal } from '../components/ArtifactsModal';
 import {
   PlusCircle,
   Plus,
@@ -612,21 +613,11 @@ function AppContent() {
         </div>
       </Modal>
 
-      {/* Artifacts Modal */}
-      <Modal
+      {/* Real Interactive Artifacts Hub Modal */}
+      <ArtifactsModal
         isOpen={activeModal === 'artifacts'}
         onClose={() => setActiveModal(null)}
-        title="📄 Generated Artifacts"
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
-          <p style={{ color: 'var(--text-dim)' }}>
-            Seluruh berkas, dokumen, dan media yang dihasilkan oleh agen tersimpan di direktori artefak sesi Anda.
-          </p>
-          <div style={{ padding: '16px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', textAlign: 'center', color: 'var(--text-faint)', fontStyle: 'italic' }}>
-            Lihat artefak pada tugas di riwayat percakapan atau periksa folder output proyek.
-          </div>
-        </div>
-      </Modal>
+      />
 
       {/* Scheduled Jobs Modal */}
       <Modal

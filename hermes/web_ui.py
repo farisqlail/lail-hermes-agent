@@ -1,5 +1,7 @@
 from __future__ import annotations
 import asyncio, json, re, subprocess, sys, time
+from datetime import datetime
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
@@ -364,6 +366,95 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             ".mp4": "video/mp4", ".webm": "video/webm",
         }.get(resolved.suffix.lower(), "application/octet-stream")
         return FileResponse(str(resolved), media_type=media_type)
+
+    @app.get("/api/artifacts")
+    def list_artifacts(limit: int = 200):
+        art_dir = paths.artifacts_dir()
+        paths.ensure_dirs()
+        items = []
+
+        def format_size(size_bytes: int) -> str:
+            if size_bytes < 1024:
+                return f"{size_bytes} B"
+            elif size_bytes < 1024 * 1024:
+                return f"{size_bytes / 1024:.1f} KB"
+            elif size_bytes < 1024 * 1024 * 1024:
+                return f"{size_bytes / (1024 * 1024):.1f} MB"
+            return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+
+        def classify_type(ext: str) -> str:
+            ext = ext.lower()
+            if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"}:
+                return "image"
+            if ext in {".mp4", ".webm", ".mov", ".mkv", ".avi"}:
+                return "video"
+            if ext in {".mp3", ".wav", ".ogg", ".flac", ".m4a"}:
+                return "audio"
+            if ext in {".md", ".txt", ".rtf", ".pdf", ".docx", ".doc"}:
+                return "document"
+            if ext in {".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".json", ".yaml", ".yml", ".sql", ".sh", ".rs", ".go", ".c", ".cpp"}:
+                return "code"
+            if ext in {".zip", ".tar", ".gz", ".7z", ".rar"}:
+                return "archive"
+            return "other"
+
+        if art_dir.exists():
+            for p in art_dir.rglob("*"):
+                if p.is_file():
+                    try:
+                        stat = p.stat()
+                        ext = p.suffix.lower()
+                        rel = str(p.relative_to(art_dir)).replace("\\", "/")
+                        items.append({
+                            "name": p.name,
+                            "path": str(p),
+                            "rel_path": rel,
+                            "size": stat.st_size,
+                            "size_fmt": format_size(stat.st_size),
+                            "type": classify_type(ext),
+                            "extension": ext,
+                            "mtime": stat.st_mtime,
+                            "mtime_fmt": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                            "view_url": f"/api/artifacts/view?path={quote(str(p))}",
+                            "download_url": f"/api/artifacts/download?path={quote(str(p))}",
+                        })
+                    except (OSError, ValueError):
+                        continue
+
+        items.sort(key=lambda x: x["mtime"], reverse=True)
+        return {"artifacts": items[:limit], "total": len(items)}
+
+    @app.get("/api/artifacts/content")
+    def get_artifact_content(path: str):
+        resolved = Path(path).resolve()
+        if not resolved.exists() or not resolved.is_file():
+            raise HTTPException(status_code=404, detail="Artifact file not found")
+        try:
+            resolved.relative_to(paths.home().resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied")
+        if resolved.stat().st_size > 2 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="File too large for live preview (max 2MB)")
+        try:
+            text = resolved.read_text(encoding="utf-8", errors="replace")
+            return {"name": resolved.name, "content": text, "size": resolved.stat().st_size}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.delete("/api/artifacts")
+    def delete_artifact(path: str):
+        resolved = Path(path).resolve()
+        if not resolved.exists() or not resolved.is_file():
+            raise HTTPException(status_code=404, detail="Artifact file not found")
+        try:
+            resolved.relative_to(paths.home().resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied")
+        try:
+            resolved.unlink()
+            return {"ok": True, "deleted": resolved.name}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete artifact: {e}")
 
     @app.get("/api/tasks")
     def tasks():
