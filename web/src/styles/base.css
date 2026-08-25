@@ -57,13 +57,19 @@ button, input, select, textarea {
   border: none;
 }
 
-/* The dropdown list is painted by the browser on its own surface — white on
-   Windows — not on the dark control. Options inherited the near-white --text
-   from the select and came out white-on-white, i.e. invisible. Both colours
-   are stated so the list does not depend on the platform's default surface. */
-select option {
-  background-color: #fff;
-  color: #000;
+/* Global Dark Color Scheme for native browser popups & dropdowns */
+:root, html, body {
+  color-scheme: dark;
+}
+
+select, input, textarea {
+  color-scheme: dark;
+}
+
+select option, select optgroup {
+  background-color: #0c1017 !important;
+  color: #f1f5f9 !important;
+  padding: 6px 10px;
 }
 
 button {
