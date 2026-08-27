@@ -72,6 +72,45 @@ function findTaskIds(text: string): string[] {
   return matches;
 }
 
+const THINKING_PHRASES = [
+  'Thinking',
+  'Analyzing request',
+  'Formulating response',
+  'Processing context',
+  'Synthesizing thoughts',
+  'Crafting answer',
+  'Reflecting on steps',
+  'Connecting ideas',
+  'Evaluating context',
+  'Organizing response',
+];
+
+function ClaudeThinkingIndicator() {
+  const [phraseIndex, setPhraseIndex] = useState(() => Math.floor(Math.random() * THINKING_PHRASES.length));
+  const [fade, setFade] = useState(true);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setFade(false);
+      setTimeout(() => {
+        setPhraseIndex((prev) => (prev + 1 + Math.floor(Math.random() * (THINKING_PHRASES.length - 1))) % THINKING_PHRASES.length);
+        setFade(true);
+      }, 200);
+    }, 2200);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="claude-plain-thinking">
+      <span className="claude-thinking-sparkle">✦</span>
+      <span className={`claude-thinking-text ${fade ? 'fade-in' : 'fade-out'}`}>
+        {THINKING_PHRASES[phraseIndex]}…
+      </span>
+    </div>
+  );
+}
+
 interface InlineTaskCardProps {
   taskId: string;
   tasks: any[];
@@ -1369,15 +1408,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
                       ))}
                     </div>
                   ) : (
-                    <div className="claude-thinking-block">
-                      <div className="claude-thinking-badge">
-                        <span className="claude-thinking-sparkle">✦</span>
-                        <span className="claude-thinking-text">Thinking…</span>
-                        <span className="claude-thinking-dots">
-                          <span>.</span><span>.</span><span>.</span>
-                        </span>
-                      </div>
-                    </div>
+                    <ClaudeThinkingIndicator />
                   )}
                 </div>
               </div>

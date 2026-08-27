@@ -1100,37 +1100,29 @@
   border-color: var(--accent);
 }
 
-/* Claude-Style Thinking Indicator */
-.claude-thinking-block {
-  display: flex;
-  align-items: center;
-  padding: 4px 0;
-  width: 100%;
-}
-
-.claude-thinking-badge {
+/* Claude-Style Plain Text Thinking Indicator (No Card/Box, Pure Inline Text) */
+.claude-plain-thinking {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 14px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(8px);
+  padding: 4px 0;
+  font-size: 13.5px;
+  line-height: 1.5;
   user-select: none;
 }
 
-.claude-thinking-sparkle {
+.claude-plain-thinking .claude-thinking-sparkle {
   font-size: 13px;
   color: #3b82f6;
   animation: sparkle-pulse 2s ease-in-out infinite;
   display: inline-block;
 }
 
-.claude-thinking-text {
+.claude-plain-thinking .claude-thinking-text {
   font-family: var(--font-main, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 13.5px;
+  font-weight: 400;
+  font-style: italic;
   letter-spacing: 0.01em;
   background: linear-gradient(90deg, #9ca3af 0%, #ffffff 40%, #9ca3af 80%);
   background-size: 200% 100%;
@@ -1138,26 +1130,17 @@
   -webkit-text-fill-color: transparent;
   background-clip: text;
   animation: claude-shimmer 2.2s linear infinite;
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
-.claude-thinking-dots {
-  display: inline-flex;
-  gap: 1px;
+.claude-plain-thinking .claude-thinking-text.fade-in {
+  opacity: 1;
+  transform: translateY(0);
 }
 
-.claude-thinking-dots span {
-  font-size: 14px;
-  color: #9ca3af;
-  animation: dot-pulse 1.4s infinite;
-  opacity: 0.3;
-}
-
-.claude-thinking-dots span:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.claude-thinking-dots span:nth-child(3) {
-  animation-delay: 0.4s;
+.claude-plain-thinking .claude-thinking-text.fade-out {
+  opacity: 0;
+  transform: translateY(-2px);
 }
 
 @keyframes claude-shimmer {
