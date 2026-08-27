@@ -12,10 +12,10 @@ import {
   Monitor,
   Users,
   Coffee,
-  Sparkles,
-  Search,
-  CheckCircle2,
-  Zap,
+  ZoomIn,
+  ZoomOut,
+  Hand,
+  Compass,
 } from 'lucide-react';
 
 interface OfficeCanvasProps {
@@ -135,9 +135,10 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
   const mouseRef = useRef<THREE.Vector2>(new THREE.Vector2());
   const reqAnimRef = useRef<number>(0);
 
-  // Target camera state for smooth transitions
+  // Target camera state for smooth animation transitions
   const camTargetPos = useRef<THREE.Vector3>(new THREE.Vector3(26, 22, 26));
   const camTargetLookAt = useRef<THREE.Vector3>(new THREE.Vector3(0, 1, 0));
+  const isTransitioningRef = useRef<boolean>(false);
 
   // Compute stats
   useEffect(() => {
@@ -154,6 +155,7 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
   // Set camera view preset
   const setCameraPreset = useCallback((preset: CameraViewPreset) => {
     setActiveView(preset);
+    isTransitioningRef.current = true;
     switch (preset) {
       case 'desks':
         camTargetPos.current.set(-1, 14, 18);
@@ -178,6 +180,25 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
         break;
     }
   }, []);
+
+  // Zoom In / Out Handlers
+  const handleZoomIn = () => {
+    if (!cameraRef.current || !controlsRef.current) return;
+    isTransitioningRef.current = false;
+    const forward = new THREE.Vector3();
+    cameraRef.current.getWorldDirection(forward);
+    cameraRef.current.position.addScaledVector(forward, 4);
+    controlsRef.current.update();
+  };
+
+  const handleZoomOut = () => {
+    if (!cameraRef.current || !controlsRef.current) return;
+    isTransitioningRef.current = false;
+    const forward = new THREE.Vector3();
+    cameraRef.current.getWorldDirection(forward);
+    cameraRef.current.position.addScaledVector(forward, -4);
+    controlsRef.current.update();
+  };
 
   // Update lighting preset
   useEffect(() => {
@@ -241,14 +262,28 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
     renderer.toneMappingExposure = 1.05;
     rendererRef.current = renderer;
 
-    // 3. OrbitControls
+    // 3. Dynamic OrbitControls: Orbit, Pan, Zoom with smooth inertia
     const controls = new OrbitControls(camera, canvas);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.06;
-    controls.maxPolarAngle = Math.PI / 2.15; // Don't allow camera under floor
-    controls.minDistance = 8;
-    controls.maxDistance = 55;
+    controls.dampingFactor = 0.08;
+    controls.enableRotate = true;
+    controls.rotateSpeed = 0.9;
+    controls.enableZoom = true;
+    controls.zoomSpeed = 1.2;
+    controls.minDistance = 3;
+    controls.maxDistance = 80;
+    controls.enablePan = true;
+    controls.panSpeed = 1.0;
+    controls.screenSpacePanning = true;
+    controls.maxPolarAngle = Math.PI / 2.05; // Ground limit
+    controls.minPolarAngle = 0.05;          // Top ceiling limit
     controls.target.set(0, 1, 0);
+
+    // Cancel programmatic camera transition when user begins manual dragging or zooming
+    controls.addEventListener('start', () => {
+      isTransitioningRef.current = false;
+    });
+
     controlsRef.current = controls;
 
     // 4. Lights
@@ -562,15 +597,24 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
     createPlant(-14.5, -11, 0.9);
 
     // ==========================================
-    // 7. ANIMATION LOOP & RESIZE
+    // 7. ANIMATION LOOP & DYNAMIC ORBIT
     // ==========================================
     let time = 0;
     const animate = () => {
       time += 0.02;
 
+      // Handle programmatic camera interpolation when preset or employee is clicked
       if (cameraRef.current && controlsRef.current) {
-        cameraRef.current.position.lerp(camTargetPos.current, 0.05);
-        controlsRef.current.target.lerp(camTargetLookAt.current, 0.05);
+        if (isTransitioningRef.current) {
+          cameraRef.current.position.lerp(camTargetPos.current, 0.06);
+          controlsRef.current.target.lerp(camTargetLookAt.current, 0.06);
+          if (
+            cameraRef.current.position.distanceTo(camTargetPos.current) < 0.1 &&
+            controlsRef.current.target.distanceTo(camTargetLookAt.current) < 0.1
+          ) {
+            isTransitioningRef.current = false;
+          }
+        }
         controlsRef.current.update();
       }
 
@@ -777,6 +821,7 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
       onSelectEmployee(hoveredEmp);
       const av = avatarsRef.current.get(hoveredEmp.employee_id);
       if (av) {
+        isTransitioningRef.current = true;
         camTargetPos.current.set(av.targetX + 8, 8, av.targetZ + 8);
         camTargetLookAt.current.set(av.targetX, 1.2, av.targetZ);
       }
@@ -789,7 +834,7 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
       style={{
         position: 'relative',
         width: '100%',
-        height: isFullscreen ? '100vh' : '580px',
+        height: isFullscreen ? '100vh' : '620px',
         backgroundColor: '#0c0f14',
         borderRadius: isFullscreen ? '0' : '12px',
         border: isFullscreen ? 'none' : '1px solid rgba(255, 255, 255, 0.08)',
@@ -877,12 +922,12 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
           </button>
         </div>
 
-        {/* Right: Lighting Mode & Fullscreen */}
+        {/* Right: Zoom In/Out, Lighting Mode & Fullscreen */}
         <div
           style={{
             display: 'inline-flex',
             alignItems: 'center',
-            gap: '6px',
+            gap: '4px',
             backgroundColor: 'rgba(15, 23, 42, 0.85)',
             backdropFilter: 'blur(12px)',
             border: '1px solid rgba(255, 255, 255, 0.12)',
@@ -891,6 +936,27 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
             pointerEvents: 'auto',
           }}
         >
+          {/* Zoom Buttons */}
+          <button
+            type="button"
+            className="btn-office-icon"
+            onClick={handleZoomIn}
+            title="Zoom In (+)"
+          >
+            <ZoomIn size={13} />
+          </button>
+          <button
+            type="button"
+            className="btn-office-icon"
+            onClick={handleZoomOut}
+            title="Zoom Out (-)"
+          >
+            <ZoomOut size={13} />
+          </button>
+
+          <div style={{ width: '1px', height: '14px', background: 'rgba(255,255,255,0.15)', margin: '0 2px' }} />
+
+          {/* Lighting Modes */}
           <button
             type="button"
             className={`btn-office-icon ${lighting === 'day' ? 'active' : ''}`}
@@ -915,7 +981,10 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
           >
             <Moon size={13} />
           </button>
+
           <div style={{ width: '1px', height: '14px', background: 'rgba(255,255,255,0.15)', margin: '0 2px' }} />
+
+          {/* Fullscreen Mode */}
           <button
             type="button"
             className="btn-office-icon"
@@ -925,6 +994,32 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
             {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
           </button>
         </div>
+      </div>
+
+      {/* Dynamic Hint Pill (Orbit / Pan / Zoom helper) */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '64px',
+          right: '16px',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '8px',
+          backgroundColor: 'rgba(15, 23, 42, 0.7)',
+          backdropFilter: 'blur(8px)',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          borderRadius: '6px',
+          padding: '4px 10px',
+          pointerEvents: 'none',
+          fontSize: '10.5px',
+          color: 'var(--text-dim)',
+        }}
+      >
+        <span>🖱️ Drag to rotate</span>
+        <span>•</span>
+        <span>Right-click / Drag to pan</span>
+        <span>•</span>
+        <span>Scroll to zoom</span>
       </div>
 
       {/* Bottom Floating Stats Pill */}
