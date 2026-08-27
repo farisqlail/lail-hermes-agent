@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import brain, cleanup, config, ics, paths, postmortem, skills, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth, imagegen, ytclip
+from . import brain, cleanup, config, ics, paths, postmortem, skills, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth, imagegen, ytclip, office_routes
 from .chat_engine import ChatEngine, wants_code_task, CHAT_TOOLS, AUTO_TASK_NOTE, IMAGE_MARKER, DOCUMENT_MARKER, CHAT_HISTORY_LIMIT, RESUME_NUDGE, START_TASK_DECISION_TIMEOUT_S
 from .pending_actions import PendingStore
 
@@ -226,7 +226,7 @@ def load_index_html() -> str:
 
 def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
                lifespan=None, hub=None, facts=None, engine=None, title_gen=None,
-               compressor=None, approval_note=None, mcp_router=None) -> FastAPI:
+               compressor=None, approval_note=None, mcp_router=None, office=None) -> FastAPI:
     # lifespan carries the ask MCP server's session manager when main.py mounts
     # it here: a mounted sub-app's own lifespan is ignored by Starlette, so the
     # manager has to be started by the parent or the /ask-mcp endpoint is dead.
@@ -263,6 +263,12 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
     # DesktopState per app, kept on app.state so tests can read it back.
     app.state.desktop = desktop_api.DesktopState()
     app.include_router(desktop_api.build_router(app.state.desktop))
+
+    # Office mode: dynamically-created AI "employee" personas/teams. None
+    # disables the surface (roster routes 503 instead of crashing at import),
+    # mirroring how chat/hub/facts are nullable dependencies above.
+    app.state.office = office
+    app.include_router(office_routes.build_router(app.state.office))
 
     # async (history, tools=, dispatch=) -> str; None when no NIM chat is wired
     # (the conversational branch then falls back to a canned reply).

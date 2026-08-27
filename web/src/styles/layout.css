@@ -1738,6 +1738,46 @@
   background: #1d4ed8;
 }
 
+/* --------------------------------------------------------------------------
+   Office mode — AI-employee roster (replaces the old dead BOTS tab)
+   -------------------------------------------------------------------------- */
+
+.office-view-container {
+  padding: 24px 28px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-width: 1680px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.office-employee-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.office-employee-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: border-color 0.12s ease;
+}
+
+.office-employee-card:hover {
+  border-color: var(--border-strong);
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
 
 
 

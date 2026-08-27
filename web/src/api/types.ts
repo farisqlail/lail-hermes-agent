@@ -90,6 +90,9 @@ export interface Settings {
   wakeword_model: string;
   wakeword_threshold: number;
   wakeword_cooldown_ms: number;
+  office_meetings_enabled: boolean;
+  office_meeting_cooldown_s: number;
+  office_max_auto_meetings_per_day: number;
   mcp_servers: McpServer[];
   // Skill content lives on disk (SKILL.md), not in Settings — use
   // api.getSkills()/saveSkills() (backed by /api/skills), not this object.
@@ -136,6 +139,47 @@ export interface PendingAsk {
   question: string;
   options?: Array<string | { label?: string }>;
   multi: boolean;
+}
+
+export interface Employee {
+  employee_id: string;
+  name: string;
+  role: string;
+  avatar: string;
+  personality: string;
+  model: string;
+  engine: string;
+  skill_ids: string[];
+  team_id: string | null;
+  energy: number;
+  status: 'idle' | 'working' | 'on_break' | 'in_meeting';
+  pos_x: number;
+  pos_y: number;
+  active: boolean;
+  created: number;
+  updated: number;
+}
+
+export interface Team {
+  team_id: string;
+  name: string;
+  description: string;
+  member_count: number;
+  created: number;
+}
+
+export interface WorkItem {
+  work_id: string;
+  employee_id: string;
+  team_id: string | null;
+  kind: 'code_task' | 'chat_output' | 'meeting_transcript';
+  task_id: string | null;
+  prompt: string;
+  output_text: string;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  cost_usd: number;
+  created: number;
+  updated: number;
 }
 
 export interface TaskDetailResponse {

@@ -263,6 +263,15 @@ class Settings(BaseModel):
     # Sentinel: watch registered project repositories for code changes and run tests
     proactive_sentinel_enabled: bool = False
 
+    # Office mode's autonomous simulation loop (hermes/office.py run_office_loop):
+    # energy/burnout state transitions run unconditionally (a pure state machine,
+    # no LLM cost), but auto-triggered team meetings are real LLM calls with no
+    # operator in the loop — off by default for the same reason proactive_enabled
+    # is, plus a per-team cooldown and a daily cap so an idle install can never
+    # silently spend API budget on meetings nobody asked for.
+    office_meetings_enabled: bool = False
+    office_meeting_cooldown_s: int = 1800
+    office_max_auto_meetings_per_day: int = 5
 
     # Wake word, run by the native tray helper so the mic stays live with the
     # browser closed. Off by default: an always-listening microphone is opt-in.

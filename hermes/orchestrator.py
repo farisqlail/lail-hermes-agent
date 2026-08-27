@@ -419,7 +419,8 @@ class Orchestrator:
         return config.load_settings()
 
     async def run_task(self, task_id: str, chat_id: int, text: str, report,
-                       proj: Path | None = None, send_file=None, engine: str | None = None) -> None:
+                       proj: Path | None = None, send_file=None, engine: str | None = None,
+                       settings_override: Settings | None = None) -> None:
         from . import paths
         # Tasks run concurrently (the web UI backgrounds them with
         # asyncio.create_task), and `settings` is refreshed here and then read
@@ -431,8 +432,13 @@ class Orchestrator:
         if not self._task_local:
             mine = copy.copy(self)
             mine._task_local = True
-            return await mine.run_task(task_id, chat_id, text, report, proj, send_file, engine=engine)
-        self.settings = self.get_settings()
+            return await mine.run_task(task_id, chat_id, text, report, proj, send_file,
+                                       engine=engine, settings_override=settings_override)
+        # settings_override lets a caller (Office mode assigning a task to an
+        # employee persona) pin this task to a specific model/engine instead of
+        # whatever config.yaml currently holds — without it every task silently
+        # reloads the global settings here, clobbering any per-call choice.
+        self.settings = settings_override or self.get_settings()
         self.store.set_task_status(task_id, "running")
         # Captured before the workspace is created: afterwards the two cases are
         # indistinguishable on disk, and an empty workspace detects as `unknown`

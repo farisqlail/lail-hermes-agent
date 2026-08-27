@@ -7,6 +7,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, CommandHandler, filters
 from . import brain, cleanup, config, paths, uploads, voice
 from .session_store import Store
+from .office_store import OfficeStore
+from .office import OfficeManager
 from .mcp_hub import McpHub, RealMcpSession, to_openai_tools
 from .orchestrator import Orchestrator
 from .telegram_bridge import Bridge
@@ -1217,6 +1219,7 @@ async def run():
     # task commits sync on the next start rather than paying network per task.
     vault_git.push(paths.vault_dir())
     store = Store(paths.db_path()); store.init_schema()
+    office_store = OfficeStore(paths.db_path(), store); office_store.init_schema()
     # Unconditional, and before the bot: anything still marked live is a lie
     # left by the last exit, and the dashboard must be honest even when no
     # token is configured. Notifying is a bonus, not a precondition.
@@ -1262,6 +1265,10 @@ async def run():
     )
 
     orch = Orchestrator(settings, store, planner, deps)
+    # Office mode reuses this same shared Orchestrator for an employee's
+    # project-bound work (real steps/logs/artifacts, same as any other task) —
+    # built here rather than earlier because it needs `orch` to exist first.
+    office = OfficeManager(office_store, main_store=store, orchestrator=orch)
 
     bot_token = secrets.telegram_bot_token
     app = None
@@ -1731,10 +1738,21 @@ async def run():
             f"[proactive] loop exited: {_console_safe(t.exception())}")
         if not t.cancelled() else None)
 
+    # Office mode's simulation tick: energy/burnout state transitions run
+    # unconditionally, auto-triggered team meetings only when the operator has
+    # opted in (Settings.office_meetings_enabled). Same fire-and-forget shape
+    # as proactive_task above.
+    from . import office as office_mod
+    office_task = asyncio.create_task(office_mod.run_office_loop(office))
+    office_task.add_done_callback(
+        lambda t: t.exception() and print(
+            f"[office] loop exited: {_console_safe(t.exception())}")
+        if not t.cancelled() else None)
+
     # streamable_http_app() creates the session manager; the parent lifespan
     # runs it, because Starlette ignores a mounted sub-app's own lifespan.
     ask_asgi = ask_mcp.streamable_http_app()
-    web = create_app(store, bridge=bridge, ask_registry=ask_registry, chat=chat, hub=hub, facts=facts, title_gen=title_gen, compressor=compressor, approval_note=approval_note, mcp_router=mcp_router, engine=engine, lifespan=lambda _app: ask_mcp.session_manager.run())
+    web = create_app(store, bridge=bridge, ask_registry=ask_registry, chat=chat, hub=hub, facts=facts, title_gen=title_gen, compressor=compressor, approval_note=approval_note, mcp_router=mcp_router, engine=engine, office=office, lifespan=lambda _app: ask_mcp.session_manager.run())
 
     web.mount(ask_server.MOUNT_PREFIX, ask_asgi)
     web.state.mcp_factory = real_mcp_session_factory

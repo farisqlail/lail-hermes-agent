@@ -3,6 +3,8 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRoute } from '../router';
 import { Dashboard } from '../views/Dashboard';
 import { TaskDetail } from '../views/TaskDetail';
+import { Office } from '../views/Office';
+import { OfficeSidebarList } from '../components/OfficeSidebarList';
 import { ToastProvider, useToast } from '../components/Toast';
 import { TasksProvider, useTasksContext } from '../api/events';
 import { useSecrets } from '../hooks/useSecrets';
@@ -53,7 +55,7 @@ function AppContent() {
 
   const [sessions, setSessions] = useState<{ session_id: string; title: string; created: number }[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(true);
-  const [sidebarTab, setSidebarTab] = useState<'sessions' | 'bots'>('sessions');
+  const [sidebarTab, setSidebarTab] = useState<'sessions' | 'office'>('sessions');
   const [searchQuery, setSearchQuery] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
@@ -105,6 +107,12 @@ function AppContent() {
   useEffect(() => {
     fetchSessions();
   }, [fetchSessions]);
+
+  // Keep the sidebar tab in sync with direct navigation (a link, back/forward)
+  // to #/office, not just the tab button click.
+  useEffect(() => {
+    setSidebarTab(path === '/office' ? 'office' : 'sessions');
+  }, [path]);
 
   const createNewSession = useCallback(async () => {
     try {
@@ -225,21 +233,21 @@ function AppContent() {
       <div className="app-body">
         {/* Left Sidebar (Matching Screenshot Reference) */}
         <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
-          {/* Top Tabs: SESSIONS / BOTS */}
+          {/* Top Tabs: SESSIONS / OFFICE */}
           <div className="sidebar-tabs">
             <button
               type="button"
               className={`sidebar-tab ${sidebarTab === 'sessions' ? 'active' : ''}`}
-              onClick={() => setSidebarTab('sessions')}
+              onClick={() => { setSidebarTab('sessions'); navigate('#/'); }}
             >
               SESSIONS
             </button>
             <button
               type="button"
-              className={`sidebar-tab ${sidebarTab === 'bots' ? 'active' : ''}`}
-              onClick={() => setSidebarTab('bots')}
+              className={`sidebar-tab ${sidebarTab === 'office' ? 'active' : ''}`}
+              onClick={() => { setSidebarTab('office'); navigate('#/office'); }}
             >
-              BOTS
+              OFFICE
             </button>
           </div>
 
@@ -331,6 +339,10 @@ function AppContent() {
             )}
           </div>
 
+          {sidebarTab === 'office' ? (
+            <OfficeSidebarList navigate={navigate} />
+          ) : (
+            <>
           {/* PINNED Section */}
           <div className="pinned-section">
             <div className="sidebar-section-header">
@@ -440,6 +452,8 @@ function AppContent() {
               ))
             )}
           </div>
+            </>
+          )}
 
           {/* Sidebar Footer */}
           <div className="sidebar-footer-container">
@@ -522,6 +536,8 @@ function AppContent() {
                 <TaskDetail />
               </div>
             )}
+
+            {path === '/office' && <Office />}
 
           </div>
         </main>

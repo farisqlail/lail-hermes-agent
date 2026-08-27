@@ -1,4 +1,4 @@
-import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer, IntegrateRun, Skill } from './types';
+import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer, IntegrateRun, Skill, Employee, Team, WorkItem } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -143,5 +143,44 @@ export const api = {
     request<{ ok: boolean }>(`/api/mcp/integrate/${runId}/secret`, {
       method: 'POST',
       body: JSON.stringify({ value }),
+    }),
+
+  // --- Office mode: AI-employee roster ---
+  getEmployees: (teamId?: string) =>
+    request<Employee[]>(`/api/office/employees${teamId ? `?team_id=${encodeURIComponent(teamId)}` : ''}`),
+  createEmployee: (body: Partial<Employee>) =>
+    request<Employee>('/api/office/employees', { method: 'POST', body: JSON.stringify(body) }),
+  updateEmployee: (employeeId: string, body: Partial<Employee>) =>
+    request<Employee>(`/api/office/employees/${employeeId}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteEmployee: (employeeId: string) =>
+    request<{ ok: boolean }>(`/api/office/employees/${employeeId}`, { method: 'DELETE' }),
+
+  getTeams: () => request<Team[]>('/api/office/teams'),
+  createTeam: (body: { name: string; description?: string }) =>
+    request<Team>('/api/office/teams', { method: 'POST', body: JSON.stringify(body) }),
+  updateTeam: (teamId: string, body: { name?: string; description?: string }) =>
+    request<Team>(`/api/office/teams/${teamId}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteTeam: (teamId: string) =>
+    request<{ ok: boolean }>(`/api/office/teams/${teamId}`, { method: 'DELETE' }),
+
+  getWorkItems: (params?: { employeeId?: string; teamId?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.employeeId) q.set('employee_id', params.employeeId);
+    if (params?.teamId) q.set('team_id', params.teamId);
+    if (params?.limit) q.set('limit', String(params.limit));
+    const qs = q.toString();
+    return request<WorkItem[]>(`/api/office/work-items${qs ? `?${qs}` : ''}`);
+  },
+  getWorkItem: (workId: string) => request<WorkItem>(`/api/office/work-items/${workId}`),
+
+  assignEmployeeTask: (employeeId: string, body: { prompt: string; project?: string }) =>
+    request<WorkItem>(`/api/office/employees/${employeeId}/assign`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  assignTeamTask: (teamId: string, body: { prompt: string; project?: string }) =>
+    request<WorkItem>(`/api/office/teams/${teamId}/assign`, {
+      method: 'POST',
+      body: JSON.stringify(body),
     }),
 };
