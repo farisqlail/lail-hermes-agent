@@ -311,7 +311,8 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
       dirLight.intensity = 1.35;
       dirLight.position.set(28, 35, 24);
       deskLights?.forEach((l) => { l.intensity = 0.4; l.color.setHex(0xffedd5); });
-      scene.background = new THREE.Color(0x0c0f14);
+      scene.background = new THREE.Color(0x8fc1e3);
+      if (scene.fog instanceof THREE.Fog) scene.fog.color.setHex(0x8fc1e3);
     } else if (lighting === 'night') {
       ambLight.color.setHex(0x1e293b);
       ambLight.intensity = 0.4;
@@ -319,7 +320,8 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
       dirLight.intensity = 0.5;
       dirLight.position.set(-20, 30, 20);
       deskLights?.forEach((l) => { l.intensity = 1.2; l.color.setHex(0x38bdf8); });
-      scene.background = new THREE.Color(0x07090e);
+      scene.background = new THREE.Color(0x0a0e1a);
+      if (scene.fog instanceof THREE.Fog) scene.fog.color.setHex(0x0a0e1a);
     } else if (lighting === 'sunset') {
       ambLight.color.setHex(0xfde047);
       ambLight.intensity = 0.5;
@@ -327,7 +329,8 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
       dirLight.intensity = 1.4;
       dirLight.position.set(30, 18, 15);
       deskLights?.forEach((l) => { l.intensity = 0.8; l.color.setHex(0xfbbf24); });
-      scene.background = new THREE.Color(0x130e18);
+      scene.background = new THREE.Color(0xf4a672);
+      if (scene.fog instanceof THREE.Fog) scene.fog.color.setHex(0xf4a672);
     }
   }, [lighting]);
 
@@ -341,7 +344,12 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
     const height = container.clientHeight || 560;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0c0f14);
+    // Sky-blue day default, matching the 'day' lighting preset — the lighting
+    // effect keeps this in sync afterward. Fog fades the ground/trees into
+    // the sky at a distance instead of a hard black edge, which is what made
+    // the building look like it was floating in a void with nothing around.
+    scene.background = new THREE.Color(0x8fc1e3);
+    scene.fog = new THREE.Fog(0x8fc1e3, 45, 160);
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(38, width / height, 0.5, 200);
@@ -424,6 +432,7 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
     const WOOD_CHESTNUT = { base: '#7a5230', plankAlt: '#68451f', grain: 'rgba(35,18,6,0.6)' };
     const WOOD_PARQUET = { base: '#8a5a2e', plankAlt: '#7a4d22', grain: 'rgba(50,25,8,0.55)' };
     const WOOD_DESK = { base: '#c99a5c', plankAlt: '#b8874a', grain: 'rgba(60,35,10,0.5)' };
+    const WOOD_CREDENZA = { base: '#a97b45', plankAlt: '#96693a', grain: 'rgba(55,30,10,0.5)' };
 
     const matDarkWall = new THREE.MeshStandardMaterial({ color: 0x15181f, roughness: 0.6 });
     const matYellowAccent = new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.35, metalness: 0.15 });
@@ -451,6 +460,60 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
     plinthMesh.position.set(0, -0.4, 0);
     plinthMesh.receiveShadow = true;
     officeGroup.add(plinthMesh);
+
+    // --- Surrounding grounds: a real outdoor world instead of the building
+    // ending at a hard edge over blank black. A big grass plane under/around
+    // the plinth plus scattered trees sells "sitting on the ground outdoors"
+    // — fog (set on the scene above) fades the far edge into the sky instead
+    // of the ground just stopping. ---
+    const matGrass = new THREE.MeshStandardMaterial({ color: 0x3f6b3f, roughness: 0.95 });
+    const groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), matGrass);
+    groundMesh.rotation.x = -Math.PI / 2;
+    groundMesh.position.y = -0.82; // just below the plinth's underside, no z-fighting
+    groundMesh.receiveShadow = true;
+    scene.add(groundMesh);
+
+    const matTrunk = new THREE.MeshStandardMaterial({ color: 0x5b3a21, roughness: 0.9 });
+    const matFoliage = new THREE.MeshStandardMaterial({ color: 0x2f7a3d, roughness: 0.85 });
+    const matFoliageLight = new THREE.MeshStandardMaterial({ color: 0x3f9350, roughness: 0.85 });
+    const createExteriorTree = (x: number, z: number, scale: number) => {
+      const tree = new THREE.Group();
+      tree.position.set(x, -0.4, z);
+      tree.scale.set(scale, scale, scale);
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.32, 2.2, 8), matTrunk);
+      trunk.position.set(0, 1.1, 0);
+      trunk.castShadow = true;
+      tree.add(trunk);
+      const canopyMat = Math.random() > 0.5 ? matFoliage : matFoliageLight;
+      const canopy1 = new THREE.Mesh(new THREE.IcosahedronGeometry(1.3, 0), canopyMat);
+      canopy1.position.set(0, 2.6, 0);
+      canopy1.castShadow = true;
+      tree.add(canopy1);
+      const canopy2 = new THREE.Mesh(new THREE.IcosahedronGeometry(0.9, 0), canopyMat);
+      canopy2.position.set(0.6, 3.2, 0.3);
+      canopy2.castShadow = true;
+      tree.add(canopy2);
+      scene.add(tree);
+    };
+
+    // Scattered in a rough ring outside the building footprint (walls span
+    // roughly x:[-17,17] z:[-14,15]) so nothing pokes through a wall.
+    const buildingFootprint = { xMin: -19, xMax: 19, zMin: -16, zMax: 17 };
+    let placed = 0;
+    let attempts = 0;
+    while (placed < 26 && attempts < 200) {
+      attempts++;
+      const angle = Math.random() * Math.PI * 2;
+      const radius = 22 + Math.random() * 40;
+      const tx = Math.cos(angle) * radius;
+      const tz = Math.sin(angle) * radius;
+      if (tx > buildingFootprint.xMin && tx < buildingFootprint.xMax &&
+          tz > buildingFootprint.zMin && tz < buildingFootprint.zMax) {
+        continue; // would land inside/against the building — resample
+      }
+      createExteriorTree(tx, tz, 0.9 + Math.random() * 0.7);
+      placed++;
+    }
 
     // Floor 1: Open Desks Workspace (Left) — light oak
     const deskFloorGeo = new THREE.BoxGeometry(15, 0.1, 17);
@@ -675,23 +738,47 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
     waterCooler.add(coolerBody, waterBottle);
     officeGroup.add(waterCooler);
 
-    const credenza = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.2, 1.0), matYellowAccent);
+    const credenza = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.2, 1.0), createWoodMaterial(WOOD_CREDENZA, 2.6, 1.0, 0.5));
     credenza.position.set(-4.5, 0.6, -7);
     credenza.castShadow = true;
     officeGroup.add(credenza);
 
+    // Interior potted plants: a single low-poly dodecahedron read as a green
+    // rock, not foliage. Layered clusters (like the exterior trees) plus a
+    // two-tone pot (body + rim trim) reads as an actual plant instead.
+    const matPotBody = new THREE.MeshStandardMaterial({ color: 0x3f3a34, roughness: 0.7 });
+    const matPotRim = new THREE.MeshStandardMaterial({ color: 0x57504a, roughness: 0.55, metalness: 0.15 });
+    const matLeafDark = new THREE.MeshStandardMaterial({ color: 0x1f7a3e, roughness: 0.75 });
+    const matLeafLight = new THREE.MeshStandardMaterial({ color: 0x36a457, roughness: 0.75 });
     const createPlant = (x: number, z: number, scale = 1) => {
       const plant = new THREE.Group();
       plant.position.set(x, 0, z);
       plant.scale.set(scale, scale, scale);
-      const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.35, 0.7, 16), matBlackLegs);
+
+      const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.35, 0.7, 16), matPotBody);
       pot.position.set(0, 0.35, 0);
       pot.castShadow = true;
-      const leafMat = new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.6 });
-      const foliage = new THREE.Mesh(new THREE.DodecahedronGeometry(0.7, 1), leafMat);
-      foliage.position.set(0, 1.2, 0);
-      foliage.castShadow = true;
-      plant.add(pot, foliage);
+      const potRim = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.46, 0.1, 16), matPotRim);
+      potRim.position.set(0, 0.68, 0);
+      plant.add(pot, potRim);
+
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 0.5, 6), new THREE.MeshStandardMaterial({ color: 0x4a3320, roughness: 0.8 }));
+      stem.position.set(0, 0.95, 0);
+      plant.add(stem);
+
+      // Three overlapping foliage clumps instead of one — fuller, less
+      // like a single geometric rock sitting in a pot.
+      const clumps: [number, number, number, number][] = [
+        [0, 1.35, 0, 0.5], [0.35, 1.55, 0.15, 0.36], [-0.3, 1.5, -0.2, 0.34],
+      ];
+      clumps.forEach(([cx, cy, cz, r], i) => {
+        const foliage = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 0), i % 2 === 0 ? matLeafDark : matLeafLight);
+        foliage.position.set(cx, cy, cz);
+        foliage.rotation.y = Math.random() * Math.PI;
+        foliage.castShadow = true;
+        plant.add(foliage);
+      });
+
       officeGroup.add(plant);
     };
 
@@ -1080,7 +1167,9 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
     <div
       ref={containerRef}
       style={{
-        position: 'relative',
+        position: isFullscreen ? 'fixed' : 'relative',
+        top: isFullscreen ? 0 : undefined,
+        left: isFullscreen ? 0 : undefined,
         width: '100%',
         height: isFullscreen ? '100vh' : '620px',
         backgroundColor: '#0c0f14',

@@ -2,17 +2,22 @@ import React, { useEffect, useState } from 'react';
 import { api, errorMessage } from '../api/client';
 import { Employee, Team } from '../api/types';
 import { useOfficeEvents } from '../api/officeEvents';
+import { useRoute } from '../router';
 import { Button } from '../components/Button';
 import { EmployeeModal } from '../components/EmployeeModal';
 import { TeamModal } from '../components/TeamModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { AssignTaskModal } from '../components/AssignTaskModal';
+import { OfficeSessionChat } from '../components/OfficeSessionChat';
 import { WorkOutputFeed } from '../components/WorkOutputFeed';
 import { OfficeCanvas } from '../components/OfficeCanvas';
 import { useToast } from '../components/Toast';
-import { Plus, Users, Trash2, Pencil, Briefcase, Send, X, Wifi, WifiOff } from 'lucide-react';
+import { Plus, Users, Trash2, Pencil, Briefcase, Send, Wifi, WifiOff } from 'lucide-react';
 
-type AssignTarget = { type: 'employee' | 'team'; id: string; label: string };
+// Teams have no chat concept — "assign task to team" still goes through the
+// standalone AssignTaskModal. Individual employees get a real chat session
+// instead (OfficeSessionChat, routed via #/office/session/<id>).
+type AssignTarget = { type: 'team'; id: string; label: string };
 
 const STATUS_LABEL: Record<Employee['status'], string> = {
   idle: 'Idle',
@@ -30,6 +35,7 @@ const STATUS_COLOR: Record<Employee['status'], string> = {
 
 export function Office() {
   const { toast } = useToast();
+  const { officeSessionId, navigate } = useRoute();
   const { employees, teams, loading, isConnected, refresh, lastEvent } = useOfficeEvents();
 
   useEffect(() => {
@@ -48,7 +54,30 @@ export function Office() {
   const [deleteTeamTarget, setDeleteTeamTarget] = useState<Team | null>(null);
   const [assignTarget, setAssignTarget] = useState<AssignTarget | null>(null);
   const [feedKey, setFeedKey] = useState(0);
-  const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
+
+  // Clicking an employee (card or 3D character) resumes their most recent
+  // chat session, or creates one — then navigates into it. Sessions live in
+  // the URL/sidebar now, not a modal, so there is no "open chat" state here.
+  const openChatFor = async (emp: Employee) => {
+    try {
+      const existing = await api.getOfficeSessions(emp.employee_id);
+      const session = existing[0] || await api.createOfficeSession({ employee_id: emp.employee_id });
+      navigate(`#/office/session/${session.session_id}`);
+    } catch (err) {
+      toast(errorMessage(err, 'Failed to open chat'), 'err');
+    }
+  };
+
+  if (officeSessionId) {
+    return (
+      <OfficeSessionChat
+        sessionId={officeSessionId}
+        employees={employees}
+        onBack={() => navigate('#/office')}
+        onDeleted={() => navigate('#/office')}
+      />
+    );
+  }
 
   const saveEmployee = async (data: Partial<Employee>) => {
     try {
@@ -106,14 +135,10 @@ export function Office() {
     }
   };
 
-  const handleAssign = async (data: { prompt: string; project?: string }) => {
+  const handleAssignToTeam = async (data: { prompt: string; project?: string }) => {
     if (!assignTarget) return;
     try {
-      if (assignTarget.type === 'employee') {
-        await api.assignEmployeeTask(assignTarget.id, data);
-      } else {
-        await api.assignTeamTask(assignTarget.id, data);
-      }
+      await api.assignTeamTask(assignTarget.id, data);
       toast(`Task assigned to ${assignTarget.label}`, 'ok');
       setFeedKey((k) => k + 1);
     } catch (err) {
@@ -126,7 +151,13 @@ export function Office() {
   const byTeam = (teamId: string) => employees.filter((e) => e.team_id === teamId);
 
   const renderEmployeeCard = (emp: Employee) => (
-    <div key={emp.employee_id} className="office-employee-card">
+    <div
+      key={emp.employee_id}
+      className="office-employee-card"
+      onClick={() => openChatFor(emp)}
+      style={{ cursor: 'pointer' }}
+      title={`Chat or assign a task to ${emp.name}`}
+    >
       <div style={{ fontSize: '26px', lineHeight: 1 }}>{emp.avatar || '🧑‍💻'}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: '13px' }}>{emp.name}</div>
@@ -153,16 +184,8 @@ export function Office() {
         <button
           type="button"
           className="session-action-btn"
-          title="Assign task"
-          onClick={() => setAssignTarget({ type: 'employee', id: emp.employee_id, label: emp.name })}
-        >
-          <Send size={12} />
-        </button>
-        <button
-          type="button"
-          className="session-action-btn"
           title="Edit"
-          onClick={() => { setEditingEmployee(emp); setEmployeeModalOpen(true); }}
+          onClick={(e) => { e.stopPropagation(); setEditingEmployee(emp); setEmployeeModalOpen(true); }}
         >
           <Pencil size={12} />
         </button>
@@ -170,7 +193,7 @@ export function Office() {
           type="button"
           className="session-action-btn"
           title="Remove"
-          onClick={() => setDeleteEmployeeTarget(emp)}
+          onClick={(e) => { e.stopPropagation(); setDeleteEmployeeTarget(emp); }}
         >
           <Trash2 size={12} />
         </button>
@@ -208,33 +231,9 @@ export function Office() {
       <div style={{ marginBottom: '24px' }}>
         <OfficeCanvas
           employees={employees}
-          onSelectEmployee={setSelectedEmployee}
-          selectedEmployeeId={selectedEmployee?.employee_id}
+          onSelectEmployee={openChatFor}
         />
       </div>
-
-      {selectedEmployee && (
-        <div
-          style={{
-            marginBottom: '20px',
-            padding: '12px 14px',
-            background: 'var(--surface-card)',
-            border: '1px solid var(--border)',
-            borderRadius: '8px',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '20px' }}>{selectedEmployee.avatar || '🧑‍💻'}</span>
-              <span style={{ fontWeight: 600, fontSize: '13px' }}>{selectedEmployee.name}'s work</span>
-            </div>
-            <button type="button" className="session-action-btn" onClick={() => setSelectedEmployee(null)}>
-              <X size={14} />
-            </button>
-          </div>
-          <WorkOutputFeed employeeId={selectedEmployee.employee_id} />
-        </div>
-      )}
 
       {loading ? (
         <div style={{ padding: '24px', color: 'var(--text-faint)', fontSize: '12px' }}>Loading office…</div>
@@ -258,7 +257,7 @@ export function Office() {
                     type="button"
                     className="session-action-btn"
                     title="Assign task to team"
-                    onClick={() => setAssignTarget({ type: 'team', id: team.team_id, label: `${team.name} team` })}
+                    onClick={(e) => { e.stopPropagation(); setAssignTarget({ type: 'team', id: team.team_id, label: `${team.name} team` }); }}
                   >
                     <Send size={12} />
                   </button>
@@ -347,7 +346,7 @@ export function Office() {
       <AssignTaskModal
         isOpen={!!assignTarget}
         onClose={() => setAssignTarget(null)}
-        onAssign={handleAssign}
+        onAssign={handleAssignToTeam}
         targetLabel={assignTarget?.label || ''}
       />
     </div>

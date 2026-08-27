@@ -62,6 +62,25 @@ class MeetingCreate(BaseModel):
     topic: str
 
 
+class SessionCreate(BaseModel):
+    employee_id: str
+    title: str = ""
+    project: Optional[str] = None
+    model: str = ""
+    engine: str = ""
+
+
+class SessionUpdate(BaseModel):
+    title: Optional[str] = None
+    project: Optional[str] = None
+    model: Optional[str] = None
+    engine: Optional[str] = None
+
+
+class SessionMessageBody(BaseModel):
+    text: str
+
+
 def build_router(office: OfficeManager | None) -> APIRouter:
     router = APIRouter()
 
@@ -132,6 +151,58 @@ def build_router(office: OfficeManager | None) -> APIRouter:
     async def assign_team_task(team_id: str, body: AssignBody):
         try:
             return _office().assign_team_task(team_id, body.prompt, project=body.project)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except (ProjectNotFound, ProjectPathMissing) as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+    @router.get("/api/office/sessions")
+    def list_sessions(employee_id: Optional[str] = None):
+        return _office().list_sessions(employee_id=employee_id)
+
+    @router.post("/api/office/sessions")
+    def create_session(body: SessionCreate):
+        try:
+            return _office().create_session(body.employee_id, title=body.title,
+                                            project=body.project, model=body.model,
+                                            engine=body.engine)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @router.get("/api/office/sessions/{session_id}")
+    def get_session(session_id: str):
+        row = _office().get_session(session_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        return row
+
+    @router.put("/api/office/sessions/{session_id}")
+    def update_session(session_id: str, body: SessionUpdate):
+        row = _office().update_session(session_id, **body.model_dump(exclude_unset=True))
+        if row is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        return row
+
+    @router.delete("/api/office/sessions/{session_id}")
+    def delete_session(session_id: str):
+        ok = _office().delete_session(session_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="session not found")
+        return {"ok": True}
+
+    @router.get("/api/office/sessions/{session_id}/messages")
+    def get_session_messages(session_id: str):
+        try:
+            return _office().get_session_messages(session_id)
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+    @router.post("/api/office/sessions/{session_id}/messages")
+    async def post_session_message(session_id: str, body: SessionMessageBody):
+        try:
+            return await _office().send_session_message(session_id, body.text)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except (ProjectNotFound, ProjectPathMissing) as e:

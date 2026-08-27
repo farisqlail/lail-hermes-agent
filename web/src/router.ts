@@ -4,6 +4,7 @@ export interface RouteState {
   path: string;
   taskId?: string;
   sessionId?: string;
+  officeSessionId?: string;
 }
 
 export function getHashRoute(): RouteState {
@@ -29,6 +30,12 @@ export function getHashRoute(): RouteState {
   const sessionMatch = hash.match(/^#\/session\/([^/]+)$/);
   if (sessionMatch) {
     return { path: '/', sessionId: sessionMatch[1] };
+  }
+
+  // Match #/office/session/<id>
+  const officeSessionMatch = hash.match(/^#\/office\/session\/([^/]+)$/);
+  if (officeSessionMatch) {
+    return { path: '/office', officeSessionId: officeSessionMatch[1] };
   }
 
   // Clean trailing and leading slashes for routing matches

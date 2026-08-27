@@ -182,6 +182,28 @@ export interface WorkItem {
   updated: number;
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface OfficeSession {
+  session_id: string;
+  employee_id: string;
+  title: string;
+  project: string | null;
+  model: string;
+  engine: string;
+  created: number;
+  updated: number;
+}
+
+export interface OfficeSendMessageResult {
+  kind: 'chat' | 'task';
+  reply?: string;
+  work_id?: string;
+}
+
 export interface TaskDetailResponse {
   task: Task;
   logs: string[];

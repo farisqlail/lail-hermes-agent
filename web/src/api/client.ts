@@ -1,4 +1,4 @@
-import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer, IntegrateRun, Skill, Employee, Team, WorkItem } from './types';
+import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer, IntegrateRun, Skill, Employee, Team, WorkItem, ChatMessage, OfficeSession, OfficeSendMessageResult } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -182,5 +182,22 @@ export const api = {
     request<WorkItem>(`/api/office/teams/${teamId}/assign`, {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  getOfficeSessions: (employeeId?: string) =>
+    request<OfficeSession[]>(`/api/office/sessions${employeeId ? `?employee_id=${encodeURIComponent(employeeId)}` : ''}`),
+  createOfficeSession: (body: { employee_id: string; title?: string; project?: string; model?: string; engine?: string }) =>
+    request<OfficeSession>('/api/office/sessions', { method: 'POST', body: JSON.stringify(body) }),
+  getOfficeSession: (sessionId: string) => request<OfficeSession>(`/api/office/sessions/${sessionId}`),
+  updateOfficeSession: (sessionId: string, body: { title?: string; project?: string; model?: string; engine?: string }) =>
+    request<OfficeSession>(`/api/office/sessions/${sessionId}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteOfficeSession: (sessionId: string) =>
+    request<{ ok: boolean }>(`/api/office/sessions/${sessionId}`, { method: 'DELETE' }),
+  getOfficeSessionMessages: (sessionId: string) =>
+    request<ChatMessage[]>(`/api/office/sessions/${sessionId}/messages`),
+  sendOfficeSessionMessage: (sessionId: string, text: string) =>
+    request<OfficeSendMessageResult>(`/api/office/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
     }),
 };

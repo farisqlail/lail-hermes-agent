@@ -36,6 +36,11 @@ ENERGY_DECAY_PER_TICK = 4.0
 ENERGY_RECOVER_PER_TICK = 10.0
 OFFICE_TICK_S = 10
 
+# How much conversation an employee "remembers" — same idea as the main web
+# chat's history window, just a separate (smaller) constant: an employee chat
+# is one persona having many short exchanges, not the primary assistant.
+OFFICE_CHAT_HISTORY_LIMIT = 24
+
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
@@ -265,6 +270,138 @@ class OfficeManager:
             open_counts[m["employee_id"]] = sum(1 for w in items if w["status"] in ("queued", "running"))
         chosen = min(members, key=lambda m: open_counts[m["employee_id"]])
         return self.assign_task(chosen["employee_id"], prompt, project=project)
+
+    # --- sessions (chat threads bound to one employee) ---
+    # A work_item is a deliberate "do this task" with a tracked outcome
+    # (shown in the Recent Work feed); a session is an ongoing conversation
+    # thread, the same role the main web assistant chat plays for the
+    # operator — reusing the exact same `messages` table/conv_id mechanism,
+    # just keyed by session_id instead of "web". A session with no `project`
+    # is a casual persona chat (one completion call per message, full thread
+    # fed back as context — that's the "memory"). A session WITH a project
+    # makes every message in it a real, continuing task through the same
+    # Orchestrator `assign_task` already uses: the "continuous work" the
+    # operator asked for is just "same session, same project, next message".
+
+    def create_session(self, employee_id: str, title: str = "", project: str | None = None,
+                       model: str = "", engine: str = "") -> dict:
+        employee = self.store.get_employee(employee_id)
+        if employee is None:
+            raise ValueError("employee not found")
+        if not title:
+            title = f"Chat with {employee['name']}"
+        return self.store.create_session(_new_id("osess"), employee_id, title=title,
+                                         project=project, model=model, engine=engine)
+
+    def list_sessions(self, employee_id: str | None = None) -> list[dict]:
+        return self.store.list_sessions(employee_id=employee_id)
+
+    def get_session(self, session_id: str) -> dict | None:
+        return self.store.get_session(session_id)
+
+    def update_session(self, session_id: str, **fields) -> dict | None:
+        return self.store.update_session(session_id, **fields)
+
+    def delete_session(self, session_id: str) -> bool:
+        return self.store.delete_session(session_id)
+
+    def get_session_messages(self, session_id: str, limit: int = OFFICE_CHAT_HISTORY_LIMIT) -> list[dict]:
+        if self.main_store is None:
+            raise RuntimeError("Office chat is not configured")
+        return self.main_store.get_messages(session_id, limit=limit)
+
+    def _task_outcome_line(self, task_id: str) -> str:
+        """The task's own verdict — same extraction `session_store._archive_task`
+        uses for its archive note: the last non-empty log line, first physical
+        line only (a done task's change-summary table under it is noise here)."""
+        for line in reversed(self.main_store.get_logs(task_id)):
+            if line and line.strip():
+                return line.strip().splitlines()[0].strip()[:300]
+        return "no output"
+
+    async def _run_session_task(self, session_id: str, work_id: str, employee: dict, prompt: str,
+                                proj_path: Path, model: str, engine: str) -> None:
+        from .telegram_bridge import new_task_id
+        task_id = new_task_id()
+        self.store.update_work_item(work_id, task_id=task_id, status="running")
+        self.store.update_employee(employee["employee_id"], status="working")
+        self.main_store.create_task(task_id, chat_id=0, text=prompt, session_id=None)
+
+        async def report(tid, msg, html=False):
+            pass
+
+        settings = self.settings_loader()
+        if model:
+            settings = settings.model_copy(update={"claude_model": model, "agy_model": model})
+        if engine:
+            settings = settings.model_copy(update={"default_engine": engine})
+
+        try:
+            async with self._project_lock(proj_path):
+                await self.orchestrator.run_task(
+                    task_id, chat_id=0, text=prompt, report=report,
+                    proj=proj_path, send_file=None, engine=engine or None,
+                    settings_override=settings)
+            task = self.main_store.get_task(task_id)
+            ok = bool(task) and task.get("status") == "done"
+            self.store.update_work_item(work_id, status="done" if ok else "failed")
+            outcome = self._task_outcome_line(task_id)
+            self.main_store.add_message(session_id, "assistant",
+                                        f"{'Done' if ok else 'Failed'} — {outcome}")
+        except Exception as e:
+            self.store.update_work_item(work_id, status="failed", output_text=f"error: {e}")
+            self.main_store.add_message(session_id, "assistant", f"Failed — {e}")
+        finally:
+            self.store.update_employee(employee["employee_id"], status=self._rest_status(employee["employee_id"]))
+            self.store.touch_session(session_id)
+
+    async def send_session_message(self, session_id: str, text: str) -> dict:
+        if self.main_store is None or self.orchestrator is None:
+            raise RuntimeError("Office chat is not configured")
+        session = self.store.get_session(session_id)
+        if session is None:
+            raise ValueError("session not found")
+        employee = self.store.get_employee(session["employee_id"])
+        if employee is None:
+            raise ValueError("employee not found")
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("message is required")
+
+        self.main_store.add_message(session_id, "user", text)
+        self.store.touch_session(session_id)
+
+        project = session.get("project")
+        if project:
+            settings = self.settings_loader()
+            proj_path = resolve_project(project, settings)  # ProjectNotFound/ProjectPathMissing propagate
+            work = self.store.create_work_item(
+                _new_id("work"), employee["employee_id"], kind="code_task", prompt=text,
+                team_id=employee.get("team_id"), session_id=session_id)
+            model = session.get("model") or employee.get("model") or ""
+            engine = session.get("engine") or employee.get("engine") or ""
+            asyncio.create_task(self._run_session_task(
+                session_id, work["work_id"], employee, text, proj_path, model, engine))
+            return {"kind": "task", "work_id": work["work_id"]}
+
+        settings = self.settings_loader()
+        secrets = self.secrets_loader()
+        employee_for_call = dict(employee)
+        if session.get("model"):
+            employee_for_call["model"] = session["model"]
+        system = build_persona_system_prompt(employee_for_call, settings)
+        history = self.main_store.get_messages(session_id, limit=OFFICE_CHAT_HISTORY_LIMIT)
+        model = employee_for_call.get("model") or settings.chat_model or settings.model
+        client = _client(settings.nvidia_base_url, secrets.nvidia_api_key)
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system}, *history],
+            temperature=0.5,
+        )
+        reply = (resp.choices[0].message.content or "").strip()
+        self.main_store.add_message(session_id, "assistant", reply)
+        self.store.touch_session(session_id)
+        return {"kind": "chat", "reply": reply}
 
     # --- meetings ---
 

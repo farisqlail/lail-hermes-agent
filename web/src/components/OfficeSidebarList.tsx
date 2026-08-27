@@ -1,32 +1,52 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
-import { Employee, Team } from '../api/types';
-import { Users, PlusCircle } from 'lucide-react';
+import { Employee, OfficeSession } from '../api/types';
+import { Users, X } from 'lucide-react';
 
-/** Compact roster shown in the sidebar when the OFFICE tab is active. The
- * full management UI (create/edit/delete) lives in the Office view itself —
- * this is just a quick-glance list that deep-links there. Fetches its own
- * data rather than sharing state with the Office view: Phase 1 has no live
- * sync layer yet (that's Phase 3's SSE provider), so a light independent
- * fetch is simpler than plumbing shared state through two build entrypoints
- * for what is, for now, a read-only glance. */
-export function OfficeSidebarList({ navigate }: { navigate: (hash: string) => void }) {
+function formatRelativeTime(unixSeconds: number | undefined): string {
+  if (!unixSeconds) return '';
+  const now = Math.floor(Date.now() / 1000);
+  const diff = Math.max(0, now - unixSeconds);
+  if (diff < 60) return `${diff}s`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+  return `${Math.floor(diff / 86400)}d`;
+}
+
+/** The OFFICE tab's sidebar: a "Manage roster" link plus every employee chat
+ * session, newest-active first — the session-list-in-the-sidebar UX the main
+ * SESSIONS tab already has, just scoped to Office. Fetches its own data
+ * (no shared live layer yet for sessions) so it stays simple; a session row
+ * click navigates straight into that conversation. */
+export function OfficeSidebarList({ navigate, activeSessionId }: { navigate: (hash: string) => void; activeSessionId?: string }) {
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [teams, setTeams] = useState<Team[]>([]);
+  const [sessions, setSessions] = useState<OfficeSession[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([api.getEmployees(), api.getTeams()])
-      .then(([emps, tms]) => {
-        if (cancelled) return;
+  const load = useCallback(() => {
+    Promise.all([api.getEmployees(), api.getOfficeSessions()])
+      .then(([emps, sess]) => {
         setEmployees(emps);
-        setTeams(tms);
+        setSessions(sess);
       })
       .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+      .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const employeeById = new Map(employees.map((e) => [e.employee_id, e]));
+
+  const handleDelete = async (e: React.MouseEvent, sessionId: string) => {
+    e.stopPropagation();
+    try {
+      await api.deleteOfficeSession(sessionId);
+      setSessions((prev) => prev.filter((s) => s.session_id !== sessionId));
+      if (activeSessionId === sessionId) navigate('#/office');
+    } catch {
+      // best-effort; the row just stays if the delete failed
+    }
+  };
 
   return (
     <div className="session-list-scroll">
@@ -37,49 +57,47 @@ export function OfficeSidebarList({ navigate }: { navigate: (hash: string) => vo
         style={{ marginBottom: '4px' }}
       >
         <div className="action-item-left">
-          <PlusCircle size={14} className="action-item-icon" />
+          <Users size={14} className="action-item-icon" />
           <span>Manage roster</span>
         </div>
       </button>
 
       {loading ? (
         <div style={{ padding: '8px 12px', color: 'var(--text-faint)', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
-          LOADING OFFICE...
+          LOADING SESSIONS...
         </div>
-      ) : employees.length === 0 ? (
+      ) : sessions.length === 0 ? (
         <div style={{ padding: '8px 12px', color: 'var(--text-faint)', fontSize: '11px', fontStyle: 'italic' }}>
-          No employees yet
+          No chats yet — click an employee to start one
         </div>
       ) : (
-        <>
-          {teams.map((team) => (
+        sessions.map((s) => {
+          const emp = employeeById.get(s.employee_id);
+          return (
             <div
-              key={team.team_id}
-              className="session-row"
-              onClick={() => navigate('#/office')}
+              key={s.session_id}
+              className={`session-row ${activeSessionId === s.session_id ? 'active' : ''}`}
+              onClick={() => navigate(`#/office/session/${s.session_id}`)}
+              title={s.project ? `Project: ${s.project}` : 'Chat'}
             >
               <div className="session-row-left">
-                <Users size={12} style={{ opacity: 0.7 }} />
-                <span className="session-title-text">{team.name}</span>
+                <span style={{ fontSize: '13px' }}>{emp?.avatar || '🧑‍💻'}</span>
+                <span className="session-title-text">{s.title}</span>
               </div>
               <div className="session-row-right">
-                <span className="session-time">{team.member_count}</span>
+                <span className="session-time">{formatRelativeTime(s.updated)}</span>
+                <button
+                  type="button"
+                  className="session-action-btn"
+                  onClick={(e) => handleDelete(e, s.session_id)}
+                  title="Delete session"
+                >
+                  <X size={11} />
+                </button>
               </div>
             </div>
-          ))}
-          {employees.filter((e) => !e.team_id).map((emp) => (
-            <div
-              key={emp.employee_id}
-              className="session-row"
-              onClick={() => navigate('#/office')}
-            >
-              <div className="session-row-left">
-                <span style={{ fontSize: '13px' }}>{emp.avatar || '🧑‍💻'}</span>
-                <span className="session-title-text">{emp.name}</span>
-              </div>
-            </div>
-          ))}
-        </>
+          );
+        })
       )}
     </div>
   );

@@ -61,8 +61,17 @@ class OfficeStore:
                   meeting_id TEXT PRIMARY KEY,
                   team_id TEXT, participant_ids TEXT, topic TEXT,
                   transcript TEXT, triggered_by TEXT, created REAL);
+                CREATE TABLE IF NOT EXISTS office_sessions(
+                  session_id TEXT PRIMARY KEY,
+                  employee_id TEXT, title TEXT,
+                  project TEXT, model TEXT, engine TEXT,
+                  created REAL, updated REAL);
                 """
             )
+            try:
+                c.execute("ALTER TABLE work_items ADD COLUMN session_id TEXT")
+            except sqlite3.OperationalError:
+                pass
 
     # --- employees ---
 
@@ -190,13 +199,13 @@ class OfficeStore:
     # --- work items ---
 
     def create_work_item(self, work_id, employee_id, kind, prompt, team_id=None,
-                         task_id=None, status="queued") -> dict:
+                         task_id=None, status="queued", session_id=None) -> dict:
         now = time.time()
         with self._conn() as c:
             c.execute(
                 "INSERT INTO work_items(work_id,employee_id,team_id,kind,task_id,prompt,"
-                "output_text,status,cost_usd,created,updated) VALUES(?,?,?,?,?,?,'',?,0,?,?)",
-                (work_id, employee_id, team_id, kind, task_id, prompt, status, now, now))
+                "output_text,status,cost_usd,session_id,created,updated) VALUES(?,?,?,?,?,?,'',?,0,?,?,?)",
+                (work_id, employee_id, team_id, kind, task_id, prompt, status, session_id, now, now))
         row = self.get_work_item(work_id)
         self.publish({"type": "office_work_item_updated", "work_id": work_id})
         return row
@@ -276,6 +285,83 @@ class OfficeStore:
         with self._conn() as c:
             rows = c.execute(q, args).fetchall()
             return [_row_to_meeting(r) for r in rows]
+
+
+    # --- sessions ---
+    # A session is a chat thread bound to one employee. The conversation
+    # transcript itself lives in the *main* Store's `messages` table, keyed
+    # by session_id as the conv_id — same table the operator's own web chat
+    # uses, just a different conv_id per session. This table only holds the
+    # session's own settings (title, and the project/model/engine that make
+    # a message in this thread run as a real continuing task vs. a persona
+    # chat reply — see OfficeManager.send_session_message).
+
+    def create_session(self, session_id, employee_id, title="", project=None,
+                       model="", engine="") -> dict:
+        now = time.time()
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO office_sessions(session_id,employee_id,title,project,model,"
+                "engine,created,updated) VALUES(?,?,?,?,?,?,?,?)",
+                (session_id, employee_id, title, project, model, engine, now, now))
+        row = self.get_session(session_id)
+        self.publish({"type": "office_session_updated", "session_id": session_id,
+                      "employee_id": employee_id})
+        return row
+
+    def update_session(self, session_id, **fields) -> dict | None:
+        allowed = {"title", "project", "model", "engine"}
+        sets, vals = [], []
+        for k, v in fields.items():
+            if k not in allowed or v is None:
+                continue
+            sets.append(f"{k}=?")
+            vals.append(v)
+        if not sets:
+            return self.get_session(session_id)
+        sets.append("updated=?")
+        vals.append(time.time())
+        vals.append(session_id)
+        with self._conn() as c:
+            c.execute(f"UPDATE office_sessions SET {', '.join(sets)} WHERE session_id=?", vals)
+        row = self.get_session(session_id)
+        if row:
+            self.publish({"type": "office_session_updated", "session_id": session_id,
+                          "employee_id": row["employee_id"]})
+        return row
+
+    def touch_session(self, session_id) -> None:
+        """Bumps `updated` with no other field change — called whenever a
+        message lands, so the session list sorts most-recently-active first,
+        same as the main app's session list."""
+        with self._conn() as c:
+            c.execute("UPDATE office_sessions SET updated=? WHERE session_id=?",
+                      (time.time(), session_id))
+
+    def delete_session(self, session_id) -> bool:
+        with self._conn() as c:
+            cur = c.execute("DELETE FROM office_sessions WHERE session_id=?", (session_id,))
+            deleted = cur.rowcount > 0
+        if deleted:
+            self.main_store.clear_messages(session_id)
+            self.publish({"type": "office_session_deleted", "session_id": session_id})
+        return deleted
+
+    def get_session(self, session_id) -> dict | None:
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM office_sessions WHERE session_id=?", (session_id,)).fetchone()
+            return dict(r) if r else None
+
+    def list_sessions(self, employee_id=None) -> list[dict]:
+        q = "SELECT * FROM office_sessions WHERE 1=1"
+        args = []
+        if employee_id is not None:
+            q += " AND employee_id=?"
+            args.append(employee_id)
+        q += " ORDER BY updated DESC"
+        with self._conn() as c:
+            rows = c.execute(q, args).fetchall()
+            return [dict(r) for r in rows]
 
 
 def _row_to_employee(r: sqlite3.Row) -> dict:

@@ -50,7 +50,7 @@ function formatRelativeTime(unixSeconds: number | undefined): string {
 }
 
 function AppContent() {
-  const { path, taskId, sessionId, navigate } = useRoute();
+  const { path, taskId, sessionId, officeSessionId, navigate } = useRoute();
   const { status: secretsStatus } = useSecrets();
   const { toast } = useToast();
 
@@ -342,7 +342,7 @@ function AppContent() {
           </div>
 
           {sidebarTab === 'office' ? (
-            <OfficeSidebarList navigate={navigate} />
+            <OfficeSidebarList navigate={navigate} activeSessionId={officeSessionId} />
           ) : (
             <>
           {/* PINNED Section */}
