@@ -12,10 +12,11 @@ export function getHashRoute(): RouteState {
   }
   const hash = window.location.hash || '#/';
   
-  // Legacy settings redirect
-  if (hash === '#settings') {
-    window.location.hash = '#/config/general';
-    return { path: '/config/general' };
+  // Legacy settings / config-page links now open the Settings modal instead
+  // of a dedicated route.
+  if (hash === '#settings' || hash.startsWith('#/config')) {
+    window.location.hash = '#/';
+    return { path: '/' };
   }
 
   // Match #/task/<id>

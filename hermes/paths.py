@@ -49,9 +49,15 @@ def vault_dir() -> Path:
 def figma_profile_dir() -> Path:
     return home() / "figma_browser_profile"
 
+def skills_dir() -> Path:
+    # Each installed skill is skills_dir()/<id>/SKILL.md — real files, not a
+    # blob in config.json, so a skill is portable to/from any other agent
+    # that speaks the agentskills.io SKILL.md format. See hermes/skills.py.
+    return home() / "skills"
+
 def ensure_dirs() -> None:
     for d in (config_dir(), projects_dir(), artifacts_dir(), uploads_dir(),
-              vault_dir(), figma_profile_dir()):
+              vault_dir(), figma_profile_dir(), skills_dir()):
         d.mkdir(parents=True, exist_ok=True)
 
 def ensure_vault() -> None:

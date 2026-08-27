@@ -160,6 +160,9 @@ class Store:
                   interval_s INTEGER, next_run_ts REAL,
                   last_run_ts REAL, enabled INTEGER DEFAULT 1,
                   chat_id INTEGER, created REAL);
+                CREATE TABLE IF NOT EXISTS conv_context(
+                  conv_id TEXT PRIMARY KEY, summary TEXT DEFAULT '',
+                  through_id INTEGER DEFAULT 0);
                 """
             )
             try:
@@ -404,6 +407,48 @@ class Store:
     def clear_messages(self, conv_id):
         with self._conn() as c:
             c.execute("DELETE FROM messages WHERE conv_id=?", (conv_id,))
+
+    # --- rolling context-compression state (see chat_engine.maybe_compress) ---
+    # The raw transcript in `messages` is never trimmed or deleted — the UI
+    # thread stays complete. This table only tracks how far a summary has
+    # folded older turns in, so the model's live window can stay short
+    # without the operator losing anything the model forgot.
+
+    def get_context_summary(self, conv_id) -> tuple[str, int]:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT summary, through_id FROM conv_context WHERE conv_id=?",
+                (conv_id,)).fetchone()
+            return (row["summary"], row["through_id"]) if row else ("", 0)
+
+    def save_context_summary(self, conv_id, summary: str, through_id: int) -> None:
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO conv_context(conv_id, summary, through_id) VALUES(?,?,?) "
+                "ON CONFLICT(conv_id) DO UPDATE SET "
+                "summary=excluded.summary, through_id=excluded.through_id",
+                (conv_id, summary, through_id))
+
+    def get_messages_for_compression(self, conv_id, keep_last: int, already_through: int):
+        """Messages older than the live `keep_last` window and not yet folded
+        into the summary (id > already_through) — the tail about to fall out
+        of context. Returns ([{"id","role","content"}], new_boundary_id); an
+        empty list means nothing eligible yet, and new_boundary_id echoes
+        already_through unchanged."""
+        with self._conn() as c:
+            total = c.execute(
+                "SELECT COUNT(*) n FROM messages WHERE conv_id=?", (conv_id,)).fetchone()["n"]
+            if total <= keep_last:
+                return [], already_through
+            boundary_row = c.execute(
+                "SELECT id FROM messages WHERE conv_id=? ORDER BY id DESC LIMIT 1 OFFSET ?",
+                (conv_id, keep_last - 1)).fetchone()
+            boundary = boundary_row["id"]
+            rows = c.execute(
+                "SELECT id, role, content FROM messages "
+                "WHERE conv_id=? AND id>? AND id<? ORDER BY id",
+                (conv_id, already_through, boundary)).fetchall()
+            return [dict(r) for r in rows], boundary
 
     # --- what Hermes remembers about the operator ---
     # Keyed, not appended: "deploy_day" learned twice is one fact with a newer

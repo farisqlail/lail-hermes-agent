@@ -44,6 +44,43 @@ def test_messages_roundtrip_order_and_limit(tmp_path):
     assert [m["content"] for m in s.get_messages("other", 10)] == ["x"]
 
 
+def test_context_summary_roundtrip_and_default(tmp_path):
+    s = Store(tmp_path / "t.db")
+    s.init_schema()
+    assert s.get_context_summary("web") == ("", 0)
+
+    s.save_context_summary("web", "ringkasan awal", 5)
+    assert s.get_context_summary("web") == ("ringkasan awal", 5)
+
+    s.save_context_summary("web", "ringkasan baru", 12)
+    assert s.get_context_summary("web") == ("ringkasan baru", 12)
+
+    # conversations are isolated by id
+    assert s.get_context_summary("other") == ("", 0)
+
+
+def test_get_messages_for_compression_returns_only_the_falling_out_tail(tmp_path):
+    s = Store(tmp_path / "t.db")
+    s.init_schema()
+    for i in range(10):
+        s.add_message("web", "user", f"m{i}")
+
+    # keep_last=4 keeps the newest 4 live; m0..m5 are eligible to compress
+    msgs, boundary = s.get_messages_for_compression("web", keep_last=4, already_through=0)
+    assert [m["content"] for m in msgs] == [f"m{i}" for i in range(6)]
+    assert all("id" in m and "role" in m for m in msgs)
+
+    # nothing new has piled up past `boundary` yet -> nothing eligible
+    msgs2, boundary2 = s.get_messages_for_compression("web", keep_last=4, already_through=boundary)
+    assert msgs2 == []
+    assert boundary2 == boundary
+
+    # fewer messages than the live window itself -> nothing eligible
+    msgs3, boundary3 = s.get_messages_for_compression("web", keep_last=20, already_through=0)
+    assert msgs3 == []
+    assert boundary3 == 0
+
+
 def _task(s, tid, status, chat=99, text="t"):
     s.create_task(tid, chat_id=chat, text=text)
     s.set_task_status(tid, status)

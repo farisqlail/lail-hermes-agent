@@ -57,6 +57,7 @@ interface PendingAction {
   tool: string;
   summary: string;
   args: Record<string, unknown>;
+  risk_note: string;
 }
 
 function findTaskIds(text: string): string[] {
@@ -1368,14 +1369,13 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
                       ))}
                     </div>
                   ) : (
-                    <div className="electric-thinking">
-                      <span className="electric-label">MENYIAPKAN JAWABAN</span>
-                      <div className="electric-wire">
-                        <div className="electric-current" />
-                        <div className="electric-current electric-current--2" />
-                        <svg className="electric-bolt" viewBox="0 0 24 24" aria-hidden="true">
-                          <path d="M13 2 L4 14 L11 14 L9 22 L20 9 L13 9 Z" />
-                        </svg>
+                    <div className="claude-thinking-block">
+                      <div className="claude-thinking-badge">
+                        <span className="claude-thinking-sparkle">✦</span>
+                        <span className="claude-thinking-text">Thinking…</span>
+                        <span className="claude-thinking-dots">
+                          <span>.</span><span>.</span><span>.</span>
+                        </span>
                       </div>
                     </div>
                   )}
@@ -1582,6 +1582,15 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
         {reviewPending && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 600 }}>{reviewPending.summary}</div>
+            {reviewPending.risk_note && (
+              <div style={{
+                fontSize: '12px', color: 'var(--text-dim)', padding: '8px',
+                border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
+                background: 'var(--surface-1)',
+              }}>
+                {reviewPending.risk_note}
+              </div>
+            )}
             <code style={{
               fontSize: '11px', color: 'var(--text-dim)', whiteSpace: 'pre-wrap',
               wordBreak: 'break-word', maxHeight: '160px', overflow: 'auto',

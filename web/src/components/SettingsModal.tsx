@@ -22,7 +22,10 @@ import {
   Settings2,
   Plus,
   Save,
+  Sparkles,
 } from 'lucide-react';
+import { ConfigProvider } from '../views/ConfigProvider';
+import { ConfigSkills } from '../views/ConfigSkills';
 import { ConfigChat } from '../views/ConfigChat';
 import { ConfigEngines } from '../views/ConfigEngines';
 import { ConfigTimeouts } from '../views/ConfigTimeouts';
@@ -49,6 +52,7 @@ export type SettingsTab =
   | 'providers-keys'
   | 'providers-endpoints'
   | 'plugins'
+  | 'skills'
   | 'shortcuts'
   | 'about';
 
@@ -77,16 +81,7 @@ interface CustomEndpoint {
   discoverModels: boolean;
 }
 
-const DEFAULT_AUX_MODELS: AuxModelConfig[] = [
-  { id: 'vision', name: 'Vision', badge: 'Image analysis', model: 'auto · use main model' },
-  { id: 'compression', name: 'Compression', badge: 'Context compaction', model: 'auto · use main model' },
-  { id: 'skills', name: 'Skills hub', badge: 'Skill search', model: 'auto · use main model' },
-  { id: 'approval', name: 'Approval', badge: 'Smart auto-approve', model: 'auto · use main model' },
-  { id: 'mcp', name: 'MCP', badge: 'MCP tool routing', model: 'auto · use main model' },
-  { id: 'title', name: 'Title gen', badge: 'Session titles', model: 'auto · use main model' },
-  { id: 'review', name: 'Review', badge: '/review reviewer subagent', model: 'auto · use main model' },
-  { id: 'curator', name: 'Curator', badge: 'Skill-usage review', model: 'auto · use main model' },
-];
+const DEFAULT_AUX_MODELS: AuxModelConfig[] = [];
 
 export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
@@ -363,6 +358,15 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
 
               <button
                 type="button"
+                className={`settings-nav-btn ${activeTab === 'skills' ? 'active' : ''}`}
+                onClick={() => setActiveTab('skills')}
+              >
+                <Sparkles size={14} className="nav-icon" />
+                <span>Skills</span>
+              </button>
+
+              <button
+                type="button"
                 className={`settings-nav-btn ${activeTab === 'shortcuts' ? 'active' : ''}`}
                 onClick={() => setActiveTab('shortcuts')}
               >
@@ -402,6 +406,10 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
             {/* 1. MODEL TAB */}
             {activeTab === 'model' && (
               <div className="settings-tab-panel">
+                <ConfigProvider />
+
+                <div style={{ height: '1px', backgroundColor: 'var(--border)', margin: '20px 0' }} />
+
                 <p className="settings-panel-desc">
                   Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.
                 </p>
@@ -732,6 +740,13 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
             {activeTab === 'plugins' && (
               <div className="settings-tab-panel">
                 <ConfigMcp />
+              </div>
+            )}
+
+            {/* 7b. SKILLS TAB */}
+            {activeTab === 'skills' && (
+              <div className="settings-tab-panel">
+                <ConfigSkills />
               </div>
             )}
 

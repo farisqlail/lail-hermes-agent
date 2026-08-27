@@ -11,6 +11,16 @@ def test_add_returns_action_with_id_and_lists_it():
     assert [a.id for a in st.list()] == [pa.id]
 
 
+def test_add_accepts_and_defaults_a_risk_note():
+    st = PendingStore()
+    plain = st.add("s__t", {}, "web")
+    assert plain.risk_note == ""
+
+    explained = st.add("fs__delete_file", {"path": "x"}, "web",
+                       risk_note="Ini akan menghapus file secara permanen.")
+    assert explained.risk_note == "Ini akan menghapus file secara permanen."
+
+
 def test_summary_is_server_and_tool():
     st = PendingStore()
     assert st.add("gmail__send_email", {}, "web").summary() == "gmail: send_email"

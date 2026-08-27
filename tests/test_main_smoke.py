@@ -387,6 +387,375 @@ async def test_chat_stream_carries_the_same_instruction(hermes_home, monkeypatch
     assert voice.VOICE_TAG_OPEN in seen[-1]
 
 
+async def test_chat_uses_vision_model_when_history_has_an_image(hermes_home, monkeypatch):
+    """A turn with an attached image should route to vision_model, not
+    chat_model — chat_model may be a text-only model that would 400 on an
+    image_url content part."""
+    from hermes import config, main
+
+    seen: list[str] = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            seen.append(kwargs["model"])
+            msg = type("M", (), {"content": "ok", "tool_calls": None})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    secrets = config.Secrets(nvidia_api_key="nvapi-test")
+    config.save_settings(config.Settings(chat_model="text-model", vision_model="vision-model"))
+    chat = main.build_nim_chat(config.load_settings(), secrets)
+
+    image_turn = [{"role": "user", "content": [
+        {"type": "text", "text": "apa ini"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}},
+    ]}]
+    await chat(image_turn)
+    assert seen[-1] == "vision-model"
+
+    await chat([{"role": "user", "content": "halo"}])
+    assert seen[-1] == "text-model"
+
+
+async def test_chat_ignores_vision_model_when_disabled(hermes_home, monkeypatch):
+    from hermes import config, main
+
+    seen: list[str] = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            seen.append(kwargs["model"])
+            msg = type("M", (), {"content": "ok", "tool_calls": None})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    secrets = config.Secrets(nvidia_api_key="nvapi-test")
+    config.save_settings(config.Settings(chat_model="text-model", vision_model="vision-model",
+                                         vision_enabled=False))
+    chat = main.build_nim_chat(config.load_settings(), secrets)
+
+    image_turn = [{"role": "user", "content": [
+        {"type": "text", "text": "apa ini"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}},
+    ]}]
+    await chat(image_turn)
+    assert seen[-1] == "text-model"
+
+
+async def test_chat_stream_uses_vision_model_when_history_has_an_image(hermes_home, monkeypatch):
+    from hermes import config, main
+
+    seen: list[str] = []
+
+    class FakeStream:
+        def __aiter__(self):
+            async def gen():
+                delta = type("D", (), {"content": "hai", "tool_calls": None})()
+                yield type("K", (), {"choices": [type("C", (), {"delta": delta})()],
+                                     "usage": None})()
+            return gen()
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            seen.append(kwargs["model"])
+            return FakeStream()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model", vision_model="vision-model"))
+    chat = main.build_nim_chat(config.load_settings(),
+                               config.Secrets(nvidia_api_key="nvapi-test"))
+
+    image_turn = [{"role": "user", "content": [
+        {"type": "text", "text": "apa ini"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}},
+    ]}]
+    async for _ in chat.stream(image_turn):
+        pass
+    assert seen[-1] == "vision-model"
+
+
+async def test_build_nim_title_returns_a_trimmed_title(hermes_home, monkeypatch):
+    from hermes import config, main
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            msg = type("M", (), {"content": '"Bug login gagal"'})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model"))
+    generate_title = main.build_nim_title(config.load_settings(),
+                                          config.Secrets(nvidia_api_key="nvapi-test"))
+
+    title = await generate_title("kenapa ya login selalu gagal")
+    assert title == "Bug login gagal"
+
+
+async def test_build_nim_title_returns_empty_string_when_disabled(hermes_home, monkeypatch):
+    from hermes import config, main
+
+    calls = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            msg = type("M", (), {"content": "should not run"})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model", title_gen_enabled=False))
+    generate_title = main.build_nim_title(config.load_settings(),
+                                          config.Secrets(nvidia_api_key="nvapi-test"))
+
+    assert await generate_title("halo dunia") == ""
+    assert calls == [], "the switch must stop the call before it ever reaches the provider"
+
+
+async def test_build_nim_title_returns_empty_string_on_failure(hermes_home, monkeypatch):
+    """Title generation must never raise into the caller — a bad title is a
+    missed upgrade, not a broken chat turn."""
+    from hermes import config, main
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            raise RuntimeError("provider down")
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model"))
+    generate_title = main.build_nim_title(config.load_settings(),
+                                          config.Secrets(nvidia_api_key="nvapi-test"))
+
+    assert await generate_title("halo") == ""
+    assert await generate_title("") == ""
+
+
+async def test_build_nim_compressor_returns_a_summary(hermes_home, monkeypatch):
+    from hermes import config, main
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            msg = type("M", (), {"content": "Operator debug login, error di token expiry."})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model"))
+    compress = main.build_nim_compressor(config.load_settings(),
+                                         config.Secrets(nvidia_api_key="nvapi-test"))
+
+    summary = await compress("", [{"id": 1, "role": "user", "content": "kenapa login gagal"}])
+    assert summary == "Operator debug login, error di token expiry."
+
+
+async def test_build_nim_compressor_returns_empty_string_when_disabled(hermes_home, monkeypatch):
+    from hermes import config, main
+
+    calls = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            msg = type("M", (), {"content": "should not run"})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model", compression_enabled=False))
+    compress = main.build_nim_compressor(config.load_settings(),
+                                         config.Secrets(nvidia_api_key="nvapi-test"))
+
+    assert await compress("", [{"id": 1, "role": "user", "content": "halo"}]) == ""
+    assert calls == [], "the switch must stop the call before it ever reaches the provider"
+
+
+async def test_build_nim_compressor_returns_empty_string_on_failure_or_no_messages(hermes_home, monkeypatch):
+    """Never raises into the caller — maybe_compress must be free to skip
+    saving on a bad summarization instead of crashing the turn epilogue."""
+    from hermes import config, main
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            raise RuntimeError("provider down")
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model"))
+    compress = main.build_nim_compressor(config.load_settings(),
+                                         config.Secrets(nvidia_api_key="nvapi-test"))
+
+    assert await compress("", [{"id": 1, "role": "user", "content": "halo"}]) == ""
+    assert await compress("ringkasan lama", []) == ""
+
+
+async def test_build_nim_approval_note_returns_a_risk_explanation(hermes_home, monkeypatch):
+    from hermes import config, main
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            msg = type("M", (), {"content": "Aksi ini akan menghapus file secara permanen."})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model"))
+    explain = main.build_nim_approval_note(config.load_settings(),
+                                           config.Secrets(nvidia_api_key="nvapi-test"))
+
+    note = await explain("fs__delete_file", {"path": "C:\\x.txt"})
+    assert note == "Aksi ini akan menghapus file secara permanen."
+
+
+async def test_build_nim_approval_note_returns_empty_string_when_disabled(hermes_home, monkeypatch):
+    from hermes import config, main
+
+    calls = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            msg = type("M", (), {"content": "should not run"})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model", approval_note_enabled=False))
+    explain = main.build_nim_approval_note(config.load_settings(),
+                                           config.Secrets(nvidia_api_key="nvapi-test"))
+
+    assert await explain("fs__delete_file", {"path": "x"}) == ""
+    assert calls == [], "the switch must stop the call before it ever reaches the provider"
+
+
+async def test_build_nim_approval_note_returns_empty_string_on_failure(hermes_home, monkeypatch):
+    """Never raises — a pending action must still be created and shown even
+    when the explanation call fails; it just shows without a note."""
+    from hermes import config, main
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            raise RuntimeError("provider down")
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model"))
+    explain = main.build_nim_approval_note(config.load_settings(),
+                                           config.Secrets(nvidia_api_key="nvapi-test"))
+
+    assert await explain("fs__delete_file", {"path": "x"}) == ""
+
+
+async def test_build_nim_mcp_router_narrows_to_the_named_tools(hermes_home, monkeypatch):
+    from hermes import config, main
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            msg = type("M", (), {"content": "gmail__send_email, gmail__list_emails"})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model", mcp_routing_enabled=True))
+    route = main.build_nim_mcp_router(config.load_settings(),
+                                      config.Secrets(nvidia_api_key="nvapi-test"))
+
+    picked = await route("cek email masuk", ["gmail__send_email", "gmail__list_emails",
+                                             "browser_click", "fs__delete_file"])
+    assert picked == ["gmail__send_email", "gmail__list_emails"]
+
+
+async def test_build_nim_mcp_router_returns_none_when_disabled(hermes_home, monkeypatch):
+    from hermes import config, main
+
+    calls = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            msg = type("M", (), {"content": "gmail__send_email"})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model", mcp_routing_enabled=False))
+    route = main.build_nim_mcp_router(config.load_settings(),
+                                      config.Secrets(nvidia_api_key="nvapi-test"))
+
+    assert await route("cek email masuk", ["gmail__send_email"]) is None
+    assert calls == [], "the switch must stop the call before it ever reaches the provider"
+
+
+async def test_build_nim_mcp_router_returns_none_to_mean_use_everything(hermes_home, monkeypatch):
+    """None is the fail-open signal: no key, a provider error, empty input
+    text, or an answer that names no tool from the catalog all mean 'skip
+    filtering' — a missed narrowing must never cost the model a tool it
+    actually needs."""
+    from hermes import config, main
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            raise RuntimeError("provider down")
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(main, "AsyncOpenAI", FakeClient)
+    config.save_settings(config.Settings(chat_model="text-model", mcp_routing_enabled=True))
+    route = main.build_nim_mcp_router(config.load_settings(),
+                                      config.Secrets(nvidia_api_key="nvapi-test"))
+
+    assert await route("halo", ["a", "b"]) is None
+    assert await route("", ["a", "b"]) is None
+
+
 class _StuckToolCall:
     """One tool call, reissued verbatim every round — the shape that used to
     burn all eight rounds and end the turn with an apology."""

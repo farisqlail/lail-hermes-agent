@@ -1,4 +1,4 @@
-import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer, IntegrateRun } from './types';
+import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer, IntegrateRun, Skill } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -101,6 +101,27 @@ export const api = {
     request<{ ok: boolean }>('/api/mcp', {
       method: 'POST',
       body: JSON.stringify(servers),
+    }),
+
+  getSkills: () => request<Skill[]>('/api/skills'),
+  saveSkills: (skillList: Skill[]) =>
+    request<{ ok: boolean }>('/api/skills', {
+      method: 'POST',
+      body: JSON.stringify(skillList),
+    }),
+  installSkillTap: (tap: string, skillPath: string) =>
+    request<Skill>('/api/skills/install_tap', {
+      method: 'POST',
+      body: JSON.stringify({ tap, skill_path: skillPath }),
+    }),
+
+  getSkillsCatalog: (force = false) =>
+    request<{ slug: string; name: string; description: string }[]>(
+      `/api/skills/catalog${force ? '?force=true' : ''}`),
+  installSkillCatalog: (slug: string) =>
+    request<Skill>('/api/skills/install_catalog', {
+      method: 'POST',
+      body: JSON.stringify({ slug }),
     }),
 
   testMcpServer: (server: McpServer) =>

@@ -27,6 +27,11 @@ class PendingAction:
     # web UI, which has no push channel and polls /api/chat/pending instead.
     chat_id: int | None = None
     created: float = field(default_factory=time.time)
+    # Purely informational one-sentence risk explanation from
+    # main.build_nim_approval_note, or "" when unwired/failed. Never
+    # consulted by the gate itself — a human still clicks Confirm/Decline
+    # either way; this only helps them decide faster.
+    risk_note: str = ""
 
     def summary(self) -> str:
         """A short human label for the card and the voice prompt. The server and
@@ -42,10 +47,10 @@ class PendingStore:
         self._counter = itertools.count(1)
 
     def add(self, tool: str, args: dict, conv_id: str,
-            chat_id: int | None = None) -> PendingAction:
+            chat_id: int | None = None, risk_note: str = "") -> PendingAction:
         pid = f"p{next(self._counter)}"
         pa = PendingAction(id=pid, tool=tool, args=dict(args or {}),
-                           conv_id=conv_id, chat_id=chat_id)
+                           conv_id=conv_id, chat_id=chat_id, risk_note=risk_note)
         self._items[pid] = pa
         return pa
 

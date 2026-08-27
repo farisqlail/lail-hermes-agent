@@ -1,11 +1,6 @@
 'use client';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRoute } from '../router';
-import { ConfigGeneral } from '../views/ConfigGeneral';
-import { ConfigSecrets } from '../views/ConfigSecrets';
-import { ConfigMcp } from '../views/ConfigMcp';
-import { ConfigProjects } from '../views/ConfigProjects';
-import { ConfigVoice } from '../views/ConfigVoice';
 import { Dashboard } from '../views/Dashboard';
 import { TaskDetail } from '../views/TaskDetail';
 import { ToastProvider, useToast } from '../components/Toast';
@@ -14,7 +9,7 @@ import { useSecrets } from '../hooks/useSecrets';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { Modal } from '../components/Modal';
 import { ConfirmModal } from '../components/ConfirmModal';
-import { SettingsModal } from '../components/SettingsModal';
+import { SettingsModal, SettingsTab } from '../components/SettingsModal';
 import { ArtifactsModal } from '../components/ArtifactsModal';
 import { ScheduledJobsModal } from '../components/ScheduledJobsModal';
 import {
@@ -65,6 +60,11 @@ function AppContent() {
   // Modals for capabilities / artifacts / scheduled jobs
   const [activeModal, setActiveModal] = useState<'capabilities' | 'messaging' | 'artifacts' | 'jobs' | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('model');
+  const openSettings = useCallback((tab: SettingsTab = 'model') => {
+    setSettingsInitialTab(tab);
+    setIsSettingsOpen(true);
+  }, []);
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
 
   // Pinned session IDs saved to localStorage
@@ -218,8 +218,6 @@ function AppContent() {
   const unpinnedSessions = useMemo(() => {
     return filteredSessions.filter((s) => !pinnedIds.includes(s.session_id));
   }, [filteredSessions, pinnedIds]);
-
-  const isConfigRoute = path.startsWith('/config');
 
   return (
     <div className="app-container">
@@ -466,7 +464,7 @@ function AppContent() {
                 <button
                   type="button"
                   className="sidebar-footer-btn"
-                  onClick={() => navigate('#/config/projects')}
+                  onClick={() => openSettings('workspace')}
                   title="Projects & Git Workspace"
                 >
                   <GitBranch size={14} />
@@ -477,7 +475,7 @@ function AppContent() {
                 <button
                   type="button"
                   className="sidebar-footer-btn"
-                  onClick={() => setIsSettingsOpen(true)}
+                  onClick={() => openSettings('model')}
                   title="Settings & Models (Ctrl+,)"
                 >
                   <Settings size={14} />
@@ -485,7 +483,7 @@ function AppContent() {
                 <button
                   type="button"
                   className="sidebar-footer-btn"
-                  onClick={() => setIsSettingsOpen(true)}
+                  onClick={() => openSettings('model')}
                   title="More Settings"
                 >
                   <MoreHorizontal size={14} />
@@ -525,61 +523,6 @@ function AppContent() {
               </div>
             )}
 
-            {isConfigRoute && (
-              <div className="config-container">
-                <header className="page-header">
-                  <h1 className="page-title">Configuration</h1>
-                  <p className="page-subtitle">Atur setting utama, API keys, MCP servers, dan proyek Anda</p>
-                </header>
-
-                {/* Sub-navigation for configuration tabs */}
-                <div className="config-tab-bar">
-                  <a
-                    href="#/config/general"
-                    onClick={(e) => handleNavClick(e, '#/config/general')}
-                    className={`config-tab-item ${path === '/config/general' ? 'active' : ''}`}
-                  >
-                    General
-                  </a>
-                  <a
-                    href="#/config/secrets"
-                    onClick={(e) => handleNavClick(e, '#/config/secrets')}
-                    className={`config-tab-item ${path === '/config/secrets' ? 'active' : ''}`}
-                  >
-                    Secrets
-                  </a>
-                  <a
-                    href="#/config/mcp"
-                    onClick={(e) => handleNavClick(e, '#/config/mcp')}
-                    className={`config-tab-item ${path === '/config/mcp' ? 'active' : ''}`}
-                  >
-                    MCP Servers
-                  </a>
-                  <a
-                    href="#/config/projects"
-                    onClick={(e) => handleNavClick(e, '#/config/projects')}
-                    className={`config-tab-item ${path === '/config/projects' ? 'active' : ''}`}
-                  >
-                    Projects
-                  </a>
-                  <a
-                    href="#/config/voice"
-                    onClick={(e) => handleNavClick(e, '#/config/voice')}
-                    className={`config-tab-item ${path === '/config/voice' ? 'active' : ''}`}
-                  >
-                    Voice Output
-                  </a>
-                </div>
-
-                <div>
-                  {path === '/config/general' && <ConfigGeneral />}
-                  {path === '/config/secrets' && <ConfigSecrets />}
-                  {path === '/config/mcp' && <ConfigMcp />}
-                  {path === '/config/projects' && <ConfigProjects />}
-                  {path === '/config/voice' && <ConfigVoice />}
-                </div>
-              </div>
-            )}
           </div>
         </main>
       </div>
@@ -618,7 +561,7 @@ function AppContent() {
               className="config-tab-item active"
               onClick={() => {
                 setActiveModal(null);
-                navigate('#/config/mcp');
+                openSettings('plugins');
               }}
             >
               Kelola MCP Servers →
@@ -655,7 +598,7 @@ function AppContent() {
               className="config-tab-item active"
               onClick={() => {
                 setActiveModal(null);
-                navigate('#/config/secrets');
+                openSettings('providers-keys');
               }}
             >
               Atur Token Telegram →
@@ -692,6 +635,7 @@ function AppContent() {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        initialTab={settingsInitialTab}
       />
     </div>
   );

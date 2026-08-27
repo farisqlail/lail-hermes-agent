@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
-from . import brain, cleanup, config, ics, paths, postmortem, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth, imagegen, ytclip
+from . import brain, cleanup, config, ics, paths, postmortem, skills, stt, uploads, voice, desktop_api, mcp_hub, mcp_risk, launcher, mcp_integrate, mcp_oauth, imagegen, ytclip
 from .chat_engine import ChatEngine, wants_code_task, CHAT_TOOLS, AUTO_TASK_NOTE, IMAGE_MARKER, DOCUMENT_MARKER, CHAT_HISTORY_LIMIT, RESUME_NUDGE, START_TASK_DECISION_TIMEOUT_S
 from .pending_actions import PendingStore
 
@@ -38,6 +38,22 @@ class IntegrateBody(BaseModel):
 
 class SecretBody(BaseModel):
     value: str
+
+class SkillBody(BaseModel):
+    """The API shape of a skill: config.Skill's metadata plus the SKILL.md
+    body that never lives in Settings.skills — see hermes/skills.py."""
+    id: str
+    name: str
+    description: str
+    enabled: bool = True
+    content: str = ""
+
+class InstallTapBody(BaseModel):
+    tap: str
+    skill_path: str
+
+class InstallCatalogBody(BaseModel):
+    slug: str
 
 class SessionRename(BaseModel):
     title: str
@@ -209,7 +225,8 @@ def load_index_html() -> str:
     )
 
 def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
-               lifespan=None, hub=None, facts=None, engine=None) -> FastAPI:
+               lifespan=None, hub=None, facts=None, engine=None, title_gen=None,
+               compressor=None, approval_note=None, mcp_router=None) -> FastAPI:
     # lifespan carries the ask MCP server's session manager when main.py mounts
     # it here: a mounted sub-app's own lifespan is ignored by Starlette, so the
     # manager has to be started by the parent or the /ask-mcp endpoint is dead.
@@ -222,7 +239,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
     app.state.hub = hub
     app.state._mcp_tools_cache = None
     app.state.engine = engine if engine is not None else ChatEngine(
-        store, bridge=bridge, hub=hub, facts=facts)
+        store, bridge=bridge, hub=hub, facts=facts, compressor=compressor,
+        approval_note=approval_note, mcp_router=mcp_router)
     # Write actions the chat agent proposed, awaiting operator approval (button
     # or voice). Executed only from the resolve endpoint, never in the tool loop.
     app.state.pending = app.state.engine.pending
@@ -253,6 +271,9 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
     # Injected like chat so a test can wire a fake — or nothing, and the chat
     # still works, it just stops remembering.
     app.state.facts = facts
+    # async (text) -> str; "" or None disables the LLM title upgrade — the
+    # truncated first-message title (set synchronously below) still applies.
+    app.state.title_gen = title_gen
     app.state.integrate_runs = {}
     app.state.pending_auth = mcp_oauth.PendingAuth()
 
@@ -317,9 +338,9 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
                 "integrate_status": do_integrate_status,
                 "integrate_secret": do_integrate_secret}
 
-    async def _chat_tools() -> list[dict]:
+    async def _chat_tools(text: str | None = None) -> list[dict]:
         engine = app.state.engine
-        tools = await engine.chat_tools()
+        tools = await engine.chat_tools(text)
         idx = next((i for i, t in enumerate(tools) if t["function"]["name"] == "open_app"), -1)
         if idx != -1:
             return tools[:idx + 1] + INTEGRATE_TOOLS + tools[idx + 1:]
@@ -330,7 +351,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         """Write actions awaiting approval — rendered as cards and polled by the
         voice loop so 'konfirmasi' knows whether anything is pending. Scoped to
         one conversation: a card belongs on the thread that proposed it."""
-        return [{"id": a.id, "tool": a.tool, "summary": a.summary(), "args": a.args}
+        return [{"id": a.id, "tool": a.tool, "summary": a.summary(), "args": a.args,
+                "risk_note": a.risk_note}
                 for a in app.state.pending.list(session_id or CONV_WEB)]
 
     @app.post("/api/chat/pending/resolve")
@@ -643,7 +665,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
                                                     await _integrate_extra())
                     turn, auto_id = await engine.history_for_turn(sid, text, images,
                                                                    dispatch, documents)
-                    reply = await chat(turn, tools=await _chat_tools(),
+                    reply = await chat(turn, tools=await _chat_tools(text),
                                        dispatch=dispatch)
                 except Exception as e:
                     safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
@@ -774,13 +796,23 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         if (body.project is not None or body.engine is not None) and sid != CONV_WEB:
             store.update_session_settings(sid, project=body.project, engine=body.engine)
 
-        # Auto rename session if it was default name
+        # Auto rename session if it was default name: an instant truncation
+        # first (no flash of "Percakapan Baru" while any LLM call is in
+        # flight), then upgraded fire-and-forget to a proper LLM title once
+        # title_gen resolves — the stream must not wait on it.
         if sid != CONV_WEB and not body.resume:
             sessions = store.list_sessions()
             curr = next((s for s in sessions if s["session_id"] == sid), None)
             if curr and curr["title"] == "Percakapan Baru":
-                new_title = text[:30] + "..." if len(text) > 30 else text
-                store.rename_session(sid, new_title)
+                fallback_title = text[:30] + "..." if len(text) > 30 else text
+                store.rename_session(sid, fallback_title)
+                title_gen = getattr(app.state, "title_gen", None)
+                if title_gen:
+                    async def _upgrade_title():
+                        better = await title_gen(text)
+                        if better:
+                            store.rename_session(sid, better)
+                    asyncio.create_task(_upgrade_title())
 
         sse = brain.sse
 
@@ -809,7 +841,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
                 try:
                     async for kind, payload in chat.stream(
                             history,
-                            tools=await _chat_tools(),
+                            tools=await _chat_tools(text),
                             dispatch=dispatch):
                         if kind == "token":
                             acc += payload
@@ -842,6 +874,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             # no operator utterance to learn from, so it is skipped.
             if not body.resume:
                 await engine.learn_from_turn(text, clean)
+                await engine.maybe_compress(sid)
 
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache",
@@ -1072,6 +1105,84 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
                 safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
                 return {"ok": True, "reconnect_error": safe}
         return {"ok": True}
+
+    @app.get("/api/skills")
+    def get_skills():
+        s = config.load_settings()
+        out = []
+        for sk in s.skills:
+            on_disk = skills.read_skill_file(paths.skills_dir(), sk.id)
+            out.append({"id": sk.id, "name": sk.name, "description": sk.description,
+                       "enabled": sk.enabled, "content": on_disk["content"] if on_disk else ""})
+        return out
+
+    @app.post("/api/skills")
+    def post_skills(body: list[SkillBody]):
+        """Full-list replace, like /api/mcp: whatever id was in Settings.skills
+        but is missing from `body` is a removal, so its SKILL.md is deleted
+        along with the entry — not just the metadata."""
+        s = config.load_settings()
+        old_ids = {sk.id for sk in s.skills}
+        new_ids = {b.id for b in body}
+        for gone_id in old_ids - new_ids:
+            skills.delete_skill_file(paths.skills_dir(), gone_id)
+        for b in body:
+            skills.write_skill_file(paths.skills_dir(), b.id, b.name, b.description, b.content)
+        s.skills = [config.Skill(id=b.id, name=b.name, description=b.description, enabled=b.enabled)
+                   for b in body]
+        config.save_settings(s)
+        return {"ok": True}
+
+    @app.post("/api/skills/install_tap")
+    async def post_skills_install_tap(body: InstallTapBody):
+        """Install a SKILL.md straight from a trusted GitHub tap (see
+        skills.TRUSTED_TAPS) — the official anthropics/openai/nvidia/
+        huggingface skill repos, no scanner needed because these are
+        vendor-published, not arbitrary community content."""
+        try:
+            fetched = await skills.fetch_github_skill(body.tap, body.skill_path)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
+            raise HTTPException(status_code=502, detail=f"Gagal mengambil skill: {safe}")
+        skill_id = f"{body.tap.split('/')[0]}-{body.skill_path.rsplit('/', 1)[-1]}"
+        name = fetched["name"] or body.skill_path.rsplit("/", 1)[-1]
+        description = fetched["description"] or f"Skill dari {body.tap}/{body.skill_path}"
+        skills.write_skill_file(paths.skills_dir(), skill_id, name, description, fetched["content"])
+        s = config.load_settings()
+        s.skills = [sk for sk in s.skills if sk.id != skill_id] + [
+            config.Skill(id=skill_id, name=name, description=description, enabled=True)]
+        config.save_settings(s)
+        return {"id": skill_id, "name": name, "description": description,
+                "enabled": True, "content": fetched["content"]}
+
+    @app.get("/api/skills/catalog")
+    async def get_skills_catalog(force: bool = False):
+        return await skills.fetch_agenticskills_catalog(force=force)
+
+    @app.post("/api/skills/install_catalog")
+    async def post_skills_install_catalog(body: InstallCatalogBody):
+        """Install straight from the agenticskills.io catalog — a
+        community aggregator, not a vendor-published tap. Lands disabled
+        (enabled=False) on purpose: nothing here scans arbitrary GitHub
+        content before it can end up in the model's context, so the
+        operator has to look at it and flip it on themselves."""
+        try:
+            fetched = await skills.fetch_agenticskills_skill(body.slug)
+        except Exception as e:
+            safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
+            raise HTTPException(status_code=502, detail=f"Gagal memasang skill: {safe}")
+        skill_id = f"agenticskills-{body.slug}"
+        name = fetched["name"] or body.slug
+        description = fetched["description"] or f"Skill dari agenticskills.io/{body.slug}"
+        skills.write_skill_file(paths.skills_dir(), skill_id, name, description, fetched["content"])
+        s = config.load_settings()
+        s.skills = [sk for sk in s.skills if sk.id != skill_id] + [
+            config.Skill(id=skill_id, name=name, description=description, enabled=False)]
+        config.save_settings(s)
+        return {"id": skill_id, "name": name, "description": description,
+                "enabled": False, "content": fetched["content"]}
 
     @app.get("/api/mcp/tools")
     async def mcp_tools():

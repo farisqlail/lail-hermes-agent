@@ -81,26 +81,23 @@ a {
   text-decoration: none;
 }
 
-/* Custom High-Tech Scrollbars */
+/* Clean, Minimal Scrollbars */
 ::-webkit-scrollbar {
   width: 4px;
   height: 4px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--surface-0);
-  border-left: 1px solid var(--border);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--accent);
-  box-shadow: var(--border-glow);
-  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text);
-  box-shadow: 0 0 10px var(--accent);
+  background: rgba(255, 255, 255, 0.25);
 }
 
 /* Markdown Rendering Styles */

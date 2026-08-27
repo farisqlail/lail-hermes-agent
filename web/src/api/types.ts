@@ -11,6 +11,14 @@ export interface McpServer {
   oauth: boolean;
 }
 
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  enabled: boolean;
+}
+
 export interface IntegrateEvent {
   kind: 'round' | 'attempt' | 'login' | 'need_secret' | 'done';
   action?: string;
@@ -36,6 +44,16 @@ export interface Settings {
   model: string;
   planner_temperature: number;
   chat_model: string;
+  vision_enabled: boolean;
+  vision_model: string;
+  title_gen_enabled: boolean;
+  title_model: string;
+  compression_enabled: boolean;
+  compression_model: string;
+  approval_note_enabled: boolean;
+  approval_model: string;
+  mcp_routing_enabled: boolean;
+  mcp_routing_model: string;
   chat_temperature: number;
   agent_name: string;
   allowed_user_ids: number[];
@@ -73,6 +91,8 @@ export interface Settings {
   wakeword_threshold: number;
   wakeword_cooldown_ms: number;
   mcp_servers: McpServer[];
+  // Skill content lives on disk (SKILL.md), not in Settings — use
+  // api.getSkills()/saveSkills() (backed by /api/skills), not this object.
   calendar_ics_url: string;
 }
 

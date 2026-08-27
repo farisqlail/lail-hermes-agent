@@ -492,6 +492,61 @@ def test_chat_stream_sse_streams_and_persists(hermes_home):
     assert msgs[-1]["role"] == "assistant" and msgs[-1]["content"] == "Halo dunia"
 
 
+def test_chat_pending_list_serializes_the_risk_note(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    app = create_app(store)
+    client = TestClient(app)
+
+    app.state.engine.pending.add("fs__delete_file", {"path": "x"}, "web",
+                                 risk_note="Ini akan menghapus file secara permanen.")
+
+    listed = client.get("/api/chat/pending").json()
+    assert listed[0]["risk_note"] == "Ini akan menghapus file secara permanen."
+
+
+async def test_chat_stream_upgrades_the_fallback_title_once_title_gen_resolves(hermes_home):
+    """First message on a fresh session ends up titled by title_gen — not
+    stuck on 'Percakapan Baru' or the raw truncated fallback — once the
+    fire-and-forget upgrade task has had a chance to run."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    async def fake_chat(history, tools=None, dispatch=None):
+        return "ok"
+
+    async def fake_title_gen(text):
+        return "Judul Rapi Dari Model"
+
+    client = TestClient(create_app(store, chat=fake_chat, title_gen=fake_title_gen))
+    sid = client.post("/api/sessions").json()["session_id"]
+
+    r = client.post("/api/chat/stream", json={"text": "halo", "session_id": sid})
+    assert r.status_code == 200
+    await asyncio.sleep(0)
+    assert next(s["title"] for s in store.list_sessions()
+                if s["session_id"] == sid) == "Judul Rapi Dari Model"
+
+
+async def test_chat_stream_falls_back_to_truncated_title_without_title_gen(hermes_home):
+    """No title_gen wired (no NVIDIA key, or the operator turned it off) must
+    still rename away from 'Percakapan Baru' using the old truncation."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    async def fake_chat(history, tools=None, dispatch=None):
+        return "ok"
+
+    client = TestClient(create_app(store, chat=fake_chat))  # no title_gen
+    sid = client.post("/api/sessions").json()["session_id"]
+
+    r = client.post("/api/chat/stream", json={"text": "halo dunia", "session_id": sid})
+    assert r.status_code == 200
+    await asyncio.sleep(0)
+    assert next(s["title"] for s in store.list_sessions()
+                if s["session_id"] == sid) == "halo dunia"
+
+
 def test_chat_stream_without_agent_streams_canned(hermes_home):
     """chat=None still streams a usable canned reply, never a dead pane."""
     paths.ensure_dirs()
@@ -1948,3 +2003,145 @@ async def test_pending_actions_do_not_cross_sessions(hermes_home):
 
     r = client.post("/api/chat/pending/resolve", json={"approved": True, "session_id": "sess-a"})
     assert r.json()["ok"] is True and hub.calls == ["pc__write_file"]
+
+
+def test_skills_roundtrip_writes_and_reads_the_skill_md_file(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+
+    assert client.get("/api/skills").json() == []
+
+    body = [{"id": "meeting-notes", "name": "Ringkasan Rapat", "description": "Ringkas notulen",
+            "enabled": True, "content": "Baca transkrip, ekstrak keputusan."}]
+    r = client.post("/api/skills", json=body)
+    assert r.json() == {"ok": True}
+
+    listed = client.get("/api/skills").json()
+    assert listed == [{"id": "meeting-notes", "name": "Ringkasan Rapat",
+                       "description": "Ringkas notulen", "enabled": True,
+                       "content": "Baca transkrip, ekstrak keputusan."}]
+    # the content really lives on disk as a SKILL.md, not just in config.json
+    assert (paths.skills_dir() / "meeting-notes" / "SKILL.md").is_file()
+
+
+def test_skills_post_removes_the_file_for_a_dropped_skill(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+
+    client.post("/api/skills", json=[{"id": "temp", "name": "Temp", "description": "x",
+                                      "enabled": True, "content": "y"}])
+    assert (paths.skills_dir() / "temp" / "SKILL.md").is_file()
+
+    client.post("/api/skills", json=[])
+    assert client.get("/api/skills").json() == []
+    assert not (paths.skills_dir() / "temp" / "SKILL.md").exists()
+
+
+def test_skills_post_rejects_malformed_body(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+    assert client.post("/api/skills", json=[{"id": "x"}]).status_code == 422
+    assert client.post("/api/skills", json={"not": "a list"}).status_code == 422
+
+
+async def test_install_tap_rejects_an_untrusted_tap(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+
+    r = client.post("/api/skills/install_tap", json={"tap": "randomguy/repo", "skill_path": "x"})
+    assert r.status_code == 400
+    assert client.get("/api/skills").json() == []
+
+
+def test_skills_catalog_proxies_the_scraped_list(hermes_home, monkeypatch):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+
+    from hermes import skills as skills_mod
+
+    async def fake_catalog(force=False):
+        return [{"slug": "taste-skill", "name": "Taste Skill", "description": "desc"}]
+
+    monkeypatch.setattr(skills_mod, "fetch_agenticskills_catalog", fake_catalog)
+
+    r = client.get("/api/skills/catalog")
+    assert r.json() == [{"slug": "taste-skill", "name": "Taste Skill", "description": "desc"}]
+
+
+async def test_install_catalog_lands_disabled_by_default(hermes_home, monkeypatch):
+    """Community-sourced install (unlike a trusted tap) must never come in
+    enabled=True — that's the whole safety compromise for having no
+    scanner. A regression here means untrusted content becomes reachable
+    by use_skill the moment it is installed."""
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+
+    from hermes import skills as skills_mod
+
+    async def fake_fetch(slug):
+        assert slug == "taste-skill"
+        return {"name": "Taste Skill", "description": "Anti-slop frontend skill.",
+                "content": "Isi panduan taste."}
+
+    monkeypatch.setattr(skills_mod, "fetch_agenticskills_skill", fake_fetch)
+
+    r = client.post("/api/skills/install_catalog", json={"slug": "taste-skill"})
+    assert r.status_code == 200
+    installed = r.json()
+    assert installed["enabled"] is False
+    assert installed["content"] == "Isi panduan taste."
+
+    listed = client.get("/api/skills").json()
+    assert len(listed) == 1 and listed[0]["enabled"] is False
+
+    # the operator can still flip it on afterward, same as any other skill
+    listed[0]["enabled"] = True
+    client.post("/api/skills", json=listed)
+    assert client.get("/api/skills").json()[0]["enabled"] is True
+
+
+async def test_install_catalog_surfaces_a_fetch_failure_as_502(hermes_home, monkeypatch):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+
+    from hermes import skills as skills_mod
+
+    async def fake_fetch(slug):
+        raise ValueError("tidak menemukan sumber GitHub untuk skill: ghost")
+
+    monkeypatch.setattr(skills_mod, "fetch_agenticskills_skill", fake_fetch)
+
+    r = client.post("/api/skills/install_catalog", json={"slug": "ghost"})
+    assert r.status_code == 502
+    assert client.get("/api/skills").json() == []
+
+
+async def test_install_tap_fetches_and_installs_from_a_trusted_tap(hermes_home, monkeypatch):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+    client = TestClient(create_app(store))
+
+    from hermes import skills as skills_mod
+
+    async def fake_fetch(tap, skill_path):
+        assert (tap, skill_path) == ("anthropics/skills", "skills/pdf")
+        return {"name": "pdf", "description": "Proses file PDF.", "content": "Isi panduan PDF."}
+
+    monkeypatch.setattr(skills_mod, "fetch_github_skill", fake_fetch)
+
+    r = client.post("/api/skills/install_tap",
+                    json={"tap": "anthropics/skills", "skill_path": "skills/pdf"})
+    assert r.status_code == 200
+    installed = r.json()
+    assert installed["name"] == "pdf"
+    assert installed["content"] == "Isi panduan PDF."
+
+    listed = client.get("/api/skills").json()
+    assert len(listed) == 1 and listed[0]["content"] == "Isi panduan PDF."

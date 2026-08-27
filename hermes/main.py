@@ -427,6 +427,23 @@ def _confirm_note(s) -> str:
     return "" if s.confirm_risky else _NO_CONFIRM_NOTE
 
 
+def _history_has_image(messages: list[dict]) -> bool:
+    """True if any message carries an image_url content part — the shape
+    uploads.as_content_parts() builds for a turn with an attachment."""
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list) and any(
+                isinstance(p, dict) and p.get("type") == "image_url" for p in content):
+            return True
+    return False
+
+
+def _pick_chat_model(settings, history: list[dict]) -> str:
+    if settings.vision_enabled and settings.vision_model and _history_has_image(history):
+        return settings.vision_model
+    return settings.chat_model or settings.model
+
+
 def build_nim_chat(settings, secrets):
     """The conversational agent behind the web UI chat pane.
 
@@ -558,6 +575,10 @@ def build_nim_chat(settings, secrets):
         "atau tunda ('cek API tiap 2 jam', 'jalankan backup besok jam 8', dll.), panggil `schedule_task` "
         "dengan parameter yang sesuai. Panggil `list_scheduled_tasks` untuk melihat daftar tugas terjadwal, "
         "atau `cancel_scheduled_task` untuk membatalkannya.\n\n"
+        "SKILL TERPASANG: bila alat `list_skills` tersedia, itu berarti operator sudah memasang satu "
+        "atau lebih instruksi siap pakai. Cek daftarnya bila permintaan pengguna terasa cocok dengan "
+        "salah satu skill, lalu panggil `use_skill` dengan nama persis dari hasilnya sebelum menjawab — "
+        "isi skill itu jadi panduan cara kamu menyusun jawaban untuk permintaan itu.\n\n"
     )
 
     async def chat(history: list[dict], tools=None, dispatch=None) -> str:
@@ -569,6 +590,7 @@ def build_nim_chat(settings, secrets):
         client = _client(current_settings.nvidia_base_url, secrets.nvidia_api_key,
                          PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
+        effective_model = _pick_chat_model(current_settings, history)
         # tools + dispatch are a curated, safe set supplied by the web layer
         # (list_projects, recent_tasks, get_task_detail, start_task) — NOT the
         # MCP hub, which carries ask_user and would deadlock a chat turn. Absent,
@@ -576,7 +598,7 @@ def build_nim_chat(settings, secrets):
         if not (tools and dispatch):
             resp = await _completion_with_retry(
                 lambda: client.chat.completions.create(
-                    model=current_settings.chat_model or current_settings.model, messages=msgs,
+                    model=effective_model, messages=msgs,
                     temperature=current_settings.chat_temperature))
             return resp.choices[0].message.content or ""
         called: dict = {}
@@ -588,7 +610,7 @@ def build_nim_chat(settings, secrets):
             last = i >= MAX_TOOL_ROUNDS - 1
             if i == MAX_TOOL_ROUNDS - 1:
                 msgs.append({"role": "user", "content": FINAL_ROUND_NUDGE})
-            kwargs = dict(model=current_settings.chat_model or current_settings.model,
+            kwargs = dict(model=effective_model,
                           messages=msgs, temperature=current_settings.chat_temperature)
             if not last:
                 kwargs["tools"] = tools
@@ -634,6 +656,7 @@ def build_nim_chat(settings, secrets):
         client = _client(current_settings.nvidia_base_url, secrets.nvidia_api_key,
                          PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
+        effective_model = _pick_chat_model(current_settings, history)
         use_tools = bool(tools and dispatch)
         # Timing on the path the operator watches fill. TTFT is measured from the
         # first request, not per round, so a tool round-trip shows up as the gap
@@ -650,7 +673,7 @@ def build_nim_chat(settings, secrets):
             last = i >= MAX_TOOL_ROUNDS - 1
             if i == MAX_TOOL_ROUNDS - 1 and use_tools:
                 msgs.append({"role": "user", "content": FINAL_ROUND_NUDGE})
-            kwargs = dict(model=current_settings.chat_model or current_settings.model, messages=msgs,
+            kwargs = dict(model=effective_model, messages=msgs,
                           temperature=current_settings.chat_temperature, stream=True,
                           stream_options={"include_usage": True})
             if use_tools and not last:
@@ -720,6 +743,175 @@ def build_nim_chat(settings, secrets):
 
     chat.stream = stream
     return chat
+
+TITLE_SYSTEM = (
+    "Ringkas pesan pengguna berikut menjadi judul singkat percakapan, "
+    "maksimal 6 kata, tanpa tanda kutip atau tanda baca penutup, dalam "
+    "bahasa yang sama dengan pesan pengguna. Jawab HANYA judulnya, tanpa "
+    "penjelasan tambahan."
+)
+
+
+def build_nim_title(settings, secrets):
+    """One-shot session-title generator, run fire-and-forget after a
+    session's first message.
+
+    Same never-raise contract as build_nim_facts: returns "" on any failure
+    (no key, provider error) so a bad title is a missed upgrade, never a
+    broken chat turn.
+    """
+    async def generate_title(text: str) -> str:
+        text = (text or "").strip()
+        s = config.load_settings()
+        if not s.title_gen_enabled or not secrets.nvidia_api_key or not text:
+            return ""
+        client = _client(s.nvidia_base_url, secrets.nvidia_api_key, 15)
+        try:
+            resp = await client.chat.completions.create(
+                model=s.title_model or s.chat_model or s.model,
+                messages=[{"role": "system", "content": TITLE_SYSTEM},
+                          {"role": "user", "content": text[:1000]}],
+                temperature=0, max_tokens=30)
+        except Exception as e:
+            print(f"Title generation failed: {_console_safe(e)}")
+            return ""
+        return (resp.choices[0].message.content or "").strip().strip('"').strip("'")
+    return generate_title
+
+
+COMPRESS_SYSTEM = (
+    "Kamu meringkas potongan lama sebuah percakapan menjadi catatan padat "
+    "berisi fakta, keputusan, dan konteks yang penting untuk diingat nanti. "
+    "Maksimal 200 kata, dalam bahasa Indonesia. Bila ada ringkasan sebelumnya, "
+    "gabungkan tanpa mengulang isi yang sama. Jawab HANYA isi ringkasannya, "
+    "tanpa judul atau penjelasan tambahan."
+)
+
+
+def build_nim_compressor(settings, secrets):
+    """Rolling context-compression: folds a batch of messages about to fall
+    out of the model's live window into (or on top of) a running summary.
+
+    Same never-raise contract as build_nim_facts/build_nim_title: returns ""
+    on any failure (no key, provider error, nothing to summarize) so a bad
+    summary is a missed compaction, never a broken turn — the caller
+    (chat_engine.maybe_compress) simply leaves the prior summary untouched.
+    """
+    async def compress(prior_summary: str, messages: list[dict]) -> str:
+        s = config.load_settings()
+        if not s.compression_enabled or not secrets.nvidia_api_key or not messages:
+            return ""
+        client = _client(s.nvidia_base_url, secrets.nvidia_api_key, 30)
+        convo = "\n".join(f'{m["role"]}: {m["content"]}' for m in messages
+                          if isinstance(m.get("content"), str))
+        user_content = (f"Ringkasan sebelumnya:\n{prior_summary}\n\n" if prior_summary else "") \
+            + f"Potongan percakapan baru:\n{convo}"
+        try:
+            resp = await client.chat.completions.create(
+                model=s.compression_model or s.chat_model or s.model,
+                messages=[{"role": "system", "content": COMPRESS_SYSTEM},
+                          {"role": "user", "content": user_content[:8000]}],
+                temperature=0, max_tokens=400)
+        except Exception as e:
+            print(f"Context compression failed: {_console_safe(e)}")
+            return ""
+        return (resp.choices[0].message.content or "").strip()
+    return compress
+
+
+APPROVAL_NOTE_SYSTEM = (
+    "Sebuah aksi tertahan menunggu persetujuan operator manusia. Jelaskan "
+    "dalam SATU kalimat pendek (bahasa Indonesia) apa yang akan dilakukan "
+    "aksi ini dan risikonya bila keliru, supaya operator bisa cepat "
+    "memutuskan. JANGAN menyarankan untuk menyetujui atau menolak — hanya "
+    "jelaskan faktanya, netral. Jawab HANYA kalimat penjelasannya."
+)
+
+
+def build_nim_approval_note(settings, secrets):
+    """One-shot risk-explanation generator for a pending (held-for-confirm)
+    write action.
+
+    Purely informational: this NEVER decides whether an action runs and
+    NEVER waives the operator's confirmation — the gate in
+    chat_engine.chat_dispatch (mcp_risk.is_risky_tool + confirm_risky) is
+    untouched by this. Letting an LLM auto-approve its own tool calls would
+    be a prompt-injection surface — untrusted content the agent just read
+    (an email, a web page) could talk the judge into waving through a
+    write it should not. This only helps the human read the card faster.
+
+    Same never-raise contract as the other build_nim_* helpers: "" on
+    failure just means the confirmation card shows without a note, exactly
+    like before this existed.
+    """
+    async def explain(tool: str, args: dict) -> str:
+        s = config.load_settings()
+        if not s.approval_note_enabled or not secrets.nvidia_api_key:
+            return ""
+        client = _client(s.nvidia_base_url, secrets.nvidia_api_key, 15)
+        try:
+            resp = await client.chat.completions.create(
+                model=s.approval_model or s.chat_model or s.model,
+                messages=[{"role": "system", "content": APPROVAL_NOTE_SYSTEM},
+                          {"role": "user",
+                           "content": f"tool: {tool}\nargs: "
+                                      f"{json.dumps(args, ensure_ascii=False)[:2000]}"}],
+                temperature=0, max_tokens=120)
+        except Exception as e:
+            print(f"Approval note generation failed: {_console_safe(e)}")
+            return ""
+        return (resp.choices[0].message.content or "").strip()
+    return explain
+
+
+ROUTING_SYSTEM = (
+    "Pilih tool mana dari daftar berikut yang relevan untuk membalas pesan "
+    "pengguna. Jawab HANYA nama-nama tool yang relevan, dipisah koma, tanpa "
+    "penjelasan. Kalau ragu antara beberapa tool, sertakan semuanya — lebih "
+    "baik kelebihan daripada sebuah tool yang dibutuhkan malah hilang dari "
+    "jawabanmu. Kalau benar-benar tidak ada yang relevan, jawab: tidak ada."
+)
+
+
+def build_nim_mcp_router(settings, secrets):
+    """Pre-filters a large MCP tool catalog down to what one turn likely
+    needs, so the main model isn't handed every connected server's tools on
+    every message. Purely a prompt-size/accuracy optimization — the main
+    model still does its own native function-calling on whatever subset it
+    receives, and the risky-write gate (mcp_risk.is_risky_tool) is
+    unaffected either way.
+
+    Returns None to mean "skip filtering, use the full catalog" — the fail
+    -open default for no key, a provider error, empty input text, or an
+    answer that names nothing from the catalog. A missed narrowing costs
+    nothing; a wrongly narrowed one could hide a tool the turn needed.
+    """
+    async def pick_relevant_tools(user_text: str, tool_names: list[str]) -> list[str] | None:
+        s = config.load_settings()
+        if (not s.mcp_routing_enabled or not secrets.nvidia_api_key
+                or not user_text.strip() or not tool_names):
+            return None
+        client = _client(s.nvidia_base_url, secrets.nvidia_api_key, 15)
+        catalog = "\n".join(tool_names)
+        try:
+            resp = await client.chat.completions.create(
+                model=s.mcp_routing_model or s.chat_model or s.model,
+                messages=[{"role": "system", "content": ROUTING_SYSTEM},
+                          {"role": "user",
+                           "content": f"Pesan pengguna: {user_text[:500]}\n\n"
+                                      f"Daftar tool:\n{catalog}"}],
+                temperature=0, max_tokens=300)
+        except Exception as e:
+            print(f"MCP tool routing failed: {_console_safe(e)}")
+            return None
+        raw = (resp.choices[0].message.content or "").strip()
+        if not raw or raw.lower() in ("tidak ada", "none"):
+            return []
+        picked = {t.strip() for t in raw.split(",")}
+        relevant = [n for n in tool_names if n in picked]
+        return relevant or None
+    return pick_relevant_tools
+
 
 def build_nim_facts(settings, secrets):
     """The fact extractor behind the operator memory.
@@ -1038,6 +1230,10 @@ async def run():
     planner = build_nim_planner(settings, secrets, hub)
     chat = build_nim_chat(settings, secrets)
     facts = build_nim_facts(settings, secrets)
+    title_gen = build_nim_title(settings, secrets)
+    compressor = build_nim_compressor(settings, secrets)
+    approval_note = build_nim_approval_note(settings, secrets)
+    mcp_router = build_nim_mcp_router(settings, secrets)
 
     # The engine's channel to the operator. Built before the bot so the
     # orchestrator can carry it into every code step; its on_ask/on_close are
@@ -1518,7 +1714,8 @@ async def run():
         ask_registry.on_ask = dummy_on_ask
         ask_registry.on_close = dummy_on_close
 
-    engine = ChatEngine(store, bridge=bridge, hub=hub, facts=facts)
+    engine = ChatEngine(store, bridge=bridge, hub=hub, facts=facts, compressor=compressor,
+                        approval_note=approval_note, mcp_router=mcp_router)
 
     # The one self-initiated thread in the process: a daily brief, a folder
     # watcher, and transient auto-retry, all off unless enabled in Settings. It
@@ -1537,7 +1734,7 @@ async def run():
     # streamable_http_app() creates the session manager; the parent lifespan
     # runs it, because Starlette ignores a mounted sub-app's own lifespan.
     ask_asgi = ask_mcp.streamable_http_app()
-    web = create_app(store, bridge=bridge, ask_registry=ask_registry, chat=chat, hub=hub, facts=facts, engine=engine, lifespan=lambda _app: ask_mcp.session_manager.run())
+    web = create_app(store, bridge=bridge, ask_registry=ask_registry, chat=chat, hub=hub, facts=facts, title_gen=title_gen, compressor=compressor, approval_note=approval_note, mcp_router=mcp_router, engine=engine, lifespan=lambda _app: ask_mcp.session_manager.run())
 
     web.mount(ask_server.MOUNT_PREFIX, ask_asgi)
     web.state.mcp_factory = real_mcp_session_factory

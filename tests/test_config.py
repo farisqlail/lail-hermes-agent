@@ -59,6 +59,13 @@ def test_engine_tuning_defaults_off():
     assert s.agy_model == ""
 
 
+def test_mcp_routing_defaults_off():
+    """mcp_routing trades latency for tool-selection accuracy — it must be
+    opt-in. Default-on added a full extra LLM round-trip before the first
+    token of every chat turn, including a plain 'halo'."""
+    assert config.Settings().mcp_routing_enabled is False
+
+
 def test_claude_effort_rejects_unknown_level():
     with pytest.raises(ValidationError):
         config.Settings(claude_effort="turbo")

@@ -8,6 +8,7 @@ def test_ensure_dirs_creates_tree(hermes_home):
     assert paths.config_dir().is_dir()
     assert paths.projects_dir().is_dir()
     assert paths.artifacts_dir().is_dir()
+    assert paths.skills_dir().is_dir()
     assert paths.db_path() == hermes_home / "hermes.db"
 
 def test_ensure_vault_seeds_a_valid_obsidian_vault(hermes_home):

@@ -16,12 +16,24 @@ import json
 import re
 from pathlib import Path
 
-from . import brain, config, figma_browser, ics, imagegen, launcher, mcp_hub, mcp_risk, paths, postmortem, stitch_bridge, uploads, ytclip
+from . import brain, config, figma_browser, ics, imagegen, launcher, mcp_hub, mcp_risk, paths, postmortem, skills, stitch_bridge, uploads, ytclip
 from .pending_actions import PendingAction, PendingStore
 from .project_resolve import parse_project_ref
 from .telegram_bridge import new_task_id
 
 CHAT_HISTORY_LIMIT = 20   # turns fed back to the model — caps prompt cost
+# Compress once this many messages have fallen out of the live window since
+# the last compression — batches the LLM summarization call instead of
+# running it every single turn once the threshold is first crossed.
+COMPRESS_TRIGGER_EXTRA = 20
+# Below this many connected MCP tools, sending the whole catalog is cheap
+# enough that pre-filtering (an extra LLM round-trip) is not worth it.
+# Hermes' own default-enabled servers (pc, browser, win, obsidian) commonly
+# combine to 20-40+ tools on a fresh install — the bar sits above that on
+# purpose, so routing (opt-in; see Settings.mcp_routing_enabled) only fires
+# for an operator who has stacked on real extra integrations, not for
+# everyone out of the box.
+MCP_ROUTING_THRESHOLD = 40
 IMAGE_MARKER = "\n\n[gambar dilampirkan]"
 DOCUMENT_MARKER = "\n\n[berkas dilampirkan]"
 
@@ -673,6 +685,26 @@ CHAT_TOOLS = [
                         "sampai pengguna selesai login (maksimal 5 menit) dan "
                         "menyimpan sesinya secara permanen."),
         "parameters": {"type": "object", "properties": {}}}},
+    # Filtered out of chat_tools() entirely when no skill is installed — see
+    # that method. Content stays out of list_skills on purpose (name +
+    # description only); use_skill is the only call that pulls the full
+    # instruction text into context, so an idle installed skill costs one
+    # short list line, never a prompt-sized block.
+    {"type": "function", "function": {
+        "name": "list_skills",
+        "description": ("Daftar skill (instruksi siap pakai) yang terpasang dan aktif, "
+                        "beserta deskripsi singkatnya. Panggil ini bila permintaan "
+                        "pengguna terasa cocok dengan salah satu skill sebelum menjawab "
+                        "dari ingatan sendiri."),
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "use_skill",
+        "description": ("Ambil isi instruksi lengkap sebuah skill berdasarkan nama "
+                        "persis dari hasil list_skills, lalu ikuti instruksi itu untuk "
+                        "menyusun jawabanmu."),
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "nama skill persis seperti hasil list_skills"}},
+            "required": ["name"]}}},
 ]
 
 
@@ -686,11 +718,21 @@ class ChatEngine:
     """
 
     def __init__(self, store, bridge=None, hub=None, facts=None,
-                 pending: PendingStore | None = None):
+                 pending: PendingStore | None = None, compressor=None,
+                 approval_note=None, mcp_router=None):
         self.store = store
         self.bridge = bridge
         self.hub = hub
         self.facts = facts
+        self.compressor = compressor
+        # async (tool, args) -> str; purely informational risk explanation
+        # attached to a pending action — see build_nim_approval_note for why
+        # this never decides or auto-approves anything.
+        self.approval_note = approval_note
+        # async (user_text, tool_names) -> list[str] | None; narrows a large
+        # MCP catalog in chat_tools(). None (unwired, or the router's own
+        # fail-open) means "use everything" — see build_nim_mcp_router.
+        self.mcp_router = mcp_router
         self.pending = pending if pending is not None else PendingStore()
         self._mcp_tools_cache = None
 
@@ -703,7 +745,13 @@ class ChatEngine:
 
     def history_with_context(self, sid: str, images: list[Path] | None = None,
                              documents: list[Path] | None = None) -> list[dict]:
-        history = [self.brain_context(), *self.store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)]
+        history = [self.brain_context()]
+        summary, _ = self.store.get_context_summary(sid)
+        if summary:
+            history.append({"role": "system",
+                            "content": "Ringkasan percakapan sebelumnya (di luar "
+                                       f"riwayat di bawah ini):\n{summary}"})
+        history += self.store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)
         if (images or documents) and history[-1]["role"] == "user":
             said = (history[-1]["content"]
                     .replace(IMAGE_MARKER, "").replace(DOCUMENT_MARKER, ""))
@@ -784,6 +832,22 @@ class ChatEngine:
             safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
             print(f"Could not learn from turn: {safe}")
 
+    async def maybe_compress(self, sid: str) -> None:
+        """Fold the tail about to fall out of the live window into the
+        rolling summary, once enough of it has piled up. A no-op turn (no
+        compressor wired, threshold not met, or the LLM call failed) leaves
+        the prior summary exactly as it was — see build_nim_compressor."""
+        if self.compressor is None:
+            return
+        summary, through_id = self.store.get_context_summary(sid)
+        messages, boundary = self.store.get_messages_for_compression(
+            sid, keep_last=CHAT_HISTORY_LIMIT, already_through=through_id)
+        if len(messages) < COMPRESS_TRIGGER_EXTRA:
+            return
+        new_summary = await self.compressor(summary, messages)
+        if new_summary:
+            self.store.save_context_summary(sid, new_summary, boundary)
+
     def make_dispatch(self, session_id: str, images: list[Path] | None = None,
                       chat_id: int = 0, user_id: int = 0):
         started: dict = {}
@@ -810,6 +874,24 @@ class ChatEngine:
                     return json.dumps(
                         {"task_id": tid, "status": t["status"], "text": t["text"],
                          "logs": self.store.get_logs(tid)[-8:]}, ensure_ascii=False)
+                if name == "list_skills":
+                    s = config.load_settings()
+                    return json.dumps(
+                        [{"name": sk.name, "description": sk.description}
+                         for sk in s.skills if sk.enabled], ensure_ascii=False)
+                if name == "use_skill":
+                    s = config.load_settings()
+                    wanted = str(args.get("name") or "")
+                    sk = next((sk for sk in s.skills if sk.enabled and sk.name == wanted), None)
+                    if sk is None:
+                        return json.dumps(
+                            {"error": f"skill tidak ditemukan atau tidak aktif: {wanted}"},
+                            ensure_ascii=False)
+                    on_disk = skills.read_skill_file(paths.skills_dir(), sk.id)
+                    if on_disk is None:
+                        return json.dumps(
+                            {"error": f"berkas skill hilang di disk: {wanted}"}, ensure_ascii=False)
+                    return json.dumps({"name": sk.name, "content": on_disk["content"]}, ensure_ascii=False)
                 if name == "failure_report":
                     limit = int(args.get("limit") or 50)
                     rows = [t for t in self.store.list_tasks(limit=limit)
@@ -1301,13 +1383,18 @@ class ChatEngine:
                 hub = self.hub
                 if hub is not None and mcp_risk.is_mcp_name(name):
                     if config.load_settings().confirm_risky and mcp_risk.is_risky_tool(name):
+                        risk_note = ""
+                        if self.approval_note is not None:
+                            risk_note = await self.approval_note(name, args)
                         pa = self.pending.add(name, args, session_id,
-                                              chat_id=chat_id or None)
+                                              chat_id=chat_id or None,
+                                              risk_note=risk_note)
                         pending_created.append(pa)
                         return json.dumps({
                             "status": "pending_confirmation",
                             "pending_id": pa.id,
                             "tool": name, "args": args,
+                            "risk_note": risk_note,
                             "note": ("Aksi menulis/mengirim/mengubah data ini TERTAHAN, "
                                      "menunggu persetujuan operator (tombol atau ucapkan "
                                      "'konfirmasi' / 'batal'). BELUM dijalankan — jangan "
@@ -1339,7 +1426,7 @@ class ChatEngine:
         wrapped.pending_created = dispatch.pending_created
         return wrapped
 
-    async def chat_tools(self) -> list[dict]:
+    async def chat_tools(self, text: str | None = None) -> list[dict]:
         base = list(CHAT_TOOLS)
         if not config.load_settings().image_model:
             base = [t for t in base if t["function"]["name"] != "generate_image"]
@@ -1348,6 +1435,9 @@ class ChatEngine:
             base = [t for t in base
                     if t["function"]["name"] not in
                     ("youtube_clip", "viral_clip", "viral_clips")]
+        if not config.load_settings().skills:
+            base = [t for t in base
+                    if t["function"]["name"] not in ("list_skills", "use_skill")]
         hub = self.hub
         if hub is None:
             return base
@@ -1362,7 +1452,13 @@ class ChatEngine:
             if cache:
                 self._mcp_tools_cache = cache
         from .mcp_hub import to_openai_tools
-        return base + to_openai_tools(cache)
+        mcp_tools = to_openai_tools(cache)
+        if self.mcp_router is not None and text and len(mcp_tools) > MCP_ROUTING_THRESHOLD:
+            names = [t["function"]["name"] for t in mcp_tools]
+            relevant = await self.mcp_router(text, names)
+            if relevant is not None:
+                mcp_tools = [t for t in mcp_tools if t["function"]["name"] in relevant]
+        return base + mcp_tools
 
     async def resolve_pending(self, pa: PendingAction, approved: bool) -> dict:
         self.pending.pop(pa.id)
@@ -1416,7 +1512,7 @@ class ChatEngine:
             try:
                 turn, auto_id = await self.history_for_turn(session_id, text, images,
                                                              dispatch, documents)
-                reply = await chat(turn, tools=await self.chat_tools(), dispatch=dispatch)
+                reply = await chat(turn, tools=await self.chat_tools(text), dispatch=dispatch)
             except Exception as e:
                 safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
                 reply = f"(Maaf, chat gagal: {safe})"
@@ -1430,9 +1526,10 @@ class ChatEngine:
         if documents:
             uploads.discard(documents)
         await self.learn_from_turn(text, clean)
+        await self.maybe_compress(session_id)
         return {"reply": clean, "task_id": auto_id,
                 "pending": [{"id": pa.id, "tool": pa.tool, "args": pa.args,
-                             "summary": pa.summary()}
+                             "summary": pa.summary(), "risk_note": pa.risk_note}
                             for pa in dispatch.pending_created]}
 
     async def run_resume_turn(self, session_id: str, chat, chat_id: int = 0,
@@ -1453,7 +1550,7 @@ class ChatEngine:
         self.store.add_message(session_id, "assistant", clean)
         return {"reply": clean,
                 "pending": [{"id": pa.id, "tool": pa.tool, "args": pa.args,
-                             "summary": pa.summary()}
+                             "summary": pa.summary(), "risk_note": pa.risk_note}
                             for pa in dispatch.pending_created]}
 
 

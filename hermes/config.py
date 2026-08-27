@@ -34,6 +34,25 @@ class McpServer(BaseModel):
     # themselves live outside the settings file — see hermes/mcp_oauth.py.
     oauth: bool = False
 
+
+class Skill(BaseModel):
+    """A reusable instruction block the chat agent can pull into context on
+    demand — installed/removed/toggled exactly like an McpServer, just with
+    no live connection to test. `id` is stable across a rename so the web
+    catalog can tell "already installed" apart from "same name, different
+    skill".
+
+    Deliberately no `content` field: the instruction body lives on disk as a
+    real SKILL.md file (skills_dir()/<id>/SKILL.md, see hermes/skills.py),
+    not in config.json — that's what makes an installed skill a portable
+    file rather than a blob welded to this settings object, and it means
+    list_skills() (name+description only, cheap on every turn) can never
+    accidentally leak the body; only use_skill(name) reads the file."""
+    id: str
+    name: str
+    description: str
+    enabled: bool = True
+
 def _default_mcp_servers() -> list[McpServer]:
     """The server list a fresh install starts with.
 
@@ -105,6 +124,45 @@ class Settings(BaseModel):
     # reason to split them appears.
     chat_model: str = ""
     chat_temperature: float = 0.3
+    # Auxiliary features (vision routing, title-gen, compression, approval
+    # notes, MCP routing) each have an on/off switch plus an optional model
+    # override. On by default — that was the only behavior before the
+    # switch existed, so upgrading an existing install must not silently
+    # turn any of them off. Off makes chat_tools()/maybe_compress()/etc.
+    # skip the feature outright, checked live via config.load_settings() on
+    # every call — no restart needed to flip it. The *_model field only
+    # matters while its switch is on; empty means "use chat_model/model".
+    vision_enabled: bool = True
+    # Model swapped in for a chat turn that carries an image attachment. Empty
+    # falls back to chat_model/model like the other overrides — a chat_model
+    # picked for text (cheap, fast) may not accept image_url content at all.
+    vision_model: str = ""
+    title_gen_enabled: bool = True
+    # Model for the one-shot session-title generator. Empty falls back to
+    # chat_model/model — title generation is cheap enough to ride the same
+    # model as chat unless the operator wants something smaller/faster.
+    title_model: str = ""
+    compression_enabled: bool = True
+    # Model for rolling context compression (chat_engine.maybe_compress).
+    # Empty falls back to chat_model/model.
+    compression_model: str = ""
+    approval_note_enabled: bool = True
+    # Model for the pending-action risk note (main.build_nim_approval_note).
+    # Purely informational — see that function's docstring for why this
+    # never auto-approves anything. Empty falls back to chat_model/model.
+    approval_model: str = ""
+    # Off by default, unlike the other four switches: this one trades
+    # latency for tool-selection accuracy, adding a full extra LLM
+    # round-trip before the real completion even starts. Default-enabled
+    # MCP servers alone (pc, browser, win, obsidian) commonly exceed
+    # MCP_ROUTING_THRESHOLD, so default-on meant paying that extra
+    # round-trip on every turn, including a plain "halo" — an operator
+    # must opt in deliberately, knowing the tradeoff.
+    mcp_routing_enabled: bool = False
+    # Model for pre-filtering a large MCP tool catalog down to what a turn
+    # actually needs (chat_engine.chat_tools). Empty falls back to
+    # chat_model/model.
+    mcp_routing_model: str = ""
     # Image generation runs through the same OpenAI-compatible gateway, but a
     # different model: one that returns a picture inline in the chat reply (a
     # `data:image/...;base64` link), e.g. 9Router's `ag/gemini-3.1-flash-image`.
@@ -139,6 +197,11 @@ class Settings(BaseModel):
     timeout_build_s: int = 1200
     timeout_test_s: int = 600
     mcp_servers: list[McpServer] = Field(default_factory=_default_mcp_servers)
+    # No default catalog here on purpose — the presets a fresh install offers
+    # live in the web Skills catalog (ConfigSkills.tsx) only, same split as
+    # the MCP 1-click catalog: backend stores whatever got installed,
+    # frontend owns what's offered.
+    skills: list[Skill] = Field(default_factory=list)
     # Google Calendar's "secret address in iCal format" (Settings -> a calendar
     # -> Integrate calendar). Read-only by construction and needs no OAuth
     # client, which is the whole reason it is here rather than a calendar MCP
