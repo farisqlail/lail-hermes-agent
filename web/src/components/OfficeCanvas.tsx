@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { Employee } from '../api/types';
 import {
   Maximize2,
@@ -88,6 +90,70 @@ const STATUS_COLOR_HEX = {
   on_break: 0xf59e0b,
   idle: 0x94a3b8,
 };
+
+// Rigged GLTF avatar asset — drop a rigged humanoid GLB with Walk/Idle/Sit
+// (optionally Type/Present) animation clips here to upgrade avatars from the
+// procedural box-people + sine-wave limb pivots below. Until this file
+// exists (or fails to load), loadAvatarModel() resolves null and every
+// avatar keeps using the box-geometry fallback exactly as before — this is
+// a no-op change with no asset present.
+const AVATAR_MODEL_URL = '/assets/models/employee.glb';
+
+interface AvatarModel {
+  scene: THREE.Group;
+  animations: THREE.AnimationClip[];
+}
+
+let _avatarModelPromise: Promise<AvatarModel | null> | null = null;
+function loadAvatarModel(): Promise<AvatarModel | null> {
+  if (_avatarModelPromise) return _avatarModelPromise;
+  _avatarModelPromise = new GLTFLoader()
+    .loadAsync(AVATAR_MODEL_URL)
+    .then((gltf) => ({ scene: gltf.scene, animations: gltf.animations }))
+    .catch(() => null);
+  return _avatarModelPromise;
+}
+
+type RiggedActionKey = 'walk' | 'idle' | 'sit' | 'type' | 'present';
+
+function pickClip(clips: THREE.AnimationClip[], keywords: string[]): THREE.AnimationClip | undefined {
+  return clips.find((c) => keywords.some((k) => c.name.toLowerCase().includes(k)));
+}
+
+// Matches clips by fuzzy name since the eventual asset's exact clip names
+// (e.g. Mixamo exports) aren't known yet. Missing clips just leave that
+// action key unset — setRiggedAction() falls back to 'idle' when a target
+// key has no action.
+function buildRiggedActions(
+  mixer: THREE.AnimationMixer,
+  clips: THREE.AnimationClip[]
+): Partial<Record<RiggedActionKey, THREE.AnimationAction>> {
+  const actions: Partial<Record<RiggedActionKey, THREE.AnimationAction>> = {};
+  const keywordMap: [RiggedActionKey, string[]][] = [
+    ['walk', ['walk']],
+    ['idle', ['idle']],
+    ['sit', ['sit']],
+    ['type', ['typ']],
+    ['present', ['present', 'talk', 'gesture']],
+  ];
+  for (const [key, keywords] of keywordMap) {
+    const clip = pickClip(clips, keywords);
+    if (clip) actions[key] = mixer.clipAction(clip);
+  }
+  return actions;
+}
+
+// Crossfades to the target action only when the state actually changed, so
+// this is safe to call every frame from the animate loop.
+function setRiggedAction(av: AvatarMeshGroup, key: RiggedActionKey) {
+  if (!av.actions || av.currentActionKey === key) return;
+  const next = av.actions[key] ?? av.actions.idle;
+  if (!next) return;
+  const prev = av.currentActionKey ? av.actions[av.currentActionKey] : undefined;
+  next.reset().fadeIn(0.3).play();
+  prev?.fadeOut(0.3);
+  av.currentActionKey = key;
+}
 
 // Procedural R6-style Face Canvas Texture
 let _faceTexture: THREE.CanvasTexture | null = null;
@@ -233,16 +299,22 @@ function createSpeechBubbleSprite(): THREE.Sprite {
 
 interface AvatarMeshGroup {
   group: THREE.Group;
-  bodyMesh: THREE.Mesh;
-  headMesh: THREE.Mesh;
   haloRing: THREE.Mesh;
   auraRing: THREE.Mesh;
   nameSprite: THREE.Sprite;
   speechBubble: THREE.Sprite;
-  leftArmPivot: THREE.Group;
-  rightArmPivot: THREE.Group;
-  leftLegPivot: THREE.Group;
-  rightLegPivot: THREE.Group;
+  // Box-people fields (present when rigged === false)
+  bodyMesh?: THREE.Mesh;
+  headMesh?: THREE.Mesh;
+  leftArmPivot?: THREE.Group;
+  rightArmPivot?: THREE.Group;
+  leftLegPivot?: THREE.Group;
+  rightLegPivot?: THREE.Group;
+  // GLTF rigged fields (present when rigged === true)
+  rigged: boolean;
+  mixer?: THREE.AnimationMixer;
+  actions?: Partial<Record<RiggedActionKey, THREE.AnimationAction>>;
+  currentActionKey?: RiggedActionKey;
   currentX: number;
   currentZ: number;
   targetX: number;
@@ -254,6 +326,199 @@ interface AvatarMeshGroup {
   nextMoveAt: number;
   arrived: boolean;
   zoneStatus: Employee['status'];
+}
+
+// Name tag / speech bubble / halo / aura — shared between the box-people and
+// rigged-GLTF avatar paths, since both are just a THREE.Group root regardless
+// of what's parented underneath.
+function createOverheadUI(group: THREE.Group, emp: Employee, isSelected: boolean) {
+  const nameSprite = createNameSprite(emp.name, emp.role);
+  nameSprite.position.set(0, 2.35, 0);
+  group.add(nameSprite);
+
+  const speechBubble = createSpeechBubbleSprite();
+  speechBubble.position.set(0, 2.95, 0);
+  speechBubble.visible = false;
+  group.add(speechBubble);
+
+  const haloGeo = new THREE.RingGeometry(0.45, 0.55, 32);
+  haloGeo.rotateX(-Math.PI / 2);
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.9,
+  });
+  const haloRing = new THREE.Mesh(haloGeo, haloMat);
+  haloRing.position.set(0, 2.0, 0);
+  haloRing.visible = isSelected;
+  group.add(haloRing);
+
+  const auraGeo = new THREE.RingGeometry(0.65, 0.82, 32);
+  auraGeo.rotateX(-Math.PI / 2);
+  const auraMat = new THREE.MeshBasicMaterial({
+    color: STATUS_COLOR_HEX[emp.status] || 0x94a3b8,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.75,
+  });
+  const auraRing = new THREE.Mesh(auraGeo, auraMat);
+  auraRing.position.set(0, 0.08, 0);
+  group.add(auraRing);
+
+  return { nameSprite, speechBubble, haloRing, auraRing };
+}
+
+function buildBoxAvatar(group: THREE.Group, emp: Employee, chosenPoi: OfficePOI, isSelected: boolean): AvatarMeshGroup {
+  let colorHash = 0;
+  for (let i = 0; i < emp.name.length; i++) colorHash = (colorHash * 31 + emp.name.charCodeAt(i)) >>> 0;
+  const shirtPalette = [0x38bdf8, 0xf59e0b, 0x10b981, 0xec4899, 0x8b5cf6, 0x6366f1];
+  const shirtColor = shirtPalette[colorHash % shirtPalette.length];
+  const pantsColor = 0x1e293b;
+  const skinColor = 0xfde047;
+
+  // Torso
+  const bodyGeo = new THREE.BoxGeometry(0.75, 0.75, 0.4);
+  const bodyMat = new THREE.MeshStandardMaterial({ color: shirtColor, roughness: 0.65 });
+  const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+  bodyMesh.position.set(0, 0.98, 0);
+  bodyMesh.castShadow = true;
+  group.add(bodyMesh);
+
+  // Head with Face
+  const headGeo = new THREE.BoxGeometry(0.48, 0.48, 0.48);
+  const skinMat = new THREE.MeshStandardMaterial({ color: skinColor, roughness: 0.5 });
+  const faceMat = new THREE.MeshStandardMaterial({ map: getFaceTexture(), roughness: 0.5 });
+  const headMaterials = [skinMat, skinMat, skinMat, skinMat, faceMat, skinMat];
+  const headMesh = new THREE.Mesh(headGeo, headMaterials);
+  headMesh.position.set(0, 1.5, 0);
+  headMesh.castShadow = true;
+  group.add(headMesh);
+
+  // Hair / Cap
+  const hairGeo = new THREE.BoxGeometry(0.52, 0.16, 0.52);
+  const hairMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.8 });
+  const hairMesh = new THREE.Mesh(hairGeo, hairMat);
+  hairMesh.position.set(0, 1.74, 0);
+  group.add(hairMesh);
+
+  // Arms with Pivot Joints
+  const armGeo = new THREE.BoxGeometry(0.28, 0.65, 0.28);
+  const armMat = new THREE.MeshStandardMaterial({ color: shirtColor, roughness: 0.65 });
+
+  const leftArmPivot = new THREE.Group();
+  leftArmPivot.position.set(-0.52, 1.3, 0);
+  const leftArm = new THREE.Mesh(armGeo, armMat);
+  leftArm.position.set(0, -0.28, 0);
+  leftArm.castShadow = true;
+  leftArmPivot.add(leftArm);
+  group.add(leftArmPivot);
+
+  const rightArmPivot = new THREE.Group();
+  rightArmPivot.position.set(0.52, 1.3, 0);
+  const rightArm = new THREE.Mesh(armGeo, armMat);
+  rightArm.position.set(0, -0.28, 0);
+  rightArm.castShadow = true;
+  rightArmPivot.add(rightArm);
+  group.add(rightArmPivot);
+
+  // Legs with Hip Pivots
+  const legGeo = new THREE.BoxGeometry(0.32, 0.65, 0.32);
+  const legMat = new THREE.MeshStandardMaterial({ color: pantsColor, roughness: 0.8 });
+
+  const leftLegPivot = new THREE.Group();
+  leftLegPivot.position.set(-0.18, 0.62, 0);
+  const leftLeg = new THREE.Mesh(legGeo, legMat);
+  leftLeg.position.set(0, -0.3, 0);
+  leftLeg.castShadow = true;
+  leftLegPivot.add(leftLeg);
+  group.add(leftLegPivot);
+
+  const rightLegPivot = new THREE.Group();
+  rightLegPivot.position.set(0.18, 0.62, 0);
+  const rightLeg = new THREE.Mesh(legGeo, legMat);
+  rightLeg.position.set(0, -0.3, 0);
+  rightLeg.castShadow = true;
+  rightLegPivot.add(rightLeg);
+  group.add(rightLegPivot);
+
+  const { nameSprite, speechBubble, haloRing, auraRing } = createOverheadUI(group, emp, isSelected);
+
+  return {
+    group,
+    rigged: false,
+    bodyMesh,
+    headMesh,
+    haloRing,
+    auraRing,
+    nameSprite,
+    speechBubble,
+    leftArmPivot,
+    rightArmPivot,
+    leftLegPivot,
+    rightLegPivot,
+    currentX: chosenPoi.x,
+    currentZ: chosenPoi.z,
+    targetX: chosenPoi.x,
+    targetZ: chosenPoi.z,
+    targetRotY: chosenPoi.rotationY,
+    isSeated: chosenPoi.isSeated,
+    employeeId: emp.employee_id,
+    assignedPoi: chosenPoi,
+    nextMoveAt: Date.now() / 1000 + 4 + Math.random() * 6,
+    arrived: true,
+    zoneStatus: emp.status,
+  };
+}
+
+// SkeletonUtils.clone (not Object3D.clone) is required for skinned meshes —
+// a plain clone shares the same Skeleton/bones across every avatar instance,
+// so animating one would move them all.
+function buildRiggedAvatar(
+  group: THREE.Group,
+  baseModel: AvatarModel,
+  emp: Employee,
+  chosenPoi: OfficePOI,
+  isSelected: boolean
+): AvatarMeshGroup {
+  const rig = cloneSkeleton(baseModel.scene) as THREE.Group;
+  rig.traverse((obj) => {
+    if ((obj as THREE.Mesh).isMesh) {
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+    }
+  });
+  group.add(rig);
+
+  const mixer = new THREE.AnimationMixer(rig);
+  const actions = buildRiggedActions(mixer, baseModel.animations);
+  const initialKey: RiggedActionKey | undefined = actions.idle ? 'idle' : (Object.keys(actions)[0] as RiggedActionKey | undefined);
+  if (initialKey) actions[initialKey]!.play();
+
+  const { nameSprite, speechBubble, haloRing, auraRing } = createOverheadUI(group, emp, isSelected);
+
+  return {
+    group,
+    rigged: true,
+    mixer,
+    actions,
+    currentActionKey: initialKey,
+    haloRing,
+    auraRing,
+    nameSprite,
+    speechBubble,
+    currentX: chosenPoi.x,
+    currentZ: chosenPoi.z,
+    targetX: chosenPoi.x,
+    targetZ: chosenPoi.z,
+    targetRotY: chosenPoi.rotationY,
+    isSeated: chosenPoi.isSeated,
+    employeeId: emp.employee_id,
+    assignedPoi: chosenPoi,
+    nextMoveAt: Date.now() / 1000 + 4 + Math.random() * 6,
+    arrived: true,
+    zoneStatus: emp.status,
+  };
 }
 
 export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, speakingEmployeeId }: OfficeCanvasProps) {
@@ -271,6 +536,7 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const avatarsRef = useRef<Map<string, AvatarMeshGroup>>(new Map());
+  const avatarModelRef = useRef<AvatarModel | null>(null);
   const lightsRef = useRef<{ dirLight?: THREE.DirectionalLight; ambLight?: THREE.AmbientLight; deskLights?: THREE.PointLight[] }>({});
   const raycasterRef = useRef<THREE.Raycaster>(new THREE.Raycaster());
   const mouseRef = useRef<THREE.Vector2>(new THREE.Vector2());
@@ -458,6 +724,13 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
     deskLights.push(meetingLight);
 
     lightsRef.current = { dirLight, ambLight: ambientLight, deskLights };
+
+    // Kick off the rigged-model fetch once per mount. Resolves null (404 or
+    // parse failure) until AVATAR_MODEL_URL actually exists — avatars spawned
+    // before/without it just keep using the box-people fallback below.
+    loadAvatarModel().then((model) => {
+      avatarModelRef.current = model;
+    });
 
     // ==========================================
     // ARCHITECTURAL STRUCTURE & ROOMS
@@ -836,9 +1109,11 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
     // ==========================================
     // ANIMATION LOOP & SMART MOVEMENT
     // ==========================================
-    let time = 0;
-    const animate = () => {
-      time += 0.02;
+    const timer = new THREE.Timer();
+    const animate = (timestamp?: number) => {
+      timer.update(timestamp);
+      const delta = timer.getDelta();
+      const time = timer.getElapsed();
 
       if (cameraRef.current && controlsRef.current) {
         if (isTransitioningRef.current) {
@@ -857,6 +1132,7 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
       const nowS = Date.now() / 1000;
       let anyWorking = false;
       avatarsRef.current.forEach((av) => {
+        av.mixer?.update(delta);
         if (av.zoneStatus === 'working') anyWorking = true;
         const dx = av.targetX - av.currentX;
         const dz = av.targetZ - av.currentZ;
@@ -873,11 +1149,15 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
           av.arrived = false;
 
           // Walking limb cycle
-          const swing = Math.sin(time * 8) * 0.6;
-          av.leftLegPivot.rotation.x = swing;
-          av.rightLegPivot.rotation.x = -swing;
-          av.leftArmPivot.rotation.x = -swing * 0.7;
-          av.rightArmPivot.rotation.x = swing * 0.7;
+          if (av.rigged) {
+            setRiggedAction(av, 'walk');
+          } else {
+            const swing = Math.sin(time * 8) * 0.6;
+            av.leftLegPivot!.rotation.x = swing;
+            av.rightLegPivot!.rotation.x = -swing;
+            av.leftArmPivot!.rotation.x = -swing * 0.7;
+            av.rightArmPivot!.rotation.x = swing * 0.7;
+          }
         } else {
           av.group.position.x = av.targetX;
           av.group.position.z = av.targetZ;
@@ -886,28 +1166,35 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
 
           // Seated vs Standing Pose
           if (av.isSeated) {
-            av.leftLegPivot.rotation.x = -Math.PI / 2.2;
-            av.rightLegPivot.rotation.x = -Math.PI / 2.2;
-            av.leftArmPivot.rotation.x = -Math.PI / 3 + Math.sin(time * 6) * 0.1; // Typing motion
-            av.rightArmPivot.rotation.x = -Math.PI / 3 - Math.sin(time * 6) * 0.1;
-            av.headMesh.position.y = 1.42 + Math.sin(time * 3) * 0.02;
-            av.headMesh.rotation.x = 0.15 + Math.sin(time * 5) * 0.03;
+            if (av.rigged) {
+              setRiggedAction(av, av.zoneStatus === 'working' ? 'type' : 'sit');
+            } else {
+              av.leftLegPivot!.rotation.x = -Math.PI / 2.2;
+              av.rightLegPivot!.rotation.x = -Math.PI / 2.2;
+              av.leftArmPivot!.rotation.x = -Math.PI / 3 + Math.sin(time * 6) * 0.1; // Typing motion
+              av.rightArmPivot!.rotation.x = -Math.PI / 3 - Math.sin(time * 6) * 0.1;
+              av.headMesh!.position.y = 1.42 + Math.sin(time * 3) * 0.02;
+              av.headMesh!.rotation.x = 0.15 + Math.sin(time * 5) * 0.03;
+            }
           } else {
-            av.leftLegPivot.rotation.x = THREE.MathUtils.lerp(av.leftLegPivot.rotation.x, 0, 0.15);
-            av.rightLegPivot.rotation.x = THREE.MathUtils.lerp(av.rightLegPivot.rotation.x, 0, 0.15);
-
             // Whoever is standing at the presenter POI gets a raised,
             // gesturing arm instead of the generic resting pose — reads as
             // "presenting" rather than just "standing near the board".
             const isPresenting = av.assignedPoi?.id === 'meet-presenter';
-            av.leftArmPivot.rotation.x = THREE.MathUtils.lerp(av.leftArmPivot.rotation.x, 0, 0.15);
-            av.rightArmPivot.rotation.x = THREE.MathUtils.lerp(
-              av.rightArmPivot.rotation.x,
-              isPresenting ? -Math.PI / 2.2 + Math.sin(time * 2) * 0.08 : 0,
-              0.15
-            );
-            av.headMesh.position.y = 1.5 + Math.sin(time * 2) * 0.02;
-            av.headMesh.rotation.x = 0;
+            if (av.rigged) {
+              setRiggedAction(av, isPresenting ? 'present' : 'idle');
+            } else {
+              av.leftLegPivot!.rotation.x = THREE.MathUtils.lerp(av.leftLegPivot!.rotation.x, 0, 0.15);
+              av.rightLegPivot!.rotation.x = THREE.MathUtils.lerp(av.rightLegPivot!.rotation.x, 0, 0.15);
+              av.leftArmPivot!.rotation.x = THREE.MathUtils.lerp(av.leftArmPivot!.rotation.x, 0, 0.15);
+              av.rightArmPivot!.rotation.x = THREE.MathUtils.lerp(
+                av.rightArmPivot!.rotation.x,
+                isPresenting ? -Math.PI / 2.2 + Math.sin(time * 2) * 0.08 : 0,
+                0.15
+              );
+              av.headMesh!.position.y = 1.5 + Math.sin(time * 2) * 0.02;
+              av.headMesh!.rotation.x = 0;
+            }
           }
 
           // Autonomous POI Wandering Behavior
@@ -1037,143 +1324,12 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
         const group = new THREE.Group();
         group.position.set(chosenPoi.x, 0, chosenPoi.z);
 
-        let colorHash = 0;
-        for (let i = 0; i < emp.name.length; i++) colorHash = (colorHash * 31 + emp.name.charCodeAt(i)) >>> 0;
-        const shirtPalette = [0x38bdf8, 0xf59e0b, 0x10b981, 0xec4899, 0x8b5cf6, 0x6366f1];
-        const shirtColor = shirtPalette[colorHash % shirtPalette.length];
-        const pantsColor = 0x1e293b;
-        const skinColor = 0xfde047;
-
-        // Torso
-        const bodyGeo = new THREE.BoxGeometry(0.75, 0.75, 0.4);
-        const bodyMat = new THREE.MeshStandardMaterial({ color: shirtColor, roughness: 0.65 });
-        const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
-        bodyMesh.position.set(0, 0.98, 0);
-        bodyMesh.castShadow = true;
-        group.add(bodyMesh);
-
-        // Head with Face
-        const headGeo = new THREE.BoxGeometry(0.48, 0.48, 0.48);
-        const skinMat = new THREE.MeshStandardMaterial({ color: skinColor, roughness: 0.5 });
-        const faceMat = new THREE.MeshStandardMaterial({ map: getFaceTexture(), roughness: 0.5 });
-        const headMaterials = [skinMat, skinMat, skinMat, skinMat, faceMat, skinMat];
-        const headMesh = new THREE.Mesh(headGeo, headMaterials);
-        headMesh.position.set(0, 1.5, 0);
-        headMesh.castShadow = true;
-        group.add(headMesh);
-
-        // Hair / Cap
-        const hairGeo = new THREE.BoxGeometry(0.52, 0.16, 0.52);
-        const hairMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.8 });
-        const hairMesh = new THREE.Mesh(hairGeo, hairMat);
-        hairMesh.position.set(0, 1.74, 0);
-        group.add(hairMesh);
-
-        // Arms with Pivot Joints
-        const armGeo = new THREE.BoxGeometry(0.28, 0.65, 0.28);
-        const armMat = new THREE.MeshStandardMaterial({ color: shirtColor, roughness: 0.65 });
-
-        const leftArmPivot = new THREE.Group();
-        leftArmPivot.position.set(-0.52, 1.3, 0);
-        const leftArm = new THREE.Mesh(armGeo, armMat);
-        leftArm.position.set(0, -0.28, 0);
-        leftArm.castShadow = true;
-        leftArmPivot.add(leftArm);
-        group.add(leftArmPivot);
-
-        const rightArmPivot = new THREE.Group();
-        rightArmPivot.position.set(0.52, 1.3, 0);
-        const rightArm = new THREE.Mesh(armGeo, armMat);
-        rightArm.position.set(0, -0.28, 0);
-        rightArm.castShadow = true;
-        rightArmPivot.add(rightArm);
-        group.add(rightArmPivot);
-
-        // Legs with Hip Pivots
-        const legGeo = new THREE.BoxGeometry(0.32, 0.65, 0.32);
-        const legMat = new THREE.MeshStandardMaterial({ color: pantsColor, roughness: 0.8 });
-
-        const leftLegPivot = new THREE.Group();
-        leftLegPivot.position.set(-0.18, 0.62, 0);
-        const leftLeg = new THREE.Mesh(legGeo, legMat);
-        leftLeg.position.set(0, -0.3, 0);
-        leftLeg.castShadow = true;
-        leftLegPivot.add(leftLeg);
-        group.add(leftLegPivot);
-
-        const rightLegPivot = new THREE.Group();
-        rightLegPivot.position.set(0.18, 0.62, 0);
-        const rightLeg = new THREE.Mesh(legGeo, legMat);
-        rightLeg.position.set(0, -0.3, 0);
-        rightLeg.castShadow = true;
-        rightLegPivot.add(rightLeg);
-        group.add(rightLegPivot);
-
-        // Overhead Name Sprite
-        const nameSprite = createNameSprite(emp.name, emp.role);
-        nameSprite.position.set(0, 2.35, 0);
-        group.add(nameSprite);
-
-        // Chat-active speech bubble (hidden by default, toggled in the
-        // speakingEmployeeId effect below)
-        const speechBubble = createSpeechBubbleSprite();
-        speechBubble.position.set(0, 2.95, 0);
-        speechBubble.visible = false;
-        group.add(speechBubble);
-
-        // Floating Selection Halo Ring
-        const haloGeo = new THREE.RingGeometry(0.45, 0.55, 32);
-        haloGeo.rotateX(-Math.PI / 2);
-        const haloMat = new THREE.MeshBasicMaterial({
-          color: 0x38bdf8,
-          side: THREE.DoubleSide,
-          transparent: true,
-          opacity: 0.9,
-        });
-        const haloRing = new THREE.Mesh(haloGeo, haloMat);
-        haloRing.position.set(0, 2.0, 0);
-        haloRing.visible = isSelected;
-        group.add(haloRing);
-
-        // Pulsing Floor Status Aura Ring
-        const auraGeo = new THREE.RingGeometry(0.65, 0.82, 32);
-        auraGeo.rotateX(-Math.PI / 2);
-        const auraMat = new THREE.MeshBasicMaterial({
-          color: STATUS_COLOR_HEX[emp.status] || 0x94a3b8,
-          side: THREE.DoubleSide,
-          transparent: true,
-          opacity: 0.75,
-        });
-        const auraRing = new THREE.Mesh(auraGeo, auraMat);
-        auraRing.position.set(0, 0.08, 0);
-        group.add(auraRing);
+        const baseModel = avatarModelRef.current;
+        av = baseModel
+          ? buildRiggedAvatar(group, baseModel, emp, chosenPoi, isSelected)
+          : buildBoxAvatar(group, emp, chosenPoi, isSelected);
 
         scene.add(group);
-
-        av = {
-          group,
-          bodyMesh,
-          headMesh,
-          haloRing,
-          auraRing,
-          nameSprite,
-          speechBubble,
-          leftArmPivot,
-          rightArmPivot,
-          leftLegPivot,
-          rightLegPivot,
-          currentX: chosenPoi.x,
-          currentZ: chosenPoi.z,
-          targetX: chosenPoi.x,
-          targetZ: chosenPoi.z,
-          targetRotY: chosenPoi.rotationY,
-          isSeated: chosenPoi.isSeated,
-          employeeId: emp.employee_id,
-          assignedPoi: chosenPoi,
-          nextMoveAt: Date.now() / 1000 + 4 + Math.random() * 6,
-          arrived: true,
-          zoneStatus: emp.status,
-        };
         currentMap.set(emp.employee_id, av);
       } else {
         if (av.zoneStatus !== emp.status) {
