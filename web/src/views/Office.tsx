@@ -8,16 +8,17 @@ import { EmployeeModal } from '../components/EmployeeModal';
 import { TeamModal } from '../components/TeamModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { AssignTaskModal } from '../components/AssignTaskModal';
+import { CallMeetingModal } from '../components/CallMeetingModal';
 import { OfficeSessionChat } from '../components/OfficeSessionChat';
 import { WorkOutputFeed } from '../components/WorkOutputFeed';
 import { OfficeCanvas } from '../components/OfficeCanvas';
 import { useToast } from '../components/Toast';
-import { Plus, Users, Trash2, Pencil, Briefcase, Send, Wifi, WifiOff } from 'lucide-react';
+import { Plus, Users, Trash2, Pencil, Briefcase, Send, Wifi, WifiOff, Crown, Users2 } from 'lucide-react';
 
-// Teams have no chat concept — "assign task to team" still goes through the
-// standalone AssignTaskModal. Individual employees get a real chat session
-// instead (OfficeSessionChat, routed via #/office/session/<id>).
-type AssignTarget = { type: 'team'; id: string; label: string };
+// Individual employees can be assigned a task directly (a lead fans it out
+// to their team; anyone else just does it) alongside their chat session —
+// clicking the card still opens chat, the Send button opens this instead.
+type AssignTarget = { type: 'employee' | 'team'; id: string; label: string };
 
 const STATUS_LABEL: Record<Employee['status'], string> = {
   idle: 'Idle',
@@ -42,6 +43,9 @@ export function Office() {
     if (lastEvent?.type === 'office_meeting_done') {
       const topic = typeof lastEvent.topic === 'string' ? lastEvent.topic : 'a team meeting';
       toast(`Meeting held: ${topic}`, 'ok');
+    } else if (lastEvent?.type === 'office_decision_made') {
+      const decision = typeof lastEvent.decision === 'string' ? lastEvent.decision : 'made a call';
+      toast(`Lead decided: ${decision}`, 'ok');
     }
   }, [lastEvent, toast]);
 
@@ -53,6 +57,7 @@ export function Office() {
   const [deleteEmployeeTarget, setDeleteEmployeeTarget] = useState<Employee | null>(null);
   const [deleteTeamTarget, setDeleteTeamTarget] = useState<Team | null>(null);
   const [assignTarget, setAssignTarget] = useState<AssignTarget | null>(null);
+  const [callMeetingTarget, setCallMeetingTarget] = useState<Employee | null>(null);
   const [feedKey, setFeedKey] = useState(0);
   const [speakingEmployeeId, setSpeakingEmployeeId] = useState<string | null>(null);
   const handleStreamingChange = useCallback((id: string | null) => setSpeakingEmployeeId(id), []);
@@ -126,14 +131,29 @@ export function Office() {
     }
   };
 
-  const handleAssignToTeam = async (data: { prompt: string; project?: string }) => {
+  const handleAssign = async (data: { prompt: string; project?: string }) => {
     if (!assignTarget) return;
     try {
-      await api.assignTeamTask(assignTarget.id, data);
+      if (assignTarget.type === 'employee') {
+        await api.assignEmployeeTask(assignTarget.id, data);
+      } else {
+        await api.assignTeamTask(assignTarget.id, data);
+      }
       toast(`Task assigned to ${assignTarget.label}`, 'ok');
       setFeedKey((k) => k + 1);
     } catch (err) {
       toast(errorMessage(err, 'Failed to assign task'), 'err');
+      throw err;
+    }
+  };
+
+  const handleCallMeeting = async (data: { participant_ids: string[]; topic: string; project?: string }) => {
+    if (!callMeetingTarget?.team_id) return;
+    try {
+      await api.createMeeting({ team_id: callMeetingTarget.team_id, ...data });
+      setFeedKey((k) => k + 1);
+    } catch (err) {
+      toast(errorMessage(err, 'Failed to call meeting'), 'err');
       throw err;
     }
   };
@@ -151,7 +171,14 @@ export function Office() {
     >
       <div style={{ fontSize: '26px', lineHeight: 1 }}>{emp.avatar || '🧑‍💻'}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600, fontSize: '13px' }}>{emp.name}</div>
+        <div style={{ fontWeight: 600, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+          {emp.name}
+          {emp.is_lead && (
+            <span title="Team Lead" style={{ display: 'inline-flex' }}>
+              <Crown size={12} style={{ color: '#f59e0b' }} />
+            </span>
+          )}
+        </div>
         <div style={{ fontSize: '11px', color: 'var(--text-faint)' }}>{emp.role || 'No role set'}</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: STATUS_COLOR[emp.status] }} />
@@ -172,6 +199,24 @@ export function Office() {
         </div>
       </div>
       <div style={{ display: 'flex', gap: '4px' }}>
+        <button
+          type="button"
+          className="session-action-btn"
+          title={`Assign task to ${emp.name}`}
+          onClick={(e) => { e.stopPropagation(); setAssignTarget({ type: 'employee', id: emp.employee_id, label: emp.name }); }}
+        >
+          <Send size={12} />
+        </button>
+        {emp.is_lead && (
+          <button
+            type="button"
+            className="session-action-btn"
+            title={`Call a team meeting with ${emp.name}`}
+            onClick={(e) => { e.stopPropagation(); setCallMeetingTarget(emp); }}
+          >
+            <Users2 size={12} />
+          </button>
+        )}
         <button
           type="button"
           className="session-action-btn"
@@ -338,8 +383,17 @@ export function Office() {
       <AssignTaskModal
         isOpen={!!assignTarget}
         onClose={() => setAssignTarget(null)}
-        onAssign={handleAssignToTeam}
+        onAssign={handleAssign}
         targetLabel={assignTarget?.label || ''}
+      />
+      <CallMeetingModal
+        isOpen={!!callMeetingTarget}
+        onClose={() => setCallMeetingTarget(null)}
+        onCall={handleCallMeeting}
+        lead={callMeetingTarget}
+        teamMembers={employees.filter(
+          (e) => e.team_id === callMeetingTarget?.team_id && e.employee_id !== callMeetingTarget?.employee_id
+        )}
       />
 
       {officeSessionId && (

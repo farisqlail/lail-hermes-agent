@@ -28,6 +28,7 @@ class EmployeeCreate(BaseModel):
     engine: str = ""
     skill_ids: list[str] = []
     team_id: Optional[str] = None
+    is_lead: bool = False
 
 
 class EmployeeUpdate(BaseModel):
@@ -39,6 +40,7 @@ class EmployeeUpdate(BaseModel):
     engine: Optional[str] = None
     skill_ids: Optional[list[str]] = None
     team_id: Optional[str] = None
+    is_lead: Optional[bool] = None
 
 
 class TeamCreate(BaseModel):
@@ -60,6 +62,7 @@ class MeetingCreate(BaseModel):
     team_id: str
     participant_ids: list[str]
     topic: str
+    project: Optional[str] = None
 
 
 class SessionCreate(BaseModel):
@@ -266,8 +269,9 @@ def build_router(office: OfficeManager | None) -> APIRouter:
 
     @router.get("/api/office/work-items")
     def list_work_items(employee_id: Optional[str] = None, team_id: Optional[str] = None,
-                         limit: int = 50):
-        return _office().list_work_items(employee_id=employee_id, team_id=team_id, limit=limit)
+                         parent_work_id: Optional[str] = None, limit: int = 50):
+        return _office().list_work_items(employee_id=employee_id, team_id=team_id,
+                                         parent_work_id=parent_work_id, limit=limit)
 
     @router.get("/api/office/work-items/{work_id}")
     def get_work_item(work_id: str):
@@ -280,9 +284,11 @@ def build_router(office: OfficeManager | None) -> APIRouter:
     async def create_meeting(body: MeetingCreate):
         try:
             return await _office().run_meeting(body.team_id, body.participant_ids, body.topic,
-                                               triggered_by="manual")
+                                               triggered_by="manual", project=body.project)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except (ProjectNotFound, ProjectPathMissing) as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
     @router.get("/api/office/meetings")
     def list_meetings(team_id: Optional[str] = None, limit: int = 50):

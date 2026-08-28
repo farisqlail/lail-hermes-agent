@@ -47,6 +47,7 @@ class OfficeStore:
                   status TEXT DEFAULT 'idle',
                   pos_x REAL DEFAULT 0, pos_y REAL DEFAULT 0,
                   active INTEGER DEFAULT 1,
+                  is_lead INTEGER DEFAULT 0,
                   created REAL, updated REAL);
                 CREATE TABLE IF NOT EXISTS teams(
                   team_id TEXT PRIMARY KEY,
@@ -56,6 +57,7 @@ class OfficeStore:
                   employee_id TEXT, team_id TEXT, kind TEXT, task_id TEXT,
                   prompt TEXT, output_text TEXT, status TEXT,
                   cost_usd REAL DEFAULT 0,
+                  parent_work_id TEXT,
                   created REAL, updated REAL);
                 CREATE TABLE IF NOT EXISTS meetings(
                   meeting_id TEXT PRIMARY KEY,
@@ -72,26 +74,36 @@ class OfficeStore:
                 c.execute("ALTER TABLE work_items ADD COLUMN session_id TEXT")
             except sqlite3.OperationalError:
                 pass
+            try:
+                c.execute("ALTER TABLE work_items ADD COLUMN parent_work_id TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                c.execute("ALTER TABLE employees ADD COLUMN is_lead INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
 
     # --- employees ---
 
     def create_employee(self, employee_id, name, role="", avatar="", personality="",
-                        model="", engine="", skill_ids=None, team_id=None) -> dict:
+                        model="", engine="", skill_ids=None, team_id=None,
+                        is_lead=False) -> dict:
         now = time.time()
         with self._conn() as c:
             c.execute(
                 "INSERT INTO employees(employee_id,name,role,avatar,personality,model,"
-                "engine,skill_ids,team_id,energy,status,pos_x,pos_y,active,created,updated) "
-                "VALUES(?,?,?,?,?,?,?,?,?,100,'idle',0,0,1,?,?)",
+                "engine,skill_ids,team_id,energy,status,pos_x,pos_y,active,is_lead,created,updated) "
+                "VALUES(?,?,?,?,?,?,?,?,?,100,'idle',0,0,1,?,?,?)",
                 (employee_id, name, role, avatar, personality, model, engine,
-                 json.dumps(skill_ids or []), team_id, now, now))
+                 json.dumps(skill_ids or []), team_id, int(bool(is_lead)), now, now))
         row = self.get_employee(employee_id)
         self.publish({"type": "office_employee_updated", "employee_id": employee_id})
         return row
 
     def update_employee(self, employee_id, publish: bool = True, **fields) -> dict | None:
         allowed = {"name", "role", "avatar", "personality", "model", "engine",
-                   "skill_ids", "team_id", "energy", "status", "pos_x", "pos_y", "active"}
+                   "skill_ids", "team_id", "energy", "status", "pos_x", "pos_y", "active",
+                   "is_lead"}
         sets, vals = [], []
         for k, v in fields.items():
             if k not in allowed or v is None:
@@ -203,13 +215,16 @@ class OfficeStore:
     # --- work items ---
 
     def create_work_item(self, work_id, employee_id, kind, prompt, team_id=None,
-                         task_id=None, status="queued", session_id=None) -> dict:
+                         task_id=None, status="queued", session_id=None,
+                         parent_work_id=None) -> dict:
         now = time.time()
         with self._conn() as c:
             c.execute(
                 "INSERT INTO work_items(work_id,employee_id,team_id,kind,task_id,prompt,"
-                "output_text,status,cost_usd,session_id,created,updated) VALUES(?,?,?,?,?,?,'',?,0,?,?,?)",
-                (work_id, employee_id, team_id, kind, task_id, prompt, status, session_id, now, now))
+                "output_text,status,cost_usd,session_id,parent_work_id,created,updated) "
+                "VALUES(?,?,?,?,?,?,'',?,0,?,?,?,?)",
+                (work_id, employee_id, team_id, kind, task_id, prompt, status, session_id,
+                 parent_work_id, now, now))
         row = self.get_work_item(work_id)
         self.publish({"type": "office_work_item_updated", "work_id": work_id})
         return row
@@ -243,7 +258,8 @@ class OfficeStore:
             r = c.execute("SELECT * FROM work_items WHERE task_id=?", (task_id,)).fetchone()
             return dict(r) if r else None
 
-    def list_work_items(self, employee_id=None, team_id=None, limit=50) -> list[dict]:
+    def list_work_items(self, employee_id=None, team_id=None, parent_work_id=None,
+                        limit=50) -> list[dict]:
         q = "SELECT * FROM work_items WHERE 1=1"
         args = []
         if employee_id is not None:
@@ -252,6 +268,9 @@ class OfficeStore:
         if team_id is not None:
             q += " AND team_id=?"
             args.append(team_id)
+        if parent_work_id is not None:
+            q += " AND parent_work_id=?"
+            args.append(parent_work_id)
         q += " ORDER BY created DESC LIMIT ?"
         args.append(limit)
         with self._conn() as c:
@@ -375,6 +394,7 @@ def _row_to_employee(r: sqlite3.Row) -> dict:
     except (TypeError, ValueError):
         d["skill_ids"] = []
     d["active"] = bool(d.get("active", 1))
+    d["is_lead"] = bool(d.get("is_lead", 0))
     return d
 
 

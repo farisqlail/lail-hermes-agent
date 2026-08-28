@@ -40,6 +40,7 @@ export function EmployeeModal({ isOpen, onClose, onSave, teams, employee }: Empl
   const [personality, setPersonality] = useState('');
   const [model, setModel] = useState('');
   const [teamId, setTeamId] = useState('');
+  const [isLead, setIsLead] = useState(false);
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skillSearch, setSkillSearch] = useState('');
@@ -53,6 +54,7 @@ export function EmployeeModal({ isOpen, onClose, onSave, teams, employee }: Empl
     setPersonality(employee?.personality || '');
     setModel(employee?.model || '');
     setTeamId(employee?.team_id || '');
+    setIsLead(employee?.is_lead || false);
     setSkillIds(employee?.skill_ids || []);
     setSkillSearch('');
     api.getSkills().then(setSkills).catch(() => setSkills([]));
@@ -80,6 +82,7 @@ export function EmployeeModal({ isOpen, onClose, onSave, teams, employee }: Empl
         personality: personality.trim(),
         model: model.trim(),
         team_id: teamId || null,
+        is_lead: isLead,
         skill_ids: skillIds,
       });
       onClose();
@@ -151,6 +154,21 @@ export function EmployeeModal({ isOpen, onClose, onSave, teams, employee }: Empl
             ))}
           </select>
         </Field>
+
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={isLead}
+            onChange={(e) => setIsLead(e.target.checked)}
+            style={{ marginTop: 2 }}
+          />
+          <span>
+            <div style={{ fontWeight: 600 }}>Team Lead</div>
+            <div style={{ color: 'var(--text-faint)', fontSize: '11px' }}>
+              Tasks assigned to this employee get broken down and delegated to their team instead of done solo. They can also call team meetings.
+            </div>
+          </span>
+        </label>
 
         <Field label="Personality / persona prompt" helpText="Shapes how this employee works — injected as their system prompt.">
           <textarea

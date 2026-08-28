@@ -1,4 +1,4 @@
-import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer, IntegrateRun, Skill, Employee, Team, WorkItem, ChatMessage, OfficeSession, OfficeSendMessageResult, PendingAction } from './types';
+import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer, IntegrateRun, Skill, Employee, Team, WorkItem, Meeting, ChatMessage, OfficeSession, OfficeSendMessageResult, PendingAction } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -163,10 +163,11 @@ export const api = {
   deleteTeam: (teamId: string) =>
     request<{ ok: boolean }>(`/api/office/teams/${teamId}`, { method: 'DELETE' }),
 
-  getWorkItems: (params?: { employeeId?: string; teamId?: string; limit?: number }) => {
+  getWorkItems: (params?: { employeeId?: string; teamId?: string; parentWorkId?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params?.employeeId) q.set('employee_id', params.employeeId);
     if (params?.teamId) q.set('team_id', params.teamId);
+    if (params?.parentWorkId) q.set('parent_work_id', params.parentWorkId);
     if (params?.limit) q.set('limit', String(params.limit));
     const qs = q.toString();
     return request<WorkItem[]>(`/api/office/work-items${qs ? `?${qs}` : ''}`);
@@ -183,6 +184,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  createMeeting: (body: { team_id: string; participant_ids: string[]; topic: string; project?: string }) =>
+    request<Meeting>('/api/office/meetings', { method: 'POST', body: JSON.stringify(body) }),
+  getMeetings: (teamId?: string) =>
+    request<Meeting[]>(`/api/office/meetings${teamId ? `?team_id=${encodeURIComponent(teamId)}` : ''}`),
 
   getOfficeSessions: (employeeId?: string) =>
     request<OfficeSession[]>(`/api/office/sessions${employeeId ? `?employee_id=${encodeURIComponent(employeeId)}` : ''}`),

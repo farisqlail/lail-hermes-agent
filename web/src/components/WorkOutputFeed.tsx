@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { WorkItem } from '../api/types';
-import { FileText, MessageSquare, Users2, Loader2, CheckCircle2, XCircle, Clock } from 'lucide-react';
+import { FileText, MessageSquare, Users2, Crown, Gavel, Loader2, CheckCircle2, XCircle, Clock, ChevronRight, ChevronDown } from 'lucide-react';
 
 const KIND_ICON: Record<WorkItem['kind'], React.ReactNode> = {
   code_task: <FileText size={13} />,
   chat_output: <MessageSquare size={13} />,
   meeting_transcript: <Users2 size={13} />,
+  delegation: <Crown size={13} />,
+  decision_made: <Gavel size={13} />,
 };
 
 const STATUS_ICON: Record<WorkItem['status'], React.ReactNode> = {
@@ -19,6 +21,71 @@ const STATUS_ICON: Record<WorkItem['status'], React.ReactNode> = {
 function formatTime(unixSeconds: number): string {
   if (!unixSeconds) return '';
   return new Date(unixSeconds * 1000).toLocaleString();
+}
+
+/** A delegation's subtasks — collapsed by default, lazy-loaded on first
+ * expand so a feed full of delegations doesn't fire N extra requests up
+ * front for items nobody looks at. */
+function DelegationSubtasks({ workId }: { workId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [children, setChildren] = useState<WorkItem[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const toggle = async () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && children === null && !loading) {
+      setLoading(true);
+      try {
+        setChildren(await api.getWorkItems({ parentWorkId: workId, limit: 50 }));
+      } catch {
+        setChildren([]);
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  return (
+    <div style={{ marginTop: '6px' }}>
+      <button
+        type="button"
+        onClick={toggle}
+        style={{
+          display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px',
+          color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+        }}
+      >
+        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        Subtasks
+      </button>
+      {expanded && (
+        loading ? (
+          <div style={{ fontSize: '11px', color: 'var(--text-faint)', padding: '4px 0' }}>Loading subtasks…</div>
+        ) : !children || children.length === 0 ? (
+          <div style={{ fontSize: '11px', color: 'var(--text-faint)', fontStyle: 'italic', padding: '4px 0' }}>
+            No subtasks yet.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '4px', paddingLeft: '16px', borderLeft: '2px solid var(--border)' }}>
+            {children.map((c) => (
+              <div key={c.work_id} style={{ fontSize: '11px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  {STATUS_ICON[c.status]}
+                  <span style={{ fontWeight: 600 }}>{c.prompt}</span>
+                </div>
+                {c.output_text && (
+                  <div style={{ color: 'var(--text-faint)', whiteSpace: 'pre-wrap', marginTop: '2px' }}>
+                    {c.output_text}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  );
 }
 
 /** Newest-first feed of what employees have actually produced. Polls while
@@ -72,7 +139,7 @@ export function WorkOutputFeed({ employeeId, teamId }: { employeeId?: string; te
           style={{
             padding: '10px 12px',
             background: 'var(--surface-card)',
-            border: '1px solid var(--border)',
+            border: item.kind === 'decision_made' ? '1px solid #8b5cf6' : '1px solid var(--border)',
             borderRadius: '8px',
           }}
         >
@@ -94,6 +161,9 @@ export function WorkOutputFeed({ employeeId, teamId }: { employeeId?: string; te
             <div style={{ fontSize: '11px', color: 'var(--err)' }}>Failed — no output.</div>
           ) : (
             <div style={{ fontSize: '11px', color: 'var(--text-faint)', fontStyle: 'italic' }}>Working…</div>
+          )}
+          {(item.kind === 'delegation' || item.kind === 'meeting_transcript') && (
+            <DelegationSubtasks workId={item.work_id} />
           )}
         </div>
       ))}

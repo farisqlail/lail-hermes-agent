@@ -168,6 +168,7 @@ export interface Employee {
   pos_x: number;
   pos_y: number;
   active: boolean;
+  is_lead: boolean;
   created: number;
   updated: number;
 }
@@ -184,14 +185,25 @@ export interface WorkItem {
   work_id: string;
   employee_id: string;
   team_id: string | null;
-  kind: 'code_task' | 'chat_output' | 'meeting_transcript';
+  kind: 'code_task' | 'chat_output' | 'meeting_transcript' | 'delegation' | 'decision_made';
   task_id: string | null;
   prompt: string;
   output_text: string;
   status: 'queued' | 'running' | 'done' | 'failed';
   cost_usd: number;
+  parent_work_id: string | null;
   created: number;
   updated: number;
+}
+
+export interface Meeting {
+  meeting_id: string;
+  team_id: string;
+  participant_ids: string[];
+  topic: string;
+  transcript: string;
+  triggered_by: string;
+  created: number;
 }
 
 export interface ChatMessage {
