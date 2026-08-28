@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { api, errorMessage } from '../api/client';
 import { Employee, Team } from '../api/types';
 import { useOfficeEvents } from '../api/officeEvents';
@@ -54,6 +54,8 @@ export function Office() {
   const [deleteTeamTarget, setDeleteTeamTarget] = useState<Team | null>(null);
   const [assignTarget, setAssignTarget] = useState<AssignTarget | null>(null);
   const [feedKey, setFeedKey] = useState(0);
+  const [speakingEmployeeId, setSpeakingEmployeeId] = useState<string | null>(null);
+  const handleStreamingChange = useCallback((id: string | null) => setSpeakingEmployeeId(id), []);
 
   // Clicking an employee (card or 3D character) resumes their most recent
   // chat session, or creates one — then navigates into it. Sessions live in
@@ -221,6 +223,7 @@ export function Office() {
         <OfficeCanvas
           employees={employees}
           onSelectEmployee={openChatFor}
+          speakingEmployeeId={speakingEmployeeId}
         />
       </div>
 
@@ -352,6 +355,7 @@ export function Office() {
                 employees={employees}
                 onBack={() => navigate('#/office')}
                 onDeleted={() => navigate('#/office')}
+                onStreamingChange={handleStreamingChange}
               />
             </div>
           </div>
