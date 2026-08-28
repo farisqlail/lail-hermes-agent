@@ -20,6 +20,7 @@ interface OfficeCanvasProps {
   employees: Employee[];
   onSelectEmployee?: (employee: Employee) => void;
   selectedEmployeeId?: string | null;
+  speakingEmployeeId?: string | null;
 }
 
 type LightingPreset = 'day' | 'night' | 'sunset';
@@ -199,6 +200,37 @@ function createNameSprite(name: string, role?: string): THREE.Sprite {
   return sprite;
 }
 
+function createSpeechBubbleSprite(): THREE.Sprite {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+  ctx.beginPath();
+  ctx.roundRect(4, 4, 56, 40, 12);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(18, 44);
+  ctx.lineTo(10, 58);
+  ctx.lineTo(28, 44);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = '#0f172a';
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.arc(20 + i * 12, 24, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(0.5, 0.5, 1);
+  return sprite;
+}
+
 interface AvatarMeshGroup {
   group: THREE.Group;
   bodyMesh: THREE.Mesh;
@@ -206,6 +238,7 @@ interface AvatarMeshGroup {
   haloRing: THREE.Mesh;
   auraRing: THREE.Mesh;
   nameSprite: THREE.Sprite;
+  speechBubble: THREE.Sprite;
   leftArmPivot: THREE.Group;
   rightArmPivot: THREE.Group;
   leftLegPivot: THREE.Group;
@@ -223,7 +256,7 @@ interface AvatarMeshGroup {
   zoneStatus: Employee['status'];
 }
 
-export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }: OfficeCanvasProps) {
+export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, speakingEmployeeId }: OfficeCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -906,6 +939,11 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
           const pulse = 1 + Math.sin(time * 4) * 0.12;
           av.auraRing.scale.set(pulse, pulse, pulse);
         }
+
+        if (av.speechBubble.visible) {
+          const bubblePulse = 1 + Math.sin(time * 5) * 0.1;
+          av.speechBubble.scale.set(0.5 * bubblePulse, 0.5 * bubblePulse, 1);
+        }
       });
 
       renderer.render(scene, camera);
@@ -956,6 +994,8 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
         });
         av.nameSprite.material.map?.dispose();
         av.nameSprite.material.dispose();
+        av.speechBubble.material.map?.dispose();
+        av.speechBubble.material.dispose();
         currentMap.delete(id);
       }
     });
@@ -1061,6 +1101,13 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
         nameSprite.position.set(0, 2.35, 0);
         group.add(nameSprite);
 
+        // Chat-active speech bubble (hidden by default, toggled in the
+        // speakingEmployeeId effect below)
+        const speechBubble = createSpeechBubbleSprite();
+        speechBubble.position.set(0, 2.75, 0);
+        speechBubble.visible = false;
+        group.add(speechBubble);
+
         // Floating Selection Halo Ring
         const haloGeo = new THREE.RingGeometry(0.45, 0.55, 32);
         haloGeo.rotateX(-Math.PI / 2);
@@ -1097,6 +1144,7 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
           haloRing,
           auraRing,
           nameSprite,
+          speechBubble,
           leftArmPivot,
           rightArmPivot,
           leftLegPivot,
@@ -1129,6 +1177,14 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
       }
     });
   }, [employees, selectedEmployeeId]);
+
+  // Chat-active speech bubble: independent of the employees/status sync
+  // above so it reacts immediately when a chat starts/stops streaming.
+  useEffect(() => {
+    avatarsRef.current.forEach((av) => {
+      av.speechBubble.visible = av.employeeId === speakingEmployeeId;
+    });
+  }, [speakingEmployeeId]);
 
   // Click & Hover Raycaster handling
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
