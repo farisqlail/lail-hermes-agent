@@ -22,7 +22,8 @@ from uuid import uuid4
 
 from openai import AsyncOpenAI
 
-from . import config, paths
+from . import config, paths, voice
+from .chat_engine import DOCUMENT_MARKER, IMAGE_MARKER, RESUME_NUDGE
 from .office_store import OfficeStore
 from .project_resolve import resolve_project
 
@@ -110,7 +111,7 @@ async def run_employee_completion(employee: dict, prompt: str, secrets, settings
 class OfficeManager:
 
     def __init__(self, office_store: OfficeStore, main_store=None, orchestrator=None,
-                secrets_loader=None, settings_loader=None):
+                secrets_loader=None, settings_loader=None, chat_engine=None, chat=None):
         self.store = office_store
         # main_store/orchestrator are None in a Phase-1-only wiring (tests,
         # older callers) — assign_task/assign_team_task need them and raise a
@@ -119,6 +120,16 @@ class OfficeManager:
         self.orchestrator = orchestrator
         self.secrets_loader = secrets_loader or config.load_secrets
         self.settings_loader = settings_loader or config.load_settings
+        # chat_engine/chat give a project-less (casual) employee chat the same
+        # tool-equipped brain the main agent uses (ChatEngine.run_turn + the
+        # NIM tool-calling `chat` callable), instead of the old bare
+        # completion. Both start None and are filled in by main.py once built
+        # (same "constructed later, assigned once ready" pattern `bridge`
+        # already uses on ChatEngine itself) — a caller that never wires them
+        # (tests, a Phase-1-only setup) gets a clear RuntimeError instead of
+        # an AttributeError deep in a request.
+        self.chat_engine = chat_engine
+        self.chat = chat
         # One lock per project directory: two employees assigned code work in
         # the same repo run one after another, not concurrently git-conflicting
         # each other. Keyed by resolved path, built lazily.
@@ -368,11 +379,10 @@ class OfficeManager:
         if not text:
             raise ValueError("message is required")
 
-        self.main_store.add_message(session_id, "user", text)
-        self.store.touch_session(session_id)
-
         project = session.get("project")
         if project:
+            self.main_store.add_message(session_id, "user", text)
+            self.store.touch_session(session_id)
             settings = self.settings_loader()
             proj_path = resolve_project(project, settings)  # ProjectNotFound/ProjectPathMissing propagate
             work = self.store.create_work_item(
@@ -384,24 +394,128 @@ class OfficeManager:
                 session_id, work["work_id"], employee, text, proj_path, model, engine))
             return {"kind": "task", "work_id": work["work_id"]}
 
+        # Casual (project-less) chat: the same tool-equipped brain the main
+        # agent uses (ChatEngine.run_turn — MCP tools, write-action
+        # confirmation gating, @project auto-task routing), just under the
+        # employee's persona instead of the main agent's identity. run_turn
+        # records both the user and assistant messages itself, so we don't
+        # duplicate that here the way the project branch above does.
+        if self.chat_engine is None or self.chat is None:
+            raise RuntimeError("Office chat engine is not configured")
+        system = self._persona_system_prompt(session, employee)
+        self.store.touch_session(session_id)
+        # Sit the 3D avatar at its desk for the turn's duration — same status
+        # flip _run_session_task uses for a real background task, just spanning
+        # this one (synchronous) completion instead of an asyncio.create_task.
+        self.store.update_employee(employee["employee_id"], status="working")
+        try:
+            result = await self.chat_engine.run_turn(
+                session_id, text, chat=self.chat, chat_id=0, user_id=0,
+                system_prompt=system)
+        finally:
+            self.store.update_employee(
+                employee["employee_id"], status=self._rest_status(employee["employee_id"]))
+        return {"kind": "chat", "reply": result["reply"]}
+
+    def _persona_system_prompt(self, session: dict, employee: dict) -> str:
         settings = self.settings_loader()
-        secrets = self.secrets_loader()
         employee_for_call = dict(employee)
         if session.get("model"):
             employee_for_call["model"] = session["model"]
-        system = build_persona_system_prompt(employee_for_call, settings)
-        history = self.main_store.get_messages(session_id, limit=OFFICE_CHAT_HISTORY_LIMIT)
-        model = employee_for_call.get("model") or settings.chat_model or settings.model
-        client = _client(settings.nvidia_base_url, secrets.nvidia_api_key)
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": system}, *history],
-            temperature=0.5,
-        )
-        reply = (resp.choices[0].message.content or "").strip()
-        self.main_store.add_message(session_id, "assistant", reply)
+        return build_persona_system_prompt(employee_for_call, settings)
+
+    async def resume_session_message(self, session_id: str) -> dict:
+        """The turn after an approved write action ran mid-casual-chat (see
+        send_session_message) — no new operator message, the persona just
+        picks its plan back up. Mirrors ChatEngine.run_resume_turn's own
+        caller in web_ui.py's /api/chat/stream resume branch."""
+        if self.chat_engine is None or self.chat is None:
+            raise RuntimeError("Office chat engine is not configured")
+        session = self.store.get_session(session_id)
+        if session is None:
+            raise ValueError("session not found")
+        employee = self.store.get_employee(session["employee_id"])
+        if employee is None:
+            raise ValueError("employee not found")
+        self.store.update_employee(employee["employee_id"], status="working")
+        try:
+            result = await self.chat_engine.run_resume_turn(
+                session_id, self.chat, chat_id=0, user_id=0)
+        finally:
+            self.store.update_employee(
+                employee["employee_id"], status=self._rest_status(employee["employee_id"]))
         self.store.touch_session(session_id)
-        return {"kind": "chat", "reply": reply}
+        return {"kind": "chat", "reply": result["reply"]}
+
+    async def stream_session_message(self, session_id: str, text: str,
+                                     images: list[Path] | None = None,
+                                     documents: list[Path] | None = None,
+                                     resume: bool = False):
+        """Token-streaming twin of send_session_message's casual-chat branch —
+        same persona, tools, and gating, just yielding as the model emits
+        instead of waiting for the full reply. Input-bar parity with the main
+        chat pane's /api/chat/stream needs this: a typed-out reply reads as
+        "the same brain", a reply that pops in all at once does not, even
+        when the underlying answer is identical.
+
+        Only for casual (project-less) sessions — a project-bound session's
+        "reply" is a background task's outcome (see _run_session_task), which
+        has nothing to stream token-by-token.
+
+        Yields ("token", str) | ("usage", dict) | ("done", None), mirroring
+        ChatEngine's own stream shape so the SSE route can forward it as-is.
+        """
+        if self.chat_engine is None or self.chat is None or not hasattr(self.chat, "stream"):
+            raise RuntimeError("Office chat engine is not configured")
+        session = self.store.get_session(session_id)
+        if session is None:
+            raise ValueError("session not found")
+        employee = self.store.get_employee(session["employee_id"])
+        if employee is None:
+            raise ValueError("employee not found")
+        text = (text or "").strip()
+        if not resume and not text:
+            raise ValueError("message is required")
+
+        engine = self.chat_engine
+        system = self._persona_system_prompt(session, employee)
+        dispatch = engine.make_dispatch(session_id, images, chat_id=0, user_id=0)
+        if resume:
+            history = [*engine.history_with_context(session_id, system_override=system),
+                      {"role": "user", "content": RESUME_NUDGE}]
+            auto_id = None
+        else:
+            self.main_store.add_message(session_id, "user", text
+                                        + (IMAGE_MARKER if images else "")
+                                        + (DOCUMENT_MARKER if documents else ""))
+            history, auto_id = await engine.history_for_turn(
+                session_id, text, images, dispatch, documents, system_override=system)
+
+        # Sit the 3D avatar at its desk for the stream's duration. `finally`
+        # on a generator fires on normal exhaustion, an error, AND the
+        # StreamingResponse closing early on client disconnect (GeneratorExit)
+        # — the avatar never gets stuck "working" from an abandoned stream.
+        self.store.update_employee(employee["employee_id"], status="working")
+        try:
+            acc = ""
+            async for kind, payload in self.chat.stream(
+                    history, tools=await engine.chat_tools(text), dispatch=dispatch):
+                if kind == "token":
+                    acc += payload
+                    yield ("token", payload)
+                elif kind == "usage":
+                    yield ("usage", payload)
+            clean, _ = voice.strip_voice_tag(acc)
+            suffix = engine.task_card_suffix(clean, auto_id)
+            if suffix:
+                yield ("token", suffix)
+                clean += suffix
+            self.main_store.add_message(session_id, "assistant", clean)
+            self.store.touch_session(session_id)
+            yield ("done", None)
+        finally:
+            self.store.update_employee(
+                employee["employee_id"], status=self._rest_status(employee["employee_id"]))
 
     # --- meetings ---
 

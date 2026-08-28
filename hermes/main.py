@@ -1723,6 +1723,13 @@ async def run():
 
     engine = ChatEngine(store, bridge=bridge, hub=hub, facts=facts, compressor=compressor,
                         approval_note=approval_note, mcp_router=mcp_router)
+    # Office employees' casual chat needs the real tool-equipped engine, not
+    # the raw persona completion it started with — filled in here (not at
+    # OfficeManager construction, above) because `engine` doesn't exist until
+    # `bridge` does. Same "built later, assigned once ready" shape ChatEngine
+    # itself uses for `bridge`.
+    office.chat_engine = engine
+    office.chat = chat
 
     # The one self-initiated thread in the process: a daily brief, a folder
     # watcher, and transient auto-retry, all off unless enabled in Settings. It

@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import brain
+from . import brain, uploads
 from .office import OfficeManager
 from .project_resolve import ProjectNotFound, ProjectPathMissing
 
@@ -79,6 +79,13 @@ class SessionUpdate(BaseModel):
 
 class SessionMessageBody(BaseModel):
     text: str
+
+
+class SessionStreamBody(BaseModel):
+    text: str = ""
+    images: list[str] = []
+    documents: list[str] = []
+    resume: bool = False
 
 
 def build_router(office: OfficeManager | None) -> APIRouter:
@@ -209,6 +216,53 @@ def build_router(office: OfficeManager | None) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(e))
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
+
+    @router.post("/api/office/sessions/{session_id}/resume")
+    async def resume_session(session_id: str):
+        # Drives one more persona turn after the operator approved/declined a
+        # write action parked mid-chat (see /api/chat/pending/resolve, which
+        # is session-scoped and works for an office session_id unchanged).
+        try:
+            return await _office().resume_session_message(session_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+    @router.post("/api/office/sessions/{session_id}/stream")
+    async def stream_session(session_id: str, body: SessionStreamBody):
+        # SSE twin of POST .../messages — same reply, delivered token by
+        # token so the pane fills live like the main chat pane's
+        # /api/chat/stream. Uploads reuse the exact same /api/uploads(/document)
+        # endpoints the main pane uses (they're already keyed by an arbitrary
+        # session_id, no office-specific upload path needed).
+        office = _office()
+        engine = office.chat_engine
+        images = engine.take_images(session_id, body.images) if engine else []
+        documents = engine.take_documents(session_id, body.documents) if engine else []
+
+        async def gen():
+            try:
+                async for kind, payload in office.stream_session_message(
+                        session_id, body.text, images=images, documents=documents,
+                        resume=body.resume):
+                    if kind == "token":
+                        yield brain.sse({"delta": payload})
+                    elif kind == "usage":
+                        yield brain.sse({"usage": payload})
+                    elif kind == "done":
+                        yield brain.sse({"done": True})
+            except (ValueError, RuntimeError) as e:
+                yield brain.sse({"delta": f"\n\n(Error: {e})"})
+                yield brain.sse({"done": True})
+            finally:
+                uploads.discard(images)
+                uploads.discard(documents)
+
+        return StreamingResponse(
+            gen(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                    "Connection": "keep-alive"})
 
     @router.get("/api/office/work-items")
     def list_work_items(employee_id: Optional[str] = None, team_id: Optional[str] = None,

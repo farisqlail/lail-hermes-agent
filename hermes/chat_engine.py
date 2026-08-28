@@ -744,8 +744,14 @@ class ChatEngine:
                                                list(s.projects))}
 
     def history_with_context(self, sid: str, images: list[Path] | None = None,
-                             documents: list[Path] | None = None) -> list[dict]:
-        history = [self.brain_context()]
+                             documents: list[Path] | None = None,
+                             system_override: str | None = None) -> list[dict]:
+        # system_override lets a caller other than the main agent (Office's
+        # employee personas) replace the household brain_context() with its
+        # own identity — the model still gets exactly one system message,
+        # never both competing for "who am I".
+        history = ([{"role": "system", "content": system_override}] if system_override
+                   else [self.brain_context()])
         summary, _ = self.store.get_context_summary(sid)
         if summary:
             history.append({"role": "system",
@@ -761,14 +767,20 @@ class ChatEngine:
 
     async def history_for_turn(self, sid: str, text: str, images: list[Path] | None,
                                dispatch, documents: list[Path] | None = None,
+                               system_override: str | None = None,
                                ) -> tuple[list[dict], str | None]:
         # A big PDF/XLSX can take real CPU time to parse; run it off the event
         # loop so it doesn't stall every other concurrent turn (web + Telegram
         # share one loop). Plain-text turns skip the thread hop entirely.
         if images or documents:
-            history = await asyncio.to_thread(self.history_with_context, sid, images, documents)
+            history = await asyncio.to_thread(
+                self.history_with_context, sid, images, documents, system_override)
         else:
-            history = self.history_with_context(sid, images, documents)
+            history = self.history_with_context(sid, images, documents, system_override)
+        # sid is an office session id when system_override is set — those live
+        # in OfficeStore's own table, not here, so self.store.get_session(sid)
+        # correctly returns None and sproj falls back to "no bound project"
+        # (an office chat's @project auto-task-routing is still text-driven).
         sess = self.store.get_session(sid)
         sproj = sess.get("project") if sess else None
         if not (text and wants_code_task(text, config.load_settings(), session_project=sproj)):
@@ -1492,11 +1504,14 @@ class ChatEngine:
     async def run_turn(self, session_id: str, text: str,
                        images: list[Path] | None = None, chat=None,
                        chat_id: int = 0, user_id: int = 0,
-                       documents: list[Path] | None = None) -> dict:
+                       documents: list[Path] | None = None,
+                       system_prompt: str | None = None) -> dict:
         """One non-streaming conversational turn: record it, run the model
         (with auto-task routing and tool dispatch), persist the answer, learn
-        from it. Used by both the web UI's non-streaming endpoint and every
-        Telegram message."""
+        from it. Used by both the web UI's non-streaming endpoint, every
+        Telegram message, and Office's employee chat (system_prompt swaps in
+        the employee's persona in place of the main agent's identity — same
+        tool loop, same write-action gating, everything else unchanged)."""
         text = (text or "").strip()
         self.store.add_message(session_id, "user", text
                                + (IMAGE_MARKER if images else "")
@@ -1511,7 +1526,8 @@ class ChatEngine:
         else:
             try:
                 turn, auto_id = await self.history_for_turn(session_id, text, images,
-                                                             dispatch, documents)
+                                                             dispatch, documents,
+                                                             system_override=system_prompt)
                 reply = await chat(turn, tools=await self.chat_tools(text), dispatch=dispatch)
             except Exception as e:
                 safe = str(e).encode("ascii", "backslashreplace").decode("ascii")

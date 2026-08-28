@@ -36,13 +36,18 @@ interface OfficePOI {
   zone: 'desk' | 'meeting' | 'lounge' | 'hallway' | 'focus';
 }
 
+// rotationY: Math.PI — createWorkstation's chair sits at local +Z (behind the
+// avatar) with the monitors at local -Z (in front), and the avatar mesh's own
+// forward axis is local +Z at rotation 0 (see the atan2(dx, dz) walk-facing
+// code below), so 0 would face the avatar away from its screen, into the
+// chair back. PI turns it around to face the monitors like an occupied desk.
 const DESK_POIS: OfficePOI[] = [
-  { id: 'desk-1', name: 'Front Desk Left', x: -11.5, z: 9.5, rotationY: 0, isSeated: true, zone: 'desk' },
-  { id: 'desk-2', name: 'Front Desk Mid', x: -8.0, z: 9.5, rotationY: 0, isSeated: true, zone: 'desk' },
-  { id: 'desk-3', name: 'Front Desk Right', x: -4.5, z: 9.5, rotationY: 0, isSeated: true, zone: 'desk' },
-  { id: 'desk-4', name: 'Back Desk Left', x: -11.5, z: 2.5, rotationY: 0, isSeated: true, zone: 'desk' },
-  { id: 'desk-5', name: 'Back Desk Mid', x: -8.0, z: 2.5, rotationY: 0, isSeated: true, zone: 'desk' },
-  { id: 'desk-6', name: 'Back Desk Right', x: -4.5, z: 2.5, rotationY: 0, isSeated: true, zone: 'desk' },
+  { id: 'desk-1', name: 'Front Desk Left', x: -11.5, z: 9.5, rotationY: Math.PI, isSeated: true, zone: 'desk' },
+  { id: 'desk-2', name: 'Front Desk Mid', x: -8.0, z: 9.5, rotationY: Math.PI, isSeated: true, zone: 'desk' },
+  { id: 'desk-3', name: 'Front Desk Right', x: -4.5, z: 9.5, rotationY: Math.PI, isSeated: true, zone: 'desk' },
+  { id: 'desk-4', name: 'Back Desk Left', x: -11.5, z: 2.5, rotationY: Math.PI, isSeated: true, zone: 'desk' },
+  { id: 'desk-5', name: 'Back Desk Mid', x: -8.0, z: 2.5, rotationY: Math.PI, isSeated: true, zone: 'desk' },
+  { id: 'desk-6', name: 'Back Desk Right', x: -4.5, z: 2.5, rotationY: Math.PI, isSeated: true, zone: 'desk' },
 ];
 
 const MEETING_POIS: OfficePOI[] = [
@@ -668,20 +673,27 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId }
     pillar2.position.set(2, 0.65, 0);
     meetingTableGroup.add(pillar1, pillar2);
 
+    // Table top is an oval (x-radius 4.32, z-radius 2.4 — see tableTopGeo
+    // above). The old x:±3.8 / z:±2.0 sat almost entirely under that edge —
+    // barely 0.4-0.5 units of clearance, chair and tabletop visually
+    // overlapping. Pushed out to a real ~1-unit gap past the table edge.
     const chairPositions = [
-      { x: -3.8, z: 0, r: Math.PI / 2 },
-      { x: 3.8, z: 0, r: -Math.PI / 2 },
-      { x: -1.8, z: -2.0, r: 0 },
-      { x: 0, z: -2.0, r: 0 },
-      { x: 1.8, z: -2.0, r: 0 },
-      { x: -1.8, z: 2.0, r: Math.PI },
-      { x: 0, z: 2.0, r: Math.PI },
-      { x: 1.8, z: 2.0, r: Math.PI },
+      { x: -5.2, z: 0, r: Math.PI / 2 },
+      { x: 5.2, z: 0, r: -Math.PI / 2 },
+      { x: -1.8, z: -3.3, r: 0 },
+      { x: 0, z: -3.3, r: 0 },
+      { x: 1.8, z: -3.3, r: 0 },
+      { x: -1.8, z: 3.3, r: Math.PI },
+      { x: 0, z: 3.3, r: Math.PI },
+      { x: 1.8, z: 3.3, r: Math.PI },
     ];
     for (const cp of chairPositions) {
       const c = new THREE.Group();
       c.position.set(cp.x, 0, cp.z);
-      c.rotation.y = cp.r;
+      // + PI: cp.r as written pointed the backrest (local +Z, see cBack
+      // below) toward the table center instead of away from it — every chair
+      // was seated facing outward, away from the table.
+      c.rotation.y = cp.r + Math.PI;
       const cSeat = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.08, 0.7), matChair);
       cSeat.position.set(0, 0.8, 0);
       const cBack = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.75, 0.08), matChair);

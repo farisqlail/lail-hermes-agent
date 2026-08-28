@@ -1,4 +1,4 @@
-import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer, IntegrateRun, Skill, Employee, Team, WorkItem, ChatMessage, OfficeSession, OfficeSendMessageResult } from './types';
+import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer, IntegrateRun, Skill, Employee, Team, WorkItem, ChatMessage, OfficeSession, OfficeSendMessageResult, PendingAction } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -199,5 +199,17 @@ export const api = {
     request<OfficeSendMessageResult>(`/api/office/sessions/${sessionId}/messages`, {
       method: 'POST',
       body: JSON.stringify({ text }),
+    }),
+  resumeOfficeSession: (sessionId: string) =>
+    request<OfficeSendMessageResult>(`/api/office/sessions/${sessionId}/resume`, { method: 'POST' }),
+
+  // Shared with the main chat pane — a write action an employee's persona
+  // parks mid-turn shows up here too, keyed by the same session_id.
+  getChatPending: (sessionId: string) =>
+    request<PendingAction[]>(`/api/chat/pending?session_id=${encodeURIComponent(sessionId)}`),
+  resolveChatPending: (sessionId: string, id: string, approved: boolean) =>
+    request<{ ok: boolean; resume?: boolean }>('/api/chat/pending/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId, id, approved }),
     }),
 };

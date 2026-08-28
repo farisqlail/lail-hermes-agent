@@ -764,6 +764,29 @@
   box-shadow: 0 10px 35px rgba(0, 0, 0, 0.8), 0 0 10px rgba(59, 130, 246, 0.15);
 }
 
+/* Office employee chat: same pill bar, but sitting in normal document flow at
+   the bottom of its own flex column (the chat modal) instead of floating
+   over a full-page canvas — the Dashboard's positioning (absolute + centered
+   via left:50%/transform) has no container to float over here and would
+   otherwise clip/shift the bar sideways. */
+.ask-prompt-floating-card.office-input-bar {
+  position: static;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  width: 100%;
+  max-width: none;
+  flex-shrink: 0;
+}
+
+/* .chat-thread-container normally reserves 120px of bottom padding so its
+   content clears the Dashboard's floating input bar. The office chat's bar
+   sits in flow below it instead, so that reserve is just a dead gap. */
+.chat-thread-container.office-chat-thread {
+  padding: 4px 2px 8px;
+  max-width: none;
+}
+
 .ask-left-action-btn {
   width: 28px;
   height: 28px;
@@ -1773,6 +1796,10 @@
 
 .office-employee-card:hover {
   border-color: var(--border-strong);
+}
+
+.office-employee-card:hover .session-action-btn {
+  display: block;
 }
 
 .spin {

@@ -134,6 +134,18 @@ export interface Artifact {
   path: string;
 }
 
+/** A write action (send email, delete file, …) the chat agent proposed and
+ *  the operator must approve — by button or by voice ("konfirmasi" / "batal").
+ *  Shared shape: same PendingStore backs the main chat pane and Office's
+ *  employee chat, both scoped by session_id. */
+export interface PendingAction {
+  id: string;
+  tool: string;
+  summary: string;
+  args: Record<string, unknown>;
+  risk_note: string;
+}
+
 export interface PendingAsk {
   ask_id: string;
   question: string;

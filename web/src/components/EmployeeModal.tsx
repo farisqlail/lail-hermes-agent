@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Modal } from './Modal';
 import { Field } from './Field';
 import { Button } from './Button';
-import { Employee, Team } from '../api/types';
+import { api } from '../api/client';
+import { Employee, Team, Skill } from '../api/types';
 import { Shuffle } from 'lucide-react';
 
 interface EmployeeModalProps {
@@ -39,6 +40,8 @@ export function EmployeeModal({ isOpen, onClose, onSave, teams, employee }: Empl
   const [personality, setPersonality] = useState('');
   const [model, setModel] = useState('');
   const [teamId, setTeamId] = useState('');
+  const [skillIds, setSkillIds] = useState<string[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -49,7 +52,13 @@ export function EmployeeModal({ isOpen, onClose, onSave, teams, employee }: Empl
     setPersonality(employee?.personality || '');
     setModel(employee?.model || '');
     setTeamId(employee?.team_id || '');
+    setSkillIds(employee?.skill_ids || []);
+    api.getSkills().then(setSkills).catch(() => setSkills([]));
   }, [isOpen, employee]);
+
+  const toggleSkill = (id: string) => {
+    setSkillIds((prev) => (prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]));
+  };
 
   const handleSave = async () => {
     if (!name.trim()) return;
@@ -62,6 +71,7 @@ export function EmployeeModal({ isOpen, onClose, onSave, teams, employee }: Empl
         personality: personality.trim(),
         model: model.trim(),
         team_id: teamId || null,
+        skill_ids: skillIds,
       });
       onClose();
     } finally {
@@ -150,6 +160,36 @@ export function EmployeeModal({ isOpen, onClose, onSave, teams, employee }: Empl
             onChange={(e) => setModel(e.target.value)}
             placeholder="(default)"
           />
+        </Field>
+
+        <Field label="Skills" helpText="Injected into this employee's system prompt. Manage the catalog in Settings → Skills.">
+          {skills.length === 0 ? (
+            <div style={{ fontSize: '11px', color: 'var(--text-faint)', fontStyle: 'italic' }}>
+              No skills installed yet — add some in Settings → Skills.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: 160, overflowY: 'auto' }}>
+              {skills.map((s) => (
+                <label
+                  key={s.id}
+                  style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '12px', cursor: 'pointer' }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={skillIds.includes(s.id)}
+                    onChange={() => toggleSkill(s.id)}
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>
+                    <div style={{ fontWeight: 600 }}>{s.name || s.id}</div>
+                    {s.description && (
+                      <div style={{ color: 'var(--text-faint)', fontSize: '11px' }}>{s.description}</div>
+                    )}
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
         </Field>
 
         <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '4px' }}>

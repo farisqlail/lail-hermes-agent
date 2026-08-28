@@ -68,17 +68,6 @@ export function Office() {
     }
   };
 
-  if (officeSessionId) {
-    return (
-      <OfficeSessionChat
-        sessionId={officeSessionId}
-        employees={employees}
-        onBack={() => navigate('#/office')}
-        onDeleted={() => navigate('#/office')}
-      />
-    );
-  }
-
   const saveEmployee = async (data: Partial<Employee>) => {
     try {
       if (editingEmployee) {
@@ -349,6 +338,25 @@ export function Office() {
         onAssign={handleAssignToTeam}
         targetLabel={assignTarget?.label || ''}
       />
+
+      {officeSessionId && (
+        <div className="modal-overlay" onClick={() => navigate('#/office')}>
+          <div
+            className="modal-container"
+            style={{ maxWidth: '640px', width: '90vw', height: '82vh' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ flex: 1, minHeight: 0, padding: 'var(--s4)', display: 'flex' }}>
+              <OfficeSessionChat
+                sessionId={officeSessionId}
+                employees={employees}
+                onBack={() => navigate('#/office')}
+                onDeleted={() => navigate('#/office')}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
