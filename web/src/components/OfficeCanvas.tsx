@@ -895,8 +895,17 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
           } else {
             av.leftLegPivot.rotation.x = THREE.MathUtils.lerp(av.leftLegPivot.rotation.x, 0, 0.15);
             av.rightLegPivot.rotation.x = THREE.MathUtils.lerp(av.rightLegPivot.rotation.x, 0, 0.15);
+
+            // Whoever is standing at the presenter POI gets a raised,
+            // gesturing arm instead of the generic resting pose — reads as
+            // "presenting" rather than just "standing near the board".
+            const isPresenting = av.assignedPoi?.id === 'meet-presenter';
             av.leftArmPivot.rotation.x = THREE.MathUtils.lerp(av.leftArmPivot.rotation.x, 0, 0.15);
-            av.rightArmPivot.rotation.x = THREE.MathUtils.lerp(av.rightArmPivot.rotation.x, 0, 0.15);
+            av.rightArmPivot.rotation.x = THREE.MathUtils.lerp(
+              av.rightArmPivot.rotation.x,
+              isPresenting ? -Math.PI / 2.2 + Math.sin(time * 2) * 0.08 : 0,
+              0.15
+            );
             av.headMesh.position.y = 1.5 + Math.sin(time * 2) * 0.02;
             av.headMesh.rotation.x = 0;
           }
