@@ -343,7 +343,11 @@ export function Office() {
       />
 
       {officeSessionId && (
-        <div className="modal-overlay" onClick={() => navigate('#/office')}>
+        <div
+          className="modal-overlay"
+          onClick={() => navigate('#/office')}
+          style={{ backgroundColor: 'rgba(0, 0, 0, 0.25)', backdropFilter: 'none' }}
+        >
           <div
             className="modal-container"
             style={{ maxWidth: '640px', width: '90vw', height: '82vh' }}

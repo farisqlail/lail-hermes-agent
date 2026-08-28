@@ -1117,7 +1117,7 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
         // Chat-active speech bubble (hidden by default, toggled in the
         // speakingEmployeeId effect below)
         const speechBubble = createSpeechBubbleSprite();
-        speechBubble.position.set(0, 2.75, 0);
+        speechBubble.position.set(0, 2.95, 0);
         speechBubble.visible = false;
         group.add(speechBubble);
 

@@ -109,7 +109,7 @@ export function OfficeSessionChat({ sessionId, employees, onBack, onDeleted, onS
   const employee = employees.find((e) => e.employee_id === session?.employee_id) || null;
   const employeeName = employee?.name || 'Employee';
 
-  const activeSpeakerId = (streaming || speaking) && employee ? employee.employee_id : null;
+  const activeSpeakerId = (streaming || speaking || waitingOnTask) && employee ? employee.employee_id : null;
 
   useEffect(() => {
     onStreamingChange?.(activeSpeakerId);
