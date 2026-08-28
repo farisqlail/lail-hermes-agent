@@ -4,7 +4,7 @@ import { Field } from './Field';
 import { Button } from './Button';
 import { api } from '../api/client';
 import { Employee, Team, Skill } from '../api/types';
-import { Shuffle } from 'lucide-react';
+import { Shuffle, Search } from 'lucide-react';
 
 interface EmployeeModalProps {
   isOpen: boolean;
@@ -42,6 +42,7 @@ export function EmployeeModal({ isOpen, onClose, onSave, teams, employee }: Empl
   const [teamId, setTeamId] = useState('');
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [skillSearch, setSkillSearch] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -53,12 +54,20 @@ export function EmployeeModal({ isOpen, onClose, onSave, teams, employee }: Empl
     setModel(employee?.model || '');
     setTeamId(employee?.team_id || '');
     setSkillIds(employee?.skill_ids || []);
+    setSkillSearch('');
     api.getSkills().then(setSkills).catch(() => setSkills([]));
   }, [isOpen, employee]);
 
   const toggleSkill = (id: string) => {
     setSkillIds((prev) => (prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]));
   };
+
+  const filteredSkills = skillSearch.trim()
+    ? skills.filter((s) => {
+        const q = skillSearch.trim().toLowerCase();
+        return (s.name || s.id).toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q);
+      })
+    : skills;
 
   const handleSave = async () => {
     if (!name.trim()) return;
@@ -168,27 +177,46 @@ export function EmployeeModal({ isOpen, onClose, onSave, teams, employee }: Empl
               No skills installed yet — add some in Settings → Skills.
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: 160, overflowY: 'auto' }}>
-              {skills.map((s) => (
-                <label
-                  key={s.id}
-                  style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '12px', cursor: 'pointer' }}
-                >
+            <>
+              {skills.length > 5 && (
+                <div style={{ position: 'relative', marginBottom: '6px' }}>
+                  <Search size={13} style={{ position: 'absolute', left: 8, top: 8, color: 'var(--text-faint)' }} />
                   <input
-                    type="checkbox"
-                    checked={skillIds.includes(s.id)}
-                    onChange={() => toggleSkill(s.id)}
-                    style={{ marginTop: 2 }}
+                    className="field-input"
+                    value={skillSearch}
+                    onChange={(e) => setSkillSearch(e.target.value)}
+                    placeholder="Search skills…"
+                    style={{ paddingLeft: '26px', fontSize: '12px' }}
                   />
-                  <span>
-                    <div style={{ fontWeight: 600 }}>{s.name || s.id}</div>
-                    {s.description && (
-                      <div style={{ color: 'var(--text-faint)', fontSize: '11px' }}>{s.description}</div>
-                    )}
-                  </span>
-                </label>
-              ))}
-            </div>
+                </div>
+              )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: 160, overflowY: 'auto' }}>
+                {filteredSkills.length === 0 && (
+                  <div style={{ fontSize: '11px', color: 'var(--text-faint)', fontStyle: 'italic' }}>
+                    No skills match "{skillSearch}".
+                  </div>
+                )}
+                {filteredSkills.map((s) => (
+                  <label
+                    key={s.id}
+                    style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '12px', cursor: 'pointer' }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={skillIds.includes(s.id)}
+                      onChange={() => toggleSkill(s.id)}
+                      style={{ marginTop: 2 }}
+                    />
+                    <span>
+                      <div style={{ fontWeight: 600 }}>{s.name || s.id}</div>
+                      {s.description && (
+                        <div style={{ color: 'var(--text-faint)', fontSize: '11px' }}>{s.description}</div>
+                      )}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </>
           )}
         </Field>
 
