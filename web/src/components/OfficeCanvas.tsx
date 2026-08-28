@@ -855,7 +855,9 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
       }
 
       const nowS = Date.now() / 1000;
+      let anyWorking = false;
       avatarsRef.current.forEach((av) => {
+        if (av.zoneStatus === 'working') anyWorking = true;
         const dx = av.targetX - av.currentX;
         const dz = av.targetZ - av.currentZ;
         const dist = Math.hypot(dx, dz);
@@ -945,6 +947,8 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
           av.speechBubble.scale.set(0.5 * bubblePulse, 0.5 * bubblePulse, 1);
         }
       });
+
+      matScreenGlow.emissiveIntensity = anyWorking ? 0.75 + Math.sin(time * 3) * 0.25 : 0.8;
 
       renderer.render(scene, camera);
       reqAnimRef.current = requestAnimationFrame(animate);
