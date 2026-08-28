@@ -89,7 +89,7 @@ class OfficeStore:
         self.publish({"type": "office_employee_updated", "employee_id": employee_id})
         return row
 
-    def update_employee(self, employee_id, **fields) -> dict | None:
+    def update_employee(self, employee_id, publish: bool = True, **fields) -> dict | None:
         allowed = {"name", "role", "avatar", "personality", "model", "engine",
                    "skill_ids", "team_id", "energy", "status", "pos_x", "pos_y", "active"}
         sets, vals = [], []
@@ -108,7 +108,11 @@ class OfficeStore:
         with self._conn() as c:
             c.execute(f"UPDATE employees SET {', '.join(sets)} WHERE employee_id=?", vals)
         row = self.get_employee(employee_id)
-        self.publish({"type": "office_employee_updated", "employee_id": employee_id})
+        # publish=False lets a caller that's about to update many rows in one
+        # pass (office.py's simulation tick) send a single batched event
+        # instead of one SSE message per employee.
+        if publish:
+            self.publish({"type": "office_employee_updated", "employee_id": employee_id})
         return row
 
     def delete_employee(self, employee_id) -> bool:

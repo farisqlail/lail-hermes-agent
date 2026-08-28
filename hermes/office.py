@@ -604,21 +604,39 @@ class OfficeManager:
     async def tick(self, settings) -> None:
         """One pass over every active employee: energy decays while working,
         recovers on a break, and flips status at the burnout/recovery
-        thresholds. Meetings are checked per-team afterward, gated on
+        thresholds. Recovery doesn't stop dead at RECOVERY_THRESHOLD — that's
+        only the bar the employee to go back to work; energy keeps trickling
+        up to 100 while idle too, so the bar can actually read full instead
+        of permanently capping around 80-90. Every changed employee is
+        written individually (each needs its own SET clause/values) but with
+        publish=False — one batched `office_employee_updated` event covers
+        the whole pass instead of one SSE message per employee, so a roster
+        with many employees working at once doesn't burst the event queue
+        every tick. Meetings are checked per-team afterward, gated on
         `settings.office_meetings_enabled`."""
+        changed_ids: list[str] = []
         for emp in self.store.list_employees():
             if emp["status"] == "working":
                 energy = max(0.0, emp["energy"] - ENERGY_DECAY_PER_TICK)
                 updates = {"energy": energy}
                 if energy <= BURNOUT_THRESHOLD:
                     updates["status"] = "on_break"
-                self.store.update_employee(emp["employee_id"], **updates)
+                self.store.update_employee(emp["employee_id"], publish=False, **updates)
+                changed_ids.append(emp["employee_id"])
             elif emp["status"] == "on_break":
                 energy = min(100.0, emp["energy"] + ENERGY_RECOVER_PER_TICK)
                 updates = {"energy": energy}
                 if energy >= RECOVERY_THRESHOLD:
                     updates["status"] = "idle"
-                self.store.update_employee(emp["employee_id"], **updates)
+                self.store.update_employee(emp["employee_id"], publish=False, **updates)
+                changed_ids.append(emp["employee_id"])
+            elif emp["status"] == "idle" and emp["energy"] < 100.0:
+                energy = min(100.0, emp["energy"] + ENERGY_RECOVER_PER_TICK)
+                self.store.update_employee(emp["employee_id"], publish=False, energy=energy)
+                changed_ids.append(emp["employee_id"])
+
+        if changed_ids:
+            self.store.publish({"type": "office_employee_updated", "employee_ids": changed_ids})
 
         if getattr(settings, "office_meetings_enabled", False):
             for team in self.store.list_teams():
