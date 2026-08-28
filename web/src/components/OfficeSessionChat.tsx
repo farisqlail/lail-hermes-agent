@@ -28,6 +28,7 @@ interface OfficeSessionChatProps {
   employees: Employee[];
   onBack: () => void;
   onDeleted: () => void;
+  onStreamingChange?: (employeeId: string | null) => void;
 }
 
 interface Message extends ChatMessage {
@@ -59,7 +60,7 @@ const docExt = (name: string) => name.split('.').pop()?.toLowerCase() ?? '';
  * — with the same voice input (push-to-talk / handsfree), TTS output, and
  * attachment upload the main pane offers, for real input-bar parity rather
  * than a lookalike box that behaves differently underneath. */
-export function OfficeSessionChat({ sessionId, employees, onBack, onDeleted }: OfficeSessionChatProps) {
+export function OfficeSessionChat({ sessionId, employees, onBack, onDeleted, onStreamingChange }: OfficeSessionChatProps) {
   const { toast } = useToast();
   const { tasks } = useTasksContext();
   const [session, setSession] = useState<OfficeSession | null>(null);
@@ -107,6 +108,18 @@ export function OfficeSessionChat({ sessionId, employees, onBack, onDeleted }: O
 
   const employee = employees.find((e) => e.employee_id === session?.employee_id) || null;
   const employeeName = employee?.name || 'Employee';
+
+  const activeSpeakerId = (streaming || speaking) && employee ? employee.employee_id : null;
+
+  useEffect(() => {
+    onStreamingChange?.(activeSpeakerId);
+  }, [activeSpeakerId, onStreamingChange]);
+
+  useEffect(() => {
+    return () => { onStreamingChange?.(null); };
+    // Clears the cue when this pane closes (e.g. the office chat modal is
+    // dismissed), independent of whatever streaming/speaking was mid-flight.
+  }, [onStreamingChange]);
 
   if (queueRef.current === null && typeof window !== 'undefined') {
     sinkRef.current = sharedAudioSink();
