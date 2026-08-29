@@ -299,6 +299,8 @@ class OfficeManager:
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("prompt is required")
+        if employee.get("status") == "on_break":
+            raise ValueError(f"{employee.get('name') or employee_id} is on break recovering energy")
 
         if employee.get("is_lead") and employee.get("team_id"):
             return self._delegate_task(employee, prompt, project)
@@ -307,6 +309,19 @@ class OfficeManager:
             employee, prompt, project, team_id=employee.get("team_id"))
         return work
 
+    def _least_busy(self, members: list[dict]) -> dict:
+        """Picks the member with the fewest open (queued/running) work_items,
+        preferring anyone not currently on_break — so resting teammates
+        aren't handed new work just because their queue is empty. Falls back
+        to the whole pool if everyone's resting, so a task never just fails
+        to find a home."""
+        pool = [m for m in members if m.get("status") != "on_break"] or members
+        open_counts = {}
+        for m in pool:
+            items = self.store.list_work_items(employee_id=m["employee_id"], limit=50)
+            open_counts[m["employee_id"]] = sum(1 for w in items if w["status"] in ("queued", "running"))
+        return min(pool, key=lambda m: open_counts[m["employee_id"]])
+
     def assign_team_task(self, team_id: str, prompt: str, project: str | None = None) -> dict:
         """Picks one member to execute the whole prompt. A team lead assigned
         directly (assign_task) fans a task out across members instead — this
@@ -314,11 +329,7 @@ class OfficeManager:
         members = self.store.list_employees(team_id=team_id)
         if not members:
             raise ValueError("team has no members")
-        open_counts = {}
-        for m in members:
-            items = self.store.list_work_items(employee_id=m["employee_id"], limit=50)
-            open_counts[m["employee_id"]] = sum(1 for w in items if w["status"] in ("queued", "running"))
-        chosen = min(members, key=lambda m: open_counts[m["employee_id"]])
+        chosen = self._least_busy(members)
         return self.assign_task(chosen["employee_id"], prompt, project=project)
 
     # --- lead delegation ---
@@ -347,13 +358,7 @@ class OfficeManager:
         doesn't return usable JSON — a delegation must never just drop the
         task on the floor."""
         def _fallback() -> list[tuple[dict, str]]:
-            open_counts = {}
-            for m in members:
-                items = self.store.list_work_items(employee_id=m["employee_id"], limit=50)
-                open_counts[m["employee_id"]] = sum(
-                    1 for w in items if w["status"] in ("queued", "running"))
-            chosen = min(members, key=lambda m: open_counts[m["employee_id"]])
-            return [(chosen, prompt)]
+            return [(self._least_busy(members), prompt)]
 
         settings = self.settings_loader()
         secrets = self.secrets_loader()
@@ -433,6 +438,9 @@ class OfficeManager:
         try:
             members = [m for m in self.store.list_employees(team_id=lead.get("team_id"))
                       if m["employee_id"] != lead_id]
+            available = [m for m in members if m.get("status") != "on_break"]
+            if available:
+                members = available
             if not members:
                 # A lead with no teammates just does the work themselves.
                 work, task = self._spawn_employee_work(lead, prompt, project,
@@ -909,25 +917,32 @@ class OfficeManager:
         with many employees working at once doesn't burst the event queue
         every tick. Meetings are checked per-team afterward, gated on
         `settings.office_meetings_enabled`."""
+        # Each employee's status/energy transition is applied via a single
+        # atomic UPDATE gated on their status still matching what this
+        # snapshot saw (see apply_energy_tick) — a plain request thread (e.g.
+        # PUT /api/office/employees/{id}, which FastAPI runs off the event
+        # loop) can change status concurrently with this loop; the DB-side
+        # guard means such a row is just skipped this tick instead of tick's
+        # stale snapshot clobbering the concurrent change.
         changed_ids: list[str] = []
         for emp in self.store.list_employees():
             if emp["status"] == "working":
-                energy = max(0.0, emp["energy"] - ENERGY_DECAY_PER_TICK)
-                updates = {"energy": energy}
-                if energy <= BURNOUT_THRESHOLD:
-                    updates["status"] = "on_break"
-                self.store.update_employee(emp["employee_id"], publish=False, **updates)
-                changed_ids.append(emp["employee_id"])
+                changed = self.store.apply_energy_tick(
+                    emp["employee_id"], from_status="working", delta=-ENERGY_DECAY_PER_TICK,
+                    cross_status="on_break", cross_when_delta_positive=False,
+                    threshold=BURNOUT_THRESHOLD)
             elif emp["status"] == "on_break":
-                energy = min(100.0, emp["energy"] + ENERGY_RECOVER_PER_TICK)
-                updates = {"energy": energy}
-                if energy >= RECOVERY_THRESHOLD:
-                    updates["status"] = "idle"
-                self.store.update_employee(emp["employee_id"], publish=False, **updates)
-                changed_ids.append(emp["employee_id"])
+                changed = self.store.apply_energy_tick(
+                    emp["employee_id"], from_status="on_break", delta=ENERGY_RECOVER_PER_TICK,
+                    cross_status="idle", cross_when_delta_positive=True,
+                    threshold=RECOVERY_THRESHOLD)
             elif emp["status"] == "idle" and emp["energy"] < 100.0:
-                energy = min(100.0, emp["energy"] + ENERGY_RECOVER_PER_TICK)
-                self.store.update_employee(emp["employee_id"], publish=False, energy=energy)
+                changed = self.store.apply_energy_tick(
+                    emp["employee_id"], from_status="idle", delta=ENERGY_RECOVER_PER_TICK,
+                    cross_status="idle", cross_when_delta_positive=True, threshold=100.0)
+            else:
+                changed = False
+            if changed:
                 changed_ids.append(emp["employee_id"])
 
         if changed_ids:

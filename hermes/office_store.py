@@ -106,10 +106,10 @@ class OfficeStore:
                    "is_lead"}
         sets, vals = [], []
         for k, v in fields.items():
-            if k not in allowed or v is None:
+            if k not in allowed:
                 continue
             if k == "skill_ids":
-                v = json.dumps(v)
+                v = json.dumps(v) if v is not None else None
             sets.append(f"{k}=?")
             vals.append(v)
         if not sets:
@@ -126,6 +126,34 @@ class OfficeStore:
         if publish:
             self.publish({"type": "office_employee_updated", "employee_id": employee_id})
         return row
+
+    def apply_energy_tick(self, employee_id: str, from_status: str, delta: float,
+                          cross_status: str, cross_when_delta_positive: bool,
+                          threshold: float) -> bool:
+        """Atomically applies one simulation tick's energy delta to a single
+        employee, computed against the row's CURRENT `energy` (not a
+        Python-side value read earlier by office.py's tick() snapshot loop)
+        and gated on `status` still being `from_status` at the moment this
+        UPDATE executes. A regular request thread (FastAPI runs sync routes
+        like PUT /employees off the event loop, in a real OS thread) can
+        change status concurrently with tick() reading its snapshot and
+        writing moments later; without this guard tick's stale-based
+        write can stomp that concurrent change. Returns True if the row
+        matched and was updated, False if `from_status` no longer matched
+        (employee moved on already — tick just skips them this round)."""
+        new_energy = "MIN(100.0, energy + :delta)" if delta >= 0 else "MAX(0.0, energy + :delta)"
+        crossed = f"{new_energy} {'>=' if cross_when_delta_positive else '<='} :threshold"
+        with self._conn() as c:
+            cur = c.execute(
+                f"UPDATE employees SET energy = {new_energy}, "
+                f"status = CASE WHEN {crossed} THEN :cross_status ELSE status END, "
+                f"updated = :now "
+                f"WHERE employee_id = :employee_id AND status = :from_status",
+                {"delta": delta, "threshold": threshold, "cross_status": cross_status,
+                 "now": time.time(), "employee_id": employee_id, "from_status": from_status},
+            )
+            changed = cur.rowcount > 0
+        return changed
 
     def delete_employee(self, employee_id) -> bool:
         """Soft delete — work_items/tasks keep pointing at a real (inactive)
@@ -171,7 +199,7 @@ class OfficeStore:
         allowed = {"name", "description"}
         sets, vals = [], []
         for k, v in fields.items():
-            if k not in allowed or v is None:
+            if k not in allowed:
                 continue
             sets.append(f"{k}=?")
             vals.append(v)
@@ -336,7 +364,7 @@ class OfficeStore:
         allowed = {"title", "project", "model", "engine"}
         sets, vals = [], []
         for k, v in fields.items():
-            if k not in allowed or v is None:
+            if k not in allowed:
                 continue
             sets.append(f"{k}=?")
             vals.append(v)

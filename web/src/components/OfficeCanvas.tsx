@@ -16,6 +16,8 @@ import {
   Coffee,
   ZoomIn,
   ZoomOut,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 interface OfficeCanvasProps {
@@ -23,6 +25,10 @@ interface OfficeCanvasProps {
   onSelectEmployee?: (employee: Employee) => void;
   selectedEmployeeId?: string | null;
   speakingEmployeeId?: string | null;
+  isChatOpen?: boolean;
+  onToggleChat?: () => void;
+  focusEmployeeId?: string | null;
+  children?: React.ReactNode;
 }
 
 type LightingPreset = 'day' | 'night' | 'sunset';
@@ -45,22 +51,24 @@ interface OfficePOI {
 // code below), so 0 would face the avatar away from its screen, into the
 // chair back. PI turns it around to face the monitors like an occupied desk.
 const DESK_POIS: OfficePOI[] = [
-  { id: 'desk-1', name: 'Front Desk Left', x: -11.5, z: 9.5, rotationY: Math.PI, isSeated: true, zone: 'desk' },
-  { id: 'desk-2', name: 'Front Desk Mid', x: -8.0, z: 9.5, rotationY: Math.PI, isSeated: true, zone: 'desk' },
-  { id: 'desk-3', name: 'Front Desk Right', x: -4.5, z: 9.5, rotationY: Math.PI, isSeated: true, zone: 'desk' },
-  { id: 'desk-4', name: 'Back Desk Left', x: -11.5, z: 2.5, rotationY: Math.PI, isSeated: true, zone: 'desk' },
-  { id: 'desk-5', name: 'Back Desk Mid', x: -8.0, z: 2.5, rotationY: Math.PI, isSeated: true, zone: 'desk' },
-  { id: 'desk-6', name: 'Back Desk Right', x: -4.5, z: 2.5, rotationY: Math.PI, isSeated: true, zone: 'desk' },
+  { id: 'desk-1', name: 'Front Desk Left', x: -12.5, z: 9.0, rotationY: Math.PI, isSeated: true, zone: 'desk' },
+  { id: 'desk-2', name: 'Front Desk Mid', x: -8.5, z: 9.0, rotationY: Math.PI, isSeated: true, zone: 'desk' },
+  { id: 'desk-3', name: 'Front Desk Right', x: -4.5, z: 9.0, rotationY: Math.PI, isSeated: true, zone: 'desk' },
+  { id: 'desk-4', name: 'Back Desk Left', x: -12.5, z: 2.0, rotationY: Math.PI, isSeated: true, zone: 'desk' },
+  { id: 'desk-5', name: 'Back Desk Mid', x: -8.5, z: 2.0, rotationY: Math.PI, isSeated: true, zone: 'desk' },
+  { id: 'desk-6', name: 'Back Desk Right', x: -4.5, z: 2.0, rotationY: Math.PI, isSeated: true, zone: 'desk' },
 ];
 
 const MEETING_POIS: OfficePOI[] = [
   { id: 'meet-presenter', name: 'Whiteboard Presenter', x: 6.5, z: -4.0, rotationY: Math.PI * 0.75, isSeated: false, zone: 'meeting' },
-  { id: 'meet-chair-1', name: 'Meeting Chair 1', x: 4.5, z: 2.0, rotationY: Math.PI / 2, isSeated: true, zone: 'meeting' },
-  { id: 'meet-chair-2', name: 'Meeting Chair 2', x: 11.5, z: 2.0, rotationY: -Math.PI / 2, isSeated: true, zone: 'meeting' },
-  { id: 'meet-chair-3', name: 'Meeting Chair 3', x: 6.5, z: -0.5, rotationY: 0, isSeated: true, zone: 'meeting' },
-  { id: 'meet-chair-4', name: 'Meeting Chair 4', x: 9.5, z: -0.5, rotationY: 0, isSeated: true, zone: 'meeting' },
-  { id: 'meet-chair-5', name: 'Meeting Chair 5', x: 6.5, z: 4.5, rotationY: Math.PI, isSeated: true, zone: 'meeting' },
-  { id: 'meet-chair-6', name: 'Meeting Chair 6', x: 9.5, z: 4.5, rotationY: Math.PI, isSeated: true, zone: 'meeting' },
+  { id: 'meet-chair-1', name: 'Meeting Chair 1', x: 3.3, z: 1.5, rotationY: Math.PI / 2, isSeated: true, zone: 'meeting' },
+  { id: 'meet-chair-2', name: 'Meeting Chair 2', x: 13.7, z: 1.5, rotationY: -Math.PI / 2, isSeated: true, zone: 'meeting' },
+  { id: 'meet-chair-3', name: 'Meeting Chair 3', x: 6.7, z: -1.8, rotationY: 0, isSeated: true, zone: 'meeting' },
+  { id: 'meet-chair-4', name: 'Meeting Chair 4', x: 8.5, z: -1.8, rotationY: 0, isSeated: true, zone: 'meeting' },
+  { id: 'meet-chair-5', name: 'Meeting Chair 5', x: 10.3, z: -1.8, rotationY: 0, isSeated: true, zone: 'meeting' },
+  { id: 'meet-chair-6', name: 'Meeting Chair 6', x: 6.7, z: 4.8, rotationY: Math.PI, isSeated: true, zone: 'meeting' },
+  { id: 'meet-chair-7', name: 'Meeting Chair 7', x: 8.5, z: 4.8, rotationY: Math.PI, isSeated: true, zone: 'meeting' },
+  { id: 'meet-chair-8', name: 'Meeting Chair 8', x: 10.3, z: 4.8, rotationY: Math.PI, isSeated: true, zone: 'meeting' },
   { id: 'meet-window', name: 'Meeting Window View', x: 14.5, z: 1.5, rotationY: -Math.PI / 2, isSeated: false, zone: 'meeting' },
 ];
 
@@ -521,7 +529,16 @@ function buildRiggedAvatar(
   };
 }
 
-export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, speakingEmployeeId }: OfficeCanvasProps) {
+export function OfficeCanvas({
+  employees,
+  onSelectEmployee,
+  selectedEmployeeId,
+  speakingEmployeeId,
+  isChatOpen,
+  onToggleChat,
+  focusEmployeeId,
+  children,
+}: OfficeCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -545,6 +562,17 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
   const camTargetPos = useRef<THREE.Vector3>(new THREE.Vector3(26, 22, 26));
   const camTargetLookAt = useRef<THREE.Vector3>(new THREE.Vector3(0, 1, 0));
   const isTransitioningRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (focusEmployeeId) {
+      const av = avatarsRef.current.get(focusEmployeeId);
+      if (av) {
+        isTransitioningRef.current = true;
+        camTargetPos.current.set(av.targetX + 8, 8, av.targetZ + 8);
+        camTargetLookAt.current.set(av.targetX, 1.2, av.targetZ);
+      }
+    }
+  }, [focusEmployeeId]);
 
   useEffect(() => {
     let working = 0; let meeting = 0; let brk = 0; let idle = 0;
@@ -956,10 +984,12 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
       officeGroup.add(g);
     };
 
-    createWorkstation(-11.5, 8.5);
-    createWorkstation(-7.5, 8.5);
-    createWorkstation(-11.5, 1.5);
-    createWorkstation(-7.5, 1.5);
+    createWorkstation(-12.5, 8.5);
+    createWorkstation(-8.5, 8.5);
+    createWorkstation(-4.5, 8.5);
+    createWorkstation(-12.5, 1.5);
+    createWorkstation(-8.5, 1.5);
+    createWorkstation(-4.5, 1.5);
 
     // Meeting Room: Iconic Yellow Oval Conference Table
     const meetingTableGroup = new THREE.Group();
@@ -1355,14 +1385,22 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
     });
   }, [speakingEmployeeId]);
 
-  // Click & Hover Raycaster handling
-  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas || !cameraRef.current) return;
+  // Click & Hover Raycaster handling. Native pointermove fires far faster
+  // than the render loop, so the actual raycast is deferred to at most once
+  // per animation frame (pending pointer coords held in a ref); setHoveredEmp
+  // only fires when the hovered employee id actually changes, so hovering
+  // the same avatar doesn't re-render React on every mouse pixel.
+  const pendingPointerRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const pointerRafScheduledRef = useRef(false);
+  const lastHoveredIdRef = useRef<string | null>(null);
 
-    const rect = canvas.getBoundingClientRect();
-    mouseRef.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    mouseRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  const resolveHover = () => {
+    pointerRafScheduledRef.current = false;
+    const pt = pendingPointerRef.current;
+    if (!pt || !cameraRef.current) return;
+
+    mouseRef.current.x = (pt.x / pt.w) * 2 - 1;
+    mouseRef.current.y = -(pt.y / pt.h) * 2 + 1;
 
     raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current);
 
@@ -1385,7 +1423,28 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
         });
       }
     }
-    setHoveredEmp(foundEmp);
+    const foundId = foundEmp ? (foundEmp as Employee).employee_id : null;
+    if (foundId !== lastHoveredIdRef.current) {
+      lastHoveredIdRef.current = foundId;
+      setHoveredEmp(foundEmp);
+    }
+  };
+
+  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !cameraRef.current) return;
+
+    const rect = canvas.getBoundingClientRect();
+    pendingPointerRef.current = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      w: rect.width,
+      h: rect.height,
+    };
+    if (!pointerRafScheduledRef.current) {
+      pointerRafScheduledRef.current = true;
+      requestAnimationFrame(resolveHover);
+    }
   };
 
   const handleCanvasClick = () => {
@@ -1441,8 +1500,10 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
           alignItems: 'center',
           pointerEvents: 'none',
           gap: '12px',
+          zIndex: 10,
         }}
       >
+        {/* Left: Presets */}
         <div
           style={{
             display: 'inline-flex',
@@ -1494,6 +1555,60 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
           </button>
         </div>
 
+        {/* Center: Top Quick Agent Chips (Matching Reference Image) */}
+        {employees.length > 0 && (
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: 'rgba(15, 23, 42, 0.85)',
+              backdropFilter: 'blur(12px)',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              borderRadius: '8px',
+              padding: '4px 8px',
+              pointerEvents: 'auto',
+              maxWidth: '46vw',
+              overflowX: 'auto',
+            }}
+          >
+            {employees.map((emp) => {
+              const isSelected = selectedEmployeeId === emp.employee_id;
+              const statusHex = STATUS_COLOR_HEX[emp.status] || 0x94a3b8;
+              const statusColor = `#${statusHex.toString(16).padStart(6, '0')}`;
+              return (
+                <button
+                  key={emp.employee_id}
+                  type="button"
+                  onClick={() => {
+                    if (onSelectEmployee) onSelectEmployee(emp);
+                    const av = avatarsRef.current.get(emp.employee_id);
+                    if (av) {
+                      isTransitioningRef.current = true;
+                      camTargetPos.current.set(av.targetX + 8, 8, av.targetZ + 8);
+                      camTargetLookAt.current.set(av.targetX, 1.2, av.targetZ);
+                    }
+                  }}
+                  className={`btn-office-chip ${isSelected ? 'active' : ''}`}
+                  title={`${emp.name} (${emp.status.replace('_', ' ')})`}
+                >
+                  <span
+                    style={{
+                      width: '6px',
+                      height: '6px',
+                      borderRadius: '50%',
+                      backgroundColor: statusColor,
+                      boxShadow: isSelected ? `0 0 6px ${statusColor}` : 'none',
+                    }}
+                  />
+                  <span>{emp.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Right: Lighting & Zoom Tools */}
         <div
           style={{
             display: 'inline-flex',
@@ -1581,6 +1696,7 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
           pointerEvents: 'none',
           fontSize: '10.5px',
           color: 'var(--text-dim)',
+          zIndex: 5,
         }}
       >
         <span>🖱️ Drag to rotate</span>
@@ -1590,7 +1706,7 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
         <span>Scroll to zoom</span>
       </div>
 
-      {/* Bottom Floating Stats Pill */}
+      {/* Bottom Floating Stats Pill (Matching Reference Image) */}
       <div
         style={{
           position: 'absolute',
@@ -1598,85 +1714,106 @@ export function OfficeCanvas({ employees, onSelectEmployee, selectedEmployeeId, 
           left: '16px',
           display: 'inline-flex',
           alignItems: 'center',
-          gap: '14px',
-          backgroundColor: 'rgba(15, 23, 42, 0.85)',
+          gap: '10px',
+          backgroundColor: 'rgba(15, 23, 42, 0.9)',
           backdropFilter: 'blur(12px)',
           border: '1px solid rgba(255, 255, 255, 0.12)',
           borderRadius: '8px',
-          padding: '8px 14px',
+          padding: '6px 14px',
           pointerEvents: 'none',
-          fontSize: '11.5px',
+          fontSize: '11px',
           color: 'var(--text-dim)',
+          zIndex: 10,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#38bdf8' }}>
-          <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#38bdf8' }} />
-          <span style={{ fontWeight: 600, color: 'var(--text)' }}>{stats.working}</span> Working
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#22c55e', fontWeight: 600 }}>
+          <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 6px #22c55e' }} />
+          <span>CONNECTED</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#a855f7' }}>
-          <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#a855f7' }} />
-          <span style={{ fontWeight: 600, color: 'var(--text)' }}>{stats.meeting}</span> Meeting
+        <span style={{ color: 'rgba(255,255,255,0.2)' }}>|</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: '#38bdf8' }}>
+          <span style={{ fontWeight: 600, color: 'var(--text)' }}>{stats.working}</span> working
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#f59e0b' }}>
-          <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#f59e0b' }} />
-          <span style={{ fontWeight: 600, color: 'var(--text)' }}>{stats.break}</span> Break
+        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: '#94a3b8' }}>
+          <span style={{ fontWeight: 600, color: 'var(--text)' }}>{stats.idle}</span> idle
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#94a3b8' }}>
-          <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#94a3b8' }} />
-          <span style={{ fontWeight: 600, color: 'var(--text)' }}>{stats.idle}</span> Idle
-        </div>
+        <span style={{ color: 'rgba(255,255,255,0.2)' }}>|</span>
+        <span style={{ color: 'var(--text-faint)', fontSize: '10.5px' }}>
+          drag: orbit • scroll: zoom • rmb: pan • dbl-click: focus
+        </span>
       </div>
 
-      {/* Hover Employee Profile Card */}
-      {hoveredEmp && (
-        <div
+      {/* Bottom Right Toggle Chat Button (Matching Reference Image) */}
+      {onToggleChat && (
+        <button
+          type="button"
+          onClick={onToggleChat}
           style={{
             position: 'absolute',
             bottom: '16px',
             right: '16px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            backgroundColor: 'rgba(15, 23, 42, 0.92)',
+            backdropFilter: 'blur(12px)',
+            border: '1px solid rgba(245, 158, 11, 0.45)',
+            borderRadius: '8px',
+            padding: '7px 14px',
+            fontSize: '11.5px',
+            fontWeight: 700,
+            letterSpacing: '0.04em',
+            color: '#f59e0b',
+            cursor: 'pointer',
+            zIndex: 110,
+            transition: 'all 0.15s ease',
+          }}
+          className="btn-hide-chat-toggle"
+          title={isChatOpen ? 'Hide agent chat' : 'Open agent chat'}
+        >
+          {isChatOpen ? (
+            <ChevronDown size={14} style={{ strokeWidth: 2.5 }} />
+          ) : (
+            <ChevronUp size={14} style={{ strokeWidth: 2.5 }} />
+          )}
+          <span>{isChatOpen ? 'HIDE CHAT' : 'SHOW CHAT'}</span>
+        </button>
+      )}
+
+      {/* Hover Employee Profile Card */}
+      {hoveredEmp && !isChatOpen && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: '16px',
+            right: '140px',
             backgroundColor: 'rgba(15, 23, 42, 0.95)',
             backdropFilter: 'blur(16px)',
             border: '1px solid rgba(56, 189, 248, 0.3)',
             borderRadius: '10px',
-            padding: '12px 16px',
+            padding: '10px 14px',
             display: 'flex',
             alignItems: 'center',
-            gap: '12px',
+            gap: '10px',
             boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)',
             pointerEvents: 'none',
             animation: 'fadeIn 0.15s ease',
+            zIndex: 15,
           }}
         >
-          <div style={{ fontSize: '26px' }}>{hoveredEmp.avatar || '🧑‍💻'}</div>
+          <div style={{ fontSize: '22px' }}>{hoveredEmp.avatar || '🧑‍💻'}</div>
           <div>
-            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text)' }}>{hoveredEmp.name}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{hoveredEmp.role || 'AI Employee'}</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '3px' }}>
-              <span
-                style={{
-                  width: '6px',
-                  height: '6px',
-                  borderRadius: '50%',
-                  backgroundColor:
-                    hoveredEmp.status === 'working'
-                      ? '#38bdf8'
-                      : hoveredEmp.status === 'in_meeting'
-                      ? '#a855f7'
-                      : hoveredEmp.status === 'on_break'
-                      ? '#f59e0b'
-                      : '#94a3b8',
-                }}
-              />
-              <span style={{ fontSize: '10.5px', textTransform: 'capitalize', color: 'var(--text-dim)' }}>
-                {hoveredEmp.status.replace('_', ' ')}
-              </span>
-            </div>
+            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)' }}>{hoveredEmp.name}</div>
+            <div style={{ fontSize: '10.5px', color: 'var(--text-dim)' }}>{hoveredEmp.role || 'AI Employee'}</div>
           </div>
-          <div style={{ marginLeft: '8px', padding: '4px 8px', borderRadius: '4px', background: 'rgba(56, 189, 248, 0.1)', color: '#38bdf8', fontSize: '10.5px' }}>
-            Click to inspect
+          <div style={{ marginLeft: '6px', padding: '3px 6px', borderRadius: '4px', background: 'rgba(56, 189, 248, 0.1)', color: '#38bdf8', fontSize: '10px' }}>
+            Click to chat
           </div>
         </div>
       )}
+
+      {/* Embedded Children e.g. Floating Unified Chat Drawer */}
+      {children}
 
       {/* Embedded CSS */}
       <style>{`
