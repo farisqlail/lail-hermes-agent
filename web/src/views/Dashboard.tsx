@@ -1410,7 +1410,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
 
         {/* Bottom Right version badge (Matching Reference Screenshot) */}
         <div style={{ position: 'absolute', bottom: '8px', right: '20px', fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--accent)', opacity: 0.8, pointerEvents: 'none', zIndex: 10 }}>
-          # v0.20.5 (+21) 3f5d375
+          # v0.0.1
         </div>
       </div>
 

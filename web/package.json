@@ -1,6 +1,6 @@
 {
   "name": "hermes-web",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "Hermes React Web UI",
   "private": true,
   "type": "module",
