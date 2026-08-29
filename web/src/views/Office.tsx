@@ -9,7 +9,7 @@ import { TeamModal } from '../components/TeamModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { AssignTaskModal } from '../components/AssignTaskModal';
 import { CallMeetingModal } from '../components/CallMeetingModal';
-import { OfficeSessionChat } from '../components/OfficeSessionChat';
+import { OfficeUnifiedChat } from '../components/OfficeUnifiedChat';
 import { WorkOutputFeed } from '../components/WorkOutputFeed';
 import { OfficeCanvas } from '../components/OfficeCanvas';
 import { useToast } from '../components/Toast';
@@ -49,6 +49,30 @@ export function Office() {
     }
   }, [lastEvent, toast]);
 
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string | null>(null);
+  const [focusEmployeeId, setFocusEmployeeId] = useState<string | null>(null);
+  const [isChatOpen, setIsChatOpen] = useState(true);
+
+  // Default selected employee when employees load
+  useEffect(() => {
+    if (!selectedEmployeeId && employees.length > 0) {
+      setSelectedEmployeeId(employees[0].employee_id);
+    }
+  }, [employees, selectedEmployeeId]);
+
+  // Sync with officeSessionId route
+  useEffect(() => {
+    if (officeSessionId) {
+      api.getOfficeSession(officeSessionId).then((sess) => {
+        if (sess?.employee_id) {
+          setSelectedEmployeeId(sess.employee_id);
+          setFocusEmployeeId(sess.employee_id);
+          setIsChatOpen(true);
+        }
+      }).catch(() => {});
+    }
+  }, [officeSessionId]);
+
   const [employeeModalOpen, setEmployeeModalOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
   const [teamModalOpen, setTeamModalOpen] = useState(false);
@@ -62,17 +86,10 @@ export function Office() {
   const [speakingEmployeeId, setSpeakingEmployeeId] = useState<string | null>(null);
   const handleStreamingChange = useCallback((id: string | null) => setSpeakingEmployeeId(id), []);
 
-  // Clicking an employee (card or 3D character) resumes their most recent
-  // chat session, or creates one — then navigates into it. Sessions live in
-  // the URL/sidebar now, not a modal, so there is no "open chat" state here.
-  const openChatFor = async (emp: Employee) => {
-    try {
-      const existing = await api.getOfficeSessions(emp.employee_id);
-      const session = existing[0] || await api.createOfficeSession({ employee_id: emp.employee_id });
-      navigate(`#/office/session/${session.session_id}`);
-    } catch (err) {
-      toast(errorMessage(err, 'Failed to open chat'), 'err');
-    }
+  const openChatFor = (emp: Employee) => {
+    setSelectedEmployeeId(emp.employee_id);
+    setFocusEmployeeId(emp.employee_id);
+    setIsChatOpen(true);
   };
 
   const saveEmployee = async (data: Partial<Employee>) => {
@@ -267,9 +284,29 @@ export function Office() {
       <div style={{ marginBottom: '24px' }}>
         <OfficeCanvas
           employees={employees}
+          selectedEmployeeId={selectedEmployeeId}
           onSelectEmployee={openChatFor}
           speakingEmployeeId={speakingEmployeeId}
-        />
+          isChatOpen={isChatOpen}
+          onToggleChat={() => setIsChatOpen((v) => !v)}
+          focusEmployeeId={focusEmployeeId}
+        >
+          {isChatOpen && employees.length > 0 && (
+            <div className="office-docked-chat-wrapper">
+              <OfficeUnifiedChat
+                employees={employees}
+                selectedEmployeeId={selectedEmployeeId}
+                onSelectEmployee={(emp) => {
+                  setSelectedEmployeeId(emp.employee_id);
+                  setFocusEmployeeId(emp.employee_id);
+                }}
+                onFocusEmployee={(empId) => setFocusEmployeeId(empId)}
+                onStreamingChange={handleStreamingChange}
+                onClose={() => setIsChatOpen(false)}
+              />
+            </div>
+          )}
+        </OfficeCanvas>
       </div>
 
       {loading ? (
@@ -395,30 +432,6 @@ export function Office() {
           (e) => e.team_id === callMeetingTarget?.team_id && e.employee_id !== callMeetingTarget?.employee_id
         )}
       />
-
-      {officeSessionId && (
-        <div
-          className="modal-overlay"
-          onClick={() => navigate('#/office')}
-          style={{ backgroundColor: 'rgba(0, 0, 0, 0.25)', backdropFilter: 'none' }}
-        >
-          <div
-            className="modal-container"
-            style={{ maxWidth: '640px', width: '90vw', height: '82vh' }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ flex: 1, minHeight: 0, padding: 'var(--s4)', display: 'flex' }}>
-              <OfficeSessionChat
-                sessionId={officeSessionId}
-                employees={employees}
-                onBack={() => navigate('#/office')}
-                onDeleted={() => navigate('#/office')}
-                onStreamingChange={handleStreamingChange}
-              />
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

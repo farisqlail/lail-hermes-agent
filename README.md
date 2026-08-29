@@ -46,6 +46,50 @@ Hermes orchestrates state-of-the-art AI coding CLIs (**Claude Code** / **Antigra
 
 ---
 
+## 📸 Screenshots
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <b>Dashboard / Chat</b><br/>
+      <img src="docs/screenshots/01-dashboard.png" alt="Dashboard chat view" width="100%" />
+    </td>
+    <td width="50%" align="center">
+      <b>3D Virtual Office</b><br/>
+      <img src="docs/screenshots/02-office-mode.png" alt="3D Office mode with AI employees" width="100%" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>Settings — Model & Planner</b><br/>
+      <img src="docs/screenshots/03-settings.png" alt="Settings modal" width="100%" />
+    </td>
+    <td width="50%" align="center">
+      <b>Capabilities</b><br/>
+      <img src="docs/screenshots/04-capabilities.png" alt="Capabilities modal" width="100%" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>Messaging / Telegram</b><br/>
+      <img src="docs/screenshots/05-messaging.png" alt="Messaging and Telegram integration modal" width="100%" />
+    </td>
+    <td width="50%" align="center">
+      <b>Artifacts Hub</b><br/>
+      <img src="docs/screenshots/06-artifacts.png" alt="Generated artifacts hub" width="100%" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>Scheduled Jobs</b><br/>
+      <img src="docs/screenshots/07-scheduled-jobs.png" alt="Scheduled tasks and background cron modal" width="100%" />
+    </td>
+    <td width="50%"></td>
+  </tr>
+</table>
+
+---
+
 ## 🗺️ System Architecture
 
 ```mermaid
@@ -159,6 +203,16 @@ sequenceDiagram
 
 ## Features
 
+- **3D Virtual Office** — hire AI "employees" (persona, model, skills, optional team) into a live
+  Three.js isometric office; assign them a task directly or through a **team lead**, who breaks
+  it into subtasks via one LLM call, fans them out to teammates, and synthesizes the results back
+  into a summary. Energy/burnout is a real state machine: a working employee's energy decays each
+  tick, a burned-out one is routed onto a break automatically (and excluded from new assignments
+  and delegation until recovered), and it's all applied through atomic per-employee DB updates so
+  a concurrent API request can never be clobbered by a stale simulation tick. Each employee has
+  its own chat session (casual persona chat, or a project-bound thread that runs as a real
+  Hermes task) with the same streaming, voice input/output, and attachment support as the main
+  chat pane.
 - **Google Stitch MCP UI/UX Generation & Project Continuity** — Ask Hermes to build web or mobile app designs (`"buat UI login modern"`). Hermes creates high-spec prompts (visual theme, hierarchy, components, microcopy), invokes Google Stitch MCP, renders the UI screenshot directly in chat, and provides a direct web link (`https://stitch.withgoogle.com/projects/{projectId}`). Multi-screen flows and screen revisions reuse the same `project_id` on the canvas.
 - **Interactive Telegram Actions & Voice Notes** — Interactive Inline Keyboard buttons for 1-tap task approvals, proactive next-step recommendations, and voice replies. Send a voice note to Hermes $\rightarrow$ it transcribes via faster-whisper and replies with a spoken voice note back via `edge-tts`.
 - **Dynamic Background Scheduler & Crons** — Schedule one-shot or recurring background tasks (`schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task`) directly from chat or Web UI REST endpoints. Background loop runs tasks autonomously and alerts the operator.
