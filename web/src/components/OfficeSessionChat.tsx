@@ -7,10 +7,10 @@ import { Markdown } from '../components/Markdown';
 import { findTaskIds, InlineTaskCard, ClaudeThinkingIndicator } from '../components/TaskCard';
 import { CopyButton } from './CopyButton';
 import { useToast } from '../components/Toast';
-import { useOfficeChatSession } from '../hooks/useOfficeChatSession';
+import { useOfficeChatSession, truncateReplySnippet } from '../hooks/useOfficeChatSession';
 import {
   ArrowLeft, Settings as SettingsIcon, Trash2, ShieldAlert,
-  Mic, Volume2, VolumeX, Volume1, Square, Activity,
+  Mic, Volume2, VolumeX, Volume1, Square, Activity, CornerUpLeft, X,
 } from 'lucide-react';
 
 interface OfficeSessionChatProps {
@@ -65,13 +65,14 @@ export function OfficeSessionChat({ sessionId, employees, onBack, onDeleted, onS
   const {
     messages, loading: messagesLoading, waitingOnTask,
     inputText, setInputText, handleSend, handleStop, sendTurn,
+    replyingTo, setReplyingTo,
     streaming, streamContent,
     pending, resolving, resolvePending,
     confirmingMap, handleConfirmTask,
     attached, addFiles, removeAttached, fileInputRef,
     ttsEnabled, setTtsEnabled, speaking, shutUp,
     micState, pushToTalkStart, pushToTalkStop,
-    projects, engineModels, loadCatalog,
+    projects, engineModels, chatModels, loadCatalog,
   } = useOfficeChatSession({
     session, employeeName, onStreamingChange, employeeId: employee?.employee_id ?? null,
   });
@@ -86,10 +87,10 @@ export function OfficeSessionChat({ sessionId, employees, onBack, onDeleted, onS
 
   const openSettings = () => {
     setSettingsOpen((v) => !v);
-    if (!projects.length || !engineModels) loadCatalog();
+    if (!projects.length || !engineModels || !chatModels) loadCatalog();
   };
 
-  const saveSettings = async (fields: { title?: string; project?: string; model?: string; engine?: string }) => {
+  const saveSettings = async (fields: { title?: string; project?: string; model?: string; engine?: string; chat_model?: string }) => {
     if (!session) return;
     setSavingSettings(true);
     try {
@@ -204,6 +205,24 @@ export function OfficeSessionChat({ sessionId, employees, onBack, onDeleted, onS
               ) : null}
             </select>
           </div>
+
+          {!session.project && (
+            <div style={{ flex: '1 1 200px' }}>
+              <label style={{ fontSize: '10px', color: 'var(--text-faint)', display: 'block', marginBottom: '4px' }}>
+                CHAT MODEL {chatModels && !chatModels.live && '(fallback)'}
+              </label>
+              <select
+                className="field-select"
+                value={session.chat_model || ''}
+                onChange={(e) => saveSettings({ chat_model: e.target.value })}
+                disabled={savingSettings}
+                style={{ width: '100%' }}
+              >
+                <option value="">Default ({chatModels?.default || 'Settings'})</option>
+                {chatModels?.models.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+          )}
         </div>
       )}
 
@@ -240,9 +259,25 @@ export function OfficeSessionChat({ sessionId, employees, onBack, onDeleted, onS
             <div key={i} className={`chat-message-row ${m.role}`}>
               <div className="chat-author-line">
                 <span>{m.role === 'user' ? 'YOU' : employeeName.toUpperCase()}</span>
+                <button
+                  type="button"
+                  title="Reply to this message"
+                  onClick={() => setReplyingTo({ role: m.role, snippet: truncateReplySnippet(m.content) })}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-faint)', padding: '2px', display: 'inline-flex', alignItems: 'center' }}
+                >
+                  <CornerUpLeft size={12} />
+                </button>
                 <CopyButton text={m.content} />
               </div>
               <div className={`chat-bubble ${m.role}`}>
+                {m.reply_snippet && (
+                  <div style={{ borderLeft: '2px solid var(--accent)', paddingLeft: '8px', marginBottom: '8px', fontSize: '12px', color: 'var(--text-faint)', opacity: 0.85 }}>
+                    <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>
+                      Replying to {m.reply_role === 'assistant' ? employeeName : 'You'}
+                    </div>
+                    {m.reply_snippet}
+                  </div>
+                )}
                 {m.role === 'user' ? (
                   <div>
                     <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>
@@ -316,6 +351,23 @@ export function OfficeSessionChat({ sessionId, employees, onBack, onDeleted, onS
           </div>
         )}
       </div>
+
+      {replyingTo && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', marginTop: '10px', border: '1px solid var(--border)', borderLeft: '2px solid var(--accent)', borderRadius: 'var(--r-md)', background: 'var(--surface-card)' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--accent)' }}>
+              Replying to {replyingTo.role === 'assistant' ? employeeName : 'You'}
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--text-faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {replyingTo.snippet}
+            </div>
+          </div>
+          <button type="button" title="Cancel reply" onClick={() => setReplyingTo(null)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-faint)', display: 'inline-flex' }}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {attached.length > 0 && (
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', padding: '8px 12px', marginTop: '10px', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', background: 'var(--surface-card)' }}>

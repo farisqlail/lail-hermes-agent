@@ -18,6 +18,7 @@ import asyncio
 import json
 import random
 import time
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -527,7 +528,7 @@ class OfficeManager:
     def get_session_messages(self, session_id: str, limit: int = OFFICE_CHAT_HISTORY_LIMIT) -> list[dict]:
         if self.main_store is None:
             raise RuntimeError("Office chat is not configured")
-        return self.main_store.get_messages(session_id, limit=limit)
+        return self.main_store.get_messages_full(session_id, limit=limit)
 
     def _task_outcome_line(self, task_id: str) -> str:
         """The task's own verdict — same extraction `session_store._archive_task`
@@ -575,7 +576,9 @@ class OfficeManager:
             self.store.update_employee(employee["employee_id"], status=self._rest_status(employee["employee_id"]))
             self.store.touch_session(session_id)
 
-    async def send_session_message(self, session_id: str, text: str) -> dict:
+    async def send_session_message(self, session_id: str, text: str,
+                                   reply_snippet: str | None = None,
+                                   reply_role: str | None = None) -> dict:
         if self.main_store is None or self.orchestrator is None:
             raise RuntimeError("Office chat is not configured")
         session = self.store.get_session(session_id)
@@ -590,7 +593,8 @@ class OfficeManager:
 
         project = session.get("project")
         if project:
-            self.main_store.add_message(session_id, "user", text)
+            self.main_store.add_message(session_id, "user", text,
+                                        reply_snippet=reply_snippet, reply_role=reply_role)
             self.store.touch_session(session_id)
             settings = self.settings_loader()
             proj_path = resolve_project(project, settings)  # ProjectNotFound/ProjectPathMissing propagate
@@ -620,7 +624,8 @@ class OfficeManager:
         try:
             result = await self.chat_engine.run_turn(
                 session_id, text, chat=self.chat, chat_id=0, user_id=0,
-                system_prompt=system)
+                system_prompt=system, reply_snippet=reply_snippet, reply_role=reply_role,
+                chat_model=session.get("chat_model"))
         finally:
             self.store.update_employee(
                 employee["employee_id"], status=self._rest_status(employee["employee_id"]))
@@ -659,7 +664,9 @@ class OfficeManager:
     async def stream_session_message(self, session_id: str, text: str,
                                      images: list[Path] | None = None,
                                      documents: list[Path] | None = None,
-                                     resume: bool = False):
+                                     resume: bool = False,
+                                     reply_snippet: str | None = None,
+                                     reply_role: str | None = None):
         """Token-streaming twin of send_session_message's casual-chat branch —
         same persona, tools, and gating, just yielding as the model emits
         instead of waiting for the full reply. Input-bar parity with the main
@@ -696,9 +703,11 @@ class OfficeManager:
         else:
             self.main_store.add_message(session_id, "user", text
                                         + (IMAGE_MARKER if images else "")
-                                        + (DOCUMENT_MARKER if documents else ""))
+                                        + (DOCUMENT_MARKER if documents else ""),
+                                        reply_snippet=reply_snippet, reply_role=reply_role)
             history, auto_id = await engine.history_for_turn(
-                session_id, text, images, dispatch, documents, system_override=system)
+                session_id, text, images, dispatch, documents, system_override=system,
+                reply_quote_text=reply_snippet, reply_quote_role=reply_role)
 
         # Sit the 3D avatar at its desk for the stream's duration. `finally`
         # on a generator fires on normal exhaustion, an error, AND the
@@ -707,8 +716,10 @@ class OfficeManager:
         self.store.update_employee(employee["employee_id"], status="working")
         try:
             acc = ""
+            chat_model = session.get("chat_model")
             async for kind, payload in self.chat.stream(
-                    history, tools=await engine.chat_tools(text), dispatch=dispatch):
+                    history, tools=await engine.chat_tools(text), dispatch=dispatch,
+                    **({"model": chat_model} if chat_model else {})):
                 if kind == "token":
                     acc += payload
                     yield ("token", payload)
@@ -728,8 +739,9 @@ class OfficeManager:
 
     # --- meetings ---
 
-    def list_meetings(self, team_id: str | None = None, limit: int = 50) -> list[dict]:
-        return self.store.list_meetings(team_id=team_id, limit=limit)
+    def list_meetings(self, team_id: str | None = None, triggered_by: str | None = None,
+                      limit: int = 50) -> list[dict]:
+        return self.store.list_meetings(team_id=team_id, triggered_by=triggered_by, limit=limit)
 
     async def run_meeting(self, team_id: str, participant_ids: list[str], topic: str,
                           triggered_by: str = "manual", project: str | None = None) -> dict:
@@ -797,6 +809,108 @@ class OfficeManager:
         # blocker. Best-effort — a meeting that already produced its
         # transcript must still count as a success even if this extra step
         # fails.
+        try:
+            action_items, decisions = await self._extract_meeting_followups(
+                employees, topic, transcript)
+        except Exception:
+            action_items, decisions = [], []
+
+        for emp, subtask in action_items:
+            self._spawn_employee_work(emp, subtask, project=project, team_id=team_id,
+                                      parent_work_id=work["work_id"])
+
+        for d in decisions:
+            summary = f"Decision: {d['decision']}\n\nWhy: {d['rationale']}" if d.get("rationale") else f"Decision: {d['decision']}"
+            decided = self.store.create_work_item(
+                _new_id("work"), participant_ids[0], kind="decision_made", prompt=d["question"],
+                team_id=team_id, status="done", parent_work_id=work["work_id"])
+            self.store.update_work_item(decided["work_id"], output_text=summary, status="done")
+            self.store.publish({"type": "office_decision_made", "work_id": decided["work_id"],
+                                "team_id": team_id, "question": d["question"],
+                                "decision": d["decision"], "topic": topic})
+
+        return meeting
+
+    async def run_standup(self, team_id: str, project: str | None = None) -> dict:
+        """The whole team's daily standup — unlike run_meeting's freeform topic
+        and random 2-4 attendees, every active member reports, and each
+        person's "Yesterday" is grounded in their own actual work_items
+        completed/failed since the last standup (not invented). Reuses
+        run_meeting's follow-through machinery (_extract_meeting_followups):
+        a reported blocker becomes a real tracked work_item or a
+        lead-decided call, the same as any other meeting's action items —
+        a standup that surfaces a blocker nobody acts on is just theater."""
+        team = self.store.get_team(team_id)
+        if team is None:
+            raise ValueError("team not found")
+        employees = self.store.list_employees(team_id=team_id)
+        if not employees:
+            raise ValueError("team has no active members")
+
+        settings = self.settings_loader()
+        if project:
+            resolve_project(project, settings)  # raises ProjectNotFound/ProjectPathMissing early
+        secrets = self.secrets_loader()
+
+        last_standup = next(iter(self.store.list_meetings(
+            team_id=team_id, triggered_by="standup", limit=1)), None)
+        since = last_standup["created"] if last_standup else time.time() - 86400
+
+        reports = []
+        for e in employees:
+            items = self.store.list_work_items(employee_id=e["employee_id"], limit=8)
+            recent = [w for w in items if w["created"] >= since and w["status"] in ("done", "failed")]
+            if recent:
+                lines = "\n".join(
+                    f"  - [{w['status']}] {(w.get('prompt') or '')[:140]}" for w in recent)
+            else:
+                lines = "  - (nothing completed or failed since the last standup)"
+            reports.append(f"{e['name']} ({e['role'] or 'team member'}):\n{lines}")
+
+        for e in employees:
+            self.store.update_employee(e["employee_id"], status="in_meeting")
+        try:
+            roster = "\n".join(
+                f"- {e['name']} ({e['role'] or 'team member'})"
+                + (f": {e['personality']}" if e.get("personality") else "")
+                for e in employees)
+            system = (
+                "You are simulating a daily team standup. Each participant gives a short "
+                "Yesterday / Today / Blockers update, one turn per person, prefixed with "
+                "their name (e.g. 'Sarah: Yesterday I ... Today I'll ... Blocker: ...'). "
+                "Ground 'Yesterday' STRICTLY in the actual completed/failed work listed "
+                "below for that person — do not invent unrelated work. If nothing is "
+                "listed, say so plainly ('nothing landed since the last standup') rather "
+                "than making something up. 'Today' and 'Blockers' can be reasonable "
+                "inferences from their role and any failed items. Stay concrete, no filler "
+                "pleasantries, no meta-commentary about being an AI.\n\n"
+                f"Participants:\n{roster}\n\n"
+                "Each person's actual recent work:\n" + "\n".join(reports)
+            )
+            model = employees[0].get("model") or settings.chat_model or settings.model
+            client = _client(settings.nvidia_base_url, secrets.nvidia_api_key)
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": system},
+                         {"role": "user", "content": "Begin the standup."}],
+                temperature=0.4,
+            )
+            transcript = (resp.choices[0].message.content or "").strip()
+        finally:
+            for e in employees:
+                self.store.update_employee(
+                    e["employee_id"], status=self._rest_status(e["employee_id"]))
+
+        topic = f"Daily standup — {datetime.now().strftime('%Y-%m-%d')}"
+        participant_ids = [e["employee_id"] for e in employees]
+        meeting = self.store.create_meeting(
+            _new_id("meeting"), team_id, participant_ids, topic, transcript,
+            triggered_by="standup")
+        work = self.store.create_work_item(
+            _new_id("work"), participant_ids[0], kind="meeting_transcript", prompt=topic,
+            team_id=team_id, status="done")
+        self.store.update_work_item(work["work_id"], output_text=transcript, status="done")
+
         try:
             action_items, decisions = await self._extract_meeting_followups(
                 employees, topic, transcript)
@@ -913,6 +1027,34 @@ class OfficeManager:
         except Exception:
             pass
 
+    async def _maybe_trigger_standup(self, team: dict, settings) -> None:
+        """One team's standup-trigger check for a single tick. Fires once per
+        calendar day, at or after `office_standup_time` local time — wall-
+        clock scheduled, unlike _maybe_trigger_meeting's rolling cooldown, so
+        it reads as an actual daily ritual rather than ambient chatter.
+        Best-effort: an LLM hiccup here must not take down the tick loop."""
+        standup_time = getattr(settings, "office_standup_time", "09:00") or "09:00"
+        try:
+            hh, mm = (int(p) for p in standup_time.split(":"))
+        except ValueError:
+            return
+        now = datetime.now()
+        if (now.hour, now.minute) < (hh, mm):
+            return  # too early today
+
+        last = next(iter(self.store.list_meetings(
+            team_id=team["team_id"], triggered_by="standup", limit=1)), None)
+        if last and datetime.fromtimestamp(last["created"]).date() == now.date():
+            return  # already ran today
+
+        members = self.store.list_employees(team_id=team["team_id"])
+        if not members:
+            return
+        try:
+            await self.run_standup(team["team_id"])
+        except Exception:
+            pass
+
     async def tick(self, settings) -> None:
         """One pass over every active employee: energy decays while working,
         recovers on a break, and flips status at the burnout/recovery
@@ -960,6 +1102,10 @@ class OfficeManager:
         if getattr(settings, "office_meetings_enabled", False):
             for team in self.store.list_teams():
                 await self._maybe_trigger_meeting(team, settings)
+
+        if getattr(settings, "office_standup_enabled", False):
+            for team in self.store.list_teams():
+                await self._maybe_trigger_standup(team, settings)
 
 
 async def run_office_loop(office: "OfficeManager", settings_loader=None,

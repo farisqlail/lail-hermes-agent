@@ -65,6 +65,10 @@ class MeetingCreate(BaseModel):
     project: Optional[str] = None
 
 
+class StandupBody(BaseModel):
+    project: Optional[str] = None
+
+
 class SessionCreate(BaseModel):
     employee_id: str
     title: str = ""
@@ -78,10 +82,15 @@ class SessionUpdate(BaseModel):
     project: Optional[str] = None
     model: Optional[str] = None
     engine: Optional[str] = None
+    # Distinct from `model`: see office_store's ALTER TABLE comment — this
+    # picks the casual-chat LLM, not the project-task CLI's model override.
+    chat_model: Optional[str] = None
 
 
 class SessionMessageBody(BaseModel):
     text: str
+    reply_snippet: str | None = None
+    reply_role: str | None = None
 
 
 class SessionStreamBody(BaseModel):
@@ -89,6 +98,8 @@ class SessionStreamBody(BaseModel):
     images: list[str] = []
     documents: list[str] = []
     resume: bool = False
+    reply_snippet: str | None = None
+    reply_role: str | None = None
 
 
 def build_router(office: OfficeManager | None) -> APIRouter:
@@ -212,7 +223,9 @@ def build_router(office: OfficeManager | None) -> APIRouter:
     @router.post("/api/office/sessions/{session_id}/messages")
     async def post_session_message(session_id: str, body: SessionMessageBody):
         try:
-            return await _office().send_session_message(session_id, body.text)
+            return await _office().send_session_message(
+                session_id, body.text,
+                reply_snippet=body.reply_snippet, reply_role=body.reply_role)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except (ProjectNotFound, ProjectPathMissing) as e:
@@ -248,7 +261,8 @@ def build_router(office: OfficeManager | None) -> APIRouter:
             try:
                 async for kind, payload in office.stream_session_message(
                         session_id, body.text, images=images, documents=documents,
-                        resume=body.resume):
+                        resume=body.resume,
+                        reply_snippet=body.reply_snippet, reply_role=body.reply_role):
                     if kind == "token":
                         yield brain.sse({"delta": payload})
                     elif kind == "usage":
@@ -291,8 +305,21 @@ def build_router(office: OfficeManager | None) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(e))
 
     @router.get("/api/office/meetings")
-    def list_meetings(team_id: Optional[str] = None, limit: int = 50):
-        return _office().list_meetings(team_id=team_id, limit=limit)
+    def list_meetings(team_id: Optional[str] = None, triggered_by: Optional[str] = None, limit: int = 50):
+        return _office().list_meetings(team_id=team_id, triggered_by=triggered_by, limit=limit)
+
+    @router.post("/api/office/teams/{team_id}/standup")
+    async def run_standup(team_id: str, body: StandupBody | None = None):
+        # Manual "run standup now" — same flow the daily scheduler fires
+        # (OfficeManager._maybe_trigger_standup), for testing or an operator
+        # who wants the whole team's status without waiting for the
+        # scheduled time.
+        try:
+            return await _office().run_standup(team_id, project=body.project if body else None)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except (ProjectNotFound, ProjectPathMissing) as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
     @router.get("/api/office/events")
     async def office_events(request: Request):

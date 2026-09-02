@@ -1,4 +1,4 @@
-import { Settings, SecretsStatus, SecretsUpdate, EngineModels, Project, McpServer, IntegrateRun, Skill, Employee, Team, WorkItem, Meeting, ChatMessage, OfficeSession, OfficeSendMessageResult, PendingAction } from './types';
+import { Settings, SecretsStatus, SecretsUpdate, EngineModels, ChatModels, Project, McpServer, IntegrateRun, Skill, Employee, Team, WorkItem, Meeting, ChatMessage, OfficeSession, OfficeSendMessageResult, PendingAction } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -88,6 +88,7 @@ export const api = {
     }),
 
   getEngineModels: () => request<EngineModels>('/api/engine-models'),
+  getChatModels: () => request<ChatModels>('/api/chat-models'),
 
   getProjects: () => request<Project[]>('/api/projects'),
   saveProjects: (projects: Record<string, string>) =>
@@ -187,24 +188,37 @@ export const api = {
 
   createMeeting: (body: { team_id: string; participant_ids: string[]; topic: string; project?: string }) =>
     request<Meeting>('/api/office/meetings', { method: 'POST', body: JSON.stringify(body) }),
-  getMeetings: (teamId?: string) =>
-    request<Meeting[]>(`/api/office/meetings${teamId ? `?team_id=${encodeURIComponent(teamId)}` : ''}`),
+  getMeetings: (teamId?: string, triggeredBy?: string) => {
+    const params = new URLSearchParams();
+    if (teamId) params.set('team_id', teamId);
+    if (triggeredBy) params.set('triggered_by', triggeredBy);
+    const qs = params.toString();
+    return request<Meeting[]>(`/api/office/meetings${qs ? `?${qs}` : ''}`);
+  },
+  runStandup: (teamId: string, project?: string) =>
+    request<Meeting>(`/api/office/teams/${teamId}/standup`, {
+      method: 'POST',
+      body: JSON.stringify({ project }),
+    }),
 
   getOfficeSessions: (employeeId?: string) =>
     request<OfficeSession[]>(`/api/office/sessions${employeeId ? `?employee_id=${encodeURIComponent(employeeId)}` : ''}`),
   createOfficeSession: (body: { employee_id: string; title?: string; project?: string; model?: string; engine?: string }) =>
     request<OfficeSession>('/api/office/sessions', { method: 'POST', body: JSON.stringify(body) }),
   getOfficeSession: (sessionId: string) => request<OfficeSession>(`/api/office/sessions/${sessionId}`),
-  updateOfficeSession: (sessionId: string, body: { title?: string; project?: string; model?: string; engine?: string }) =>
+  updateOfficeSession: (sessionId: string, body: { title?: string; project?: string; model?: string; engine?: string; chat_model?: string }) =>
     request<OfficeSession>(`/api/office/sessions/${sessionId}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteOfficeSession: (sessionId: string) =>
     request<{ ok: boolean }>(`/api/office/sessions/${sessionId}`, { method: 'DELETE' }),
   getOfficeSessionMessages: (sessionId: string) =>
     request<ChatMessage[]>(`/api/office/sessions/${sessionId}/messages`),
-  sendOfficeSessionMessage: (sessionId: string, text: string) =>
+  sendOfficeSessionMessage: (
+    sessionId: string, text: string,
+    reply?: { snippet: string; role: 'user' | 'assistant' },
+  ) =>
     request<OfficeSendMessageResult>(`/api/office/sessions/${sessionId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, reply_snippet: reply?.snippet, reply_role: reply?.role }),
     }),
   resumeOfficeSession: (sessionId: string) =>
     request<OfficeSendMessageResult>(`/api/office/sessions/${sessionId}/resume`, { method: 'POST' }),

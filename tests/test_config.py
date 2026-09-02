@@ -85,11 +85,14 @@ def test_agy_model_accepts_display_names():
     assert s.agy_model == "Gemini 3.5 Flash (High)"
 
 
-def test_agy_model_rejects_non_ascii_and_control_chars():
-    with pytest.raises(ValidationError, match="printable ASCII"):
-        config.Settings(agy_model="Gemini’s Best")   # smart quote
-    with pytest.raises(ValidationError, match="printable ASCII"):
-        config.Settings(agy_model="Gemini\nFlash")   # line break
+def test_agy_model_sanitizes_non_ascii_and_control_chars():
+    """Smart quotes and control chars are auto-cleaned, not rejected — see
+    config._agy_model_shape (a copy-pasted display name should still work,
+    not bounce the settings form with an error)."""
+    s = config.Settings(agy_model="Gemini’s Best")   # smart quote
+    assert s.agy_model == "Gemini's Best"
+    s = config.Settings(agy_model="Gemini\nFlash")        # line break
+    assert s.agy_model == "GeminiFlash"
 
 
 def test_engine_tuning_roundtrip(hermes_home):

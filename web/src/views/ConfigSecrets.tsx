@@ -13,6 +13,9 @@ export function ConfigSecrets() {
 
   const [nvidiaKey, setNvidiaKey] = useState('');
   const [telegramToken, setTelegramToken] = useState('');
+  const [githubAppId, setGithubAppId] = useState('');
+  const [githubPrivateKey, setGithubPrivateKey] = useState('');
+  const [githubInstallationId, setGithubInstallationId] = useState('');
   const [saving, setSaving] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
@@ -20,6 +23,12 @@ export function ConfigSecrets() {
     if (status) {
       setNvidiaKey(status.nvidia_api_key_set ? '***' : '');
       setTelegramToken(status.telegram_bot_token_set ? '***' : '');
+      // GitHub App is 3 fields configured together — status only tells us
+      // whether all three are already set, not each one individually, so
+      // the placeholder (not the value) is what signals "already saved".
+      setGithubAppId(status.github_app_configured ? '***' : '');
+      setGithubPrivateKey(status.github_app_configured ? '***' : '');
+      setGithubInstallationId(status.github_app_configured ? '***' : '');
     }
   }, [status]);
 
@@ -48,6 +57,15 @@ export function ConfigSecrets() {
     if (telegramToken !== '***') {
       payload.telegram_bot_token = telegramToken;
     }
+    if (githubAppId !== '***') {
+      payload.github_app_id = githubAppId;
+    }
+    if (githubPrivateKey !== '***') {
+      payload.github_app_private_key = githubPrivateKey;
+    }
+    if (githubInstallationId !== '***') {
+      payload.github_app_installation_id = githubInstallationId;
+    }
 
     try {
       const ok = await saveSecrets(payload);
@@ -65,6 +83,10 @@ export function ConfigSecrets() {
           setFieldErrors({ nvidia_api_key: detail });
         } else if (lowered.includes('telegram')) {
           setFieldErrors({ telegram_bot_token: detail });
+        } else if (lowered.includes('installation')) {
+          setFieldErrors({ github_app_installation_id: detail });
+        } else if (lowered.includes('github')) {
+          setFieldErrors({ github_app_id: detail });
         }
       }
     } finally {
@@ -107,6 +129,64 @@ export function ConfigSecrets() {
             value={telegramToken}
             onChange={(e) => setTelegramToken(e.target.value)}
             placeholder={status?.telegram_bot_token_set ? 'Sudah tersimpan' : 'Masukkan Telegram Bot Token'}
+          />
+        </Field>
+      </section>
+
+      <section className="cyber-section">
+        <h3 className="cyber-section-header" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Key size={16} style={{ color: 'var(--accent)' }} />
+          <span>GitHub App (PR Review)</span>
+        </h3>
+        <p style={{ fontSize: '12px', color: 'var(--text-faint)', margin: '-4px 0 12px' }}>
+          Dipakai oleh alat chat <code>github_review_pr</code> — daftarkan GitHub App di
+          repo target, lalu isi ketiganya. Semua atau tidak sama sekali: isi ketiganya
+          bareng saat menyimpan.
+        </p>
+
+        <Field
+          label="App ID"
+          error={fieldErrors.github_app_id}
+          helpText="Angka App ID dari halaman GitHub App"
+        >
+          <input
+            type="text"
+            className="field-input"
+            value={githubAppId}
+            onChange={(e) => setGithubAppId(e.target.value)}
+            placeholder={status?.github_app_configured ? 'Sudah tersimpan' : 'mis. 123456'}
+          />
+        </Field>
+
+        <div style={{ height: '16px' }} />
+
+        <Field
+          label="Installation ID"
+          error={fieldErrors.github_app_installation_id}
+          helpText="Angka Installation ID setelah App dipasang ke repo"
+        >
+          <input
+            type="text"
+            className="field-input"
+            value={githubInstallationId}
+            onChange={(e) => setGithubInstallationId(e.target.value)}
+            placeholder={status?.github_app_configured ? 'Sudah tersimpan' : 'mis. 78901234'}
+          />
+        </Field>
+
+        <div style={{ height: '16px' }} />
+
+        <Field
+          label="Private Key (.pem)"
+          helpText="Isi lengkap file .pem yang di-generate GitHub App (termasuk baris BEGIN/END)"
+        >
+          <textarea
+            className="field-input"
+            rows={6}
+            style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', resize: 'vertical' }}
+            value={githubPrivateKey}
+            onChange={(e) => setGithubPrivateKey(e.target.value)}
+            placeholder={status?.github_app_configured ? 'Sudah tersimpan' : '-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----'}
           />
         </Field>
       </section>

@@ -24,6 +24,18 @@ class TaskSubmit(BaseModel):
     resume: bool = False
     project: str | None = None
     engine: str | None = None
+    # Reply-to-message: the quoted snippet + its role, captured client-side
+    # from the bubble the operator hit "reply" on. Not a message id — the
+    # target may be a message that streamed in this same session and hasn't
+    # round-tripped a server id yet.
+    reply_snippet: str | None = None
+    reply_role: str | None = None
+    # Per-turn override for the conversational LLM, picked from the live
+    # catalog /api/chat-models returns for whatever endpoint Settings.
+    # nvidia_base_url points at (NVIDIA NIM, DeepSeek, a local 9Router
+    # gateway, or any other OpenAI-compatible "custom" target). Empty/None
+    # falls back to Settings.chat_model/model as before.
+    chat_model: str | None = None
 
 class TaskConfirm(BaseModel):
     approved: bool
@@ -62,6 +74,7 @@ class SessionSettings(BaseModel):
     title: str | None = None
     project: str | None = None
     engine: str | None = None
+    chat_model: str | None = None
 
 class ResolveBody(BaseModel):
     """Approve or decline one parked write action.
@@ -171,9 +184,43 @@ def list_agy_models(timeout_s: float = 10.0) -> list[str] | None:
         models.append(line)
     return models or None
 
+_CHAT_MODELS_CACHE_TTL_S = 300   # a provider's own catalog rarely changes
+_CHAT_MODELS_NEG_TTL_S = 30      # a down/misconfigured gateway shouldn't block the dropdown long
+_chat_models_cache: dict = {"at": 0.0, "models": None, "base_url": None}
+
+def list_chat_models(base_url: str, api_key: str, timeout_s: float = 8.0) -> list[str] | None:
+    """Ask the OpenAI-compatible endpoint Settings.nvidia_base_url already
+    points at for its live model catalog. Whatever that endpoint proxies is
+    exactly what comes back — point it at a local 9Router gateway and its
+    connected upstreams appear, point it at DeepSeek's own API and DeepSeek's
+    models appear, same idea as list_agy_models above. None means "could not
+    ask" — the caller falls back rather than caching an empty answer."""
+    if not base_url or not api_key:
+        return None
+    try:
+        import openai
+        client = openai.OpenAI(base_url=base_url, api_key=api_key, timeout=timeout_s)
+        ids = sorted({m.id for m in client.models.list().data if getattr(m, "id", None)})
+        return ids or None
+    except Exception:
+        return None
+
 class SecretsUpdate(BaseModel):
     nvidia_api_key: str | None = None
     telegram_bot_token: str | None = None
+    github_app_id: str | None = None
+    github_app_private_key: str | None = None
+    github_app_installation_id: str | None = None
+
+    @field_validator("github_app_id", "github_app_installation_id")
+    @classmethod
+    def _github_app_numeric_id_shape(cls, v):
+        # "" and "***" mean keep-current, same convention as the other secrets.
+        if v in ("", "***", None):
+            return v
+        if not v.isdigit():
+            raise ValueError("must be numeric — GitHub App/installation ids are plain numbers")
+        return v
 
     @field_validator("telegram_bot_token")
     @classmethod
@@ -673,7 +720,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             documents = engine.take_documents(sid, body.documents)
             store.add_message(sid, "user", text
                               + (IMAGE_MARKER if images else "")
-                              + (DOCUMENT_MARKER if documents else ""))
+                              + (DOCUMENT_MARKER if documents else ""),
+                              reply_snippet=body.reply_snippet, reply_role=body.reply_role)
             chat = getattr(app.state, "chat", None)
             auto_id = None
             if chat is None:
@@ -689,10 +737,11 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
                 try:
                     dispatch = engine.wrap_dispatch(engine.make_dispatch(sid, images),
                                                     await _integrate_extra())
-                    turn, auto_id = await engine.history_for_turn(sid, text, images,
-                                                                   dispatch, documents)
-                    reply = await chat(turn, tools=await _chat_tools(text),
-                                       dispatch=dispatch)
+                    turn, auto_id = await engine.history_for_turn(
+                        sid, text, images, dispatch, documents,
+                        reply_quote_text=body.reply_snippet, reply_quote_role=body.reply_role)
+                    reply = await chat(turn, tools=await _chat_tools(text), dispatch=dispatch,
+                                       **({"model": body.chat_model} if body.chat_model else {}))
                 except Exception as e:
                     safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
                     reply = f"(Maaf, chat gagal: {safe})"
@@ -749,7 +798,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
 
     @app.post("/api/sessions/{session_id}/settings")
     def update_session_settings(session_id: str, body: SessionSettings):
-        ok = store.update_session_settings(session_id, project=body.project, engine=body.engine, title=body.title)
+        ok = store.update_session_settings(session_id, project=body.project, engine=body.engine,
+                                           title=body.title, chat_model=body.chat_model)
         if not ok:
             raise HTTPException(status_code=404, detail="Session not found")
         return {"ok": True}
@@ -771,7 +821,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         # The whole conversational thread, oldest-first, for the chat pane to
         # render on load. Slash-command tasks live in /api/tasks, not here.
         sid = session_id or CONV_WEB
-        return {"messages": store.get_messages(sid, limit=CHAT_HISTORY_LIMIT)}
+        return {"messages": store.get_messages_full(sid, limit=CHAT_HISTORY_LIMIT)}
 
     @app.post("/api/chat/reset")
     def chat_reset(session_id: str | None = None):
@@ -815,12 +865,14 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         if not body.resume:
             store.add_message(sid, "user", text
                               + (IMAGE_MARKER if images else "")
-                              + (DOCUMENT_MARKER if documents else ""))
+                              + (DOCUMENT_MARKER if documents else ""),
+                              reply_snippet=body.reply_snippet, reply_role=body.reply_role)
         chat = getattr(app.state, "chat", None)
 
-        # Auto update session project/engine if supplied
-        if (body.project is not None or body.engine is not None) and sid != CONV_WEB:
-            store.update_session_settings(sid, project=body.project, engine=body.engine)
+        # Auto update session project/engine/chat_model if supplied
+        if (body.project is not None or body.engine is not None or body.chat_model is not None) and sid != CONV_WEB:
+            store.update_session_settings(sid, project=body.project, engine=body.engine,
+                                          chat_model=body.chat_model)
 
         # Auto rename session if it was default name: an instant truncation
         # first (no flash of "Percakapan Baru" while any LLM call is in
@@ -856,8 +908,9 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             else:
                 dispatch = engine.wrap_dispatch(engine.make_dispatch(sid, images),
                                                 await _integrate_extra())
-                history, auto_id = await engine.history_for_turn(sid, text, images,
-                                                                  dispatch, documents)
+                history, auto_id = await engine.history_for_turn(
+                    sid, text, images, dispatch, documents,
+                    reply_quote_text=body.reply_snippet, reply_quote_role=body.reply_role)
                 if body.resume:
                     # Ephemeral, not stored: it steers this one turn and would be
                     # noise in the thread. Also guarantees the prompt ends on a
@@ -868,7 +921,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
                     async for kind, payload in chat.stream(
                             history,
                             tools=await _chat_tools(text),
-                            dispatch=dispatch):
+                            dispatch=dispatch,
+                            **({"model": body.chat_model} if body.chat_model else {})):
                         if kind == "token":
                             acc += payload
                             yield sse({"delta": payload})
@@ -1057,7 +1111,9 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
     def secrets_status():
         s = config.load_secrets()
         return {"nvidia_api_key_set": bool(s.nvidia_api_key),
-                "telegram_bot_token_set": bool(s.telegram_bot_token)}
+                "telegram_bot_token_set": bool(s.telegram_bot_token),
+                "github_app_configured": bool(
+                    s.github_app_id and s.github_app_private_key and s.github_app_installation_id)}
 
     @app.post("/api/secrets")
     def post_secrets(body: SecretsUpdate):
@@ -1065,7 +1121,11 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         def keep(new, old): return old if new in ("", "***", None) else new
         config.save_secrets(config.Secrets(
             nvidia_api_key=keep(body.nvidia_api_key, cur.nvidia_api_key),
-            telegram_bot_token=keep(body.telegram_bot_token, cur.telegram_bot_token)))
+            telegram_bot_token=keep(body.telegram_bot_token, cur.telegram_bot_token),
+            unsplash_access_key=cur.unsplash_access_key,
+            github_app_id=keep(body.github_app_id, cur.github_app_id),
+            github_app_private_key=keep(body.github_app_private_key, cur.github_app_private_key),
+            github_app_installation_id=keep(body.github_app_installation_id, cur.github_app_installation_id)))
         return {"ok": True}
 
     @app.get("/api/engine-models")
@@ -1083,6 +1143,33 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         return {"claude": CLAUDE_MODELS,
                 "agy": agy if agy is not None else AGY_FALLBACK_MODELS,
                 "agy_live": agy is not None}
+
+    @app.get("/api/chat-models")
+    def chat_models():
+        # Distinct from /api/engine-models above: that one picks which CLI
+        # (claude/agy) runs a background @project task. This one picks which
+        # model answers casual conversation (chat_engine.run_turn/history_
+        # for_turn) — a plain OpenAI-compatible completion, so any endpoint
+        # Settings.nvidia_base_url points at can be asked for its live list.
+        s = config.load_settings()
+        secrets = config.load_secrets()
+        now = time.time()
+        # A base_url change (operator flips provider in Settings) must bust
+        # the cache immediately rather than waiting out the TTL, or the
+        # dropdown keeps showing the OLD provider's models after a switch.
+        if _chat_models_cache["base_url"] != s.nvidia_base_url:
+            _chat_models_cache.update(at=0.0, models=None, base_url=s.nvidia_base_url)
+        ttl = _CHAT_MODELS_CACHE_TTL_S if _chat_models_cache["models"] is not None else _CHAT_MODELS_NEG_TTL_S
+        if now - _chat_models_cache["at"] > ttl:
+            live = list_chat_models(s.nvidia_base_url, secrets.nvidia_api_key)
+            _chat_models_cache["at"] = now
+            if live is not None:
+                _chat_models_cache["models"] = live
+        models = _chat_models_cache["models"]
+        default = s.chat_model or s.model
+        return {"models": models if models is not None else ([default] if default else []),
+                "live": models is not None,
+                "default": default}
 
     @app.get("/api/projects")
     def get_projects():

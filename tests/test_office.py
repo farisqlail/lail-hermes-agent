@@ -282,6 +282,72 @@ def test_delegation_meeting_min_subtasks_constant_is_at_least_two():
     assert DELEGATION_MEETING_MIN_SUBTASKS >= 2
 
 
+# --- daily standup: grounded reports + wall-clock, once-per-day scheduling ---
+
+def test_run_standup_grounds_report_in_real_work_items(manager, store, monkeypatch):
+    team = manager.create_team("Eng")
+    store.create_employee("a", "Ada", team_id=team["team_id"])
+    store.create_employee("b", "Bea", team_id=team["team_id"])
+    store.create_work_item("w1", "a", kind="code_task", prompt="Fix the login bug", status="done")
+
+    completions = install_fake_llm(monkeypatch, [
+        "Ada: Yesterday I fixed the login bug. Today: tests. Blocker: none.\n"
+        "Bea: Yesterday nothing landed. Today: pick something up. Blocker: none.",
+        '{"action_items": [], "decisions": []}',
+    ])
+
+    meeting = asyncio.run(manager.run_standup(team["team_id"]))
+
+    assert meeting["triggered_by"] == "standup"
+    assert "Daily standup" in meeting["topic"]
+    prompt = completions.calls[0]["messages"][0]["content"]
+    assert "Fix the login bug" in prompt
+    assert "nothing completed or failed since the last standup" in prompt
+
+
+def test_run_standup_requires_active_members(manager, store):
+    team = manager.create_team("Empty Team")
+    with pytest.raises(ValueError):
+        asyncio.run(manager.run_standup(team["team_id"]))
+
+
+def test_maybe_trigger_standup_waits_for_scheduled_time(manager, store, settings, monkeypatch):
+    team = manager.create_team("Eng")
+    store.create_employee("a", "Ada", team_id=team["team_id"])
+    settings.office_standup_time = "09:00"
+
+    from datetime import datetime as real_datetime
+
+    class FakeDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime(2026, 9, 2, 8, 30)  # before 09:00
+    monkeypatch.setattr(office_mod, "datetime", FakeDatetime)
+
+    completions = install_fake_llm(monkeypatch, ["should not be called"])
+    asyncio.run(manager._maybe_trigger_standup(team, settings))
+    assert completions.calls == []
+
+
+def test_maybe_trigger_standup_fires_once_per_day(manager, store, settings, monkeypatch):
+    team = manager.create_team("Eng")
+    store.create_employee("a", "Ada", team_id=team["team_id"])
+    # "00:00" is always past-due regardless of the real wall-clock time this
+    # test happens to run at — the dedup check itself (real, unpatched
+    # `created` timestamps) is what this test actually verifies.
+    settings.office_standup_time = "00:00"
+
+    completions = install_fake_llm(monkeypatch, [
+        "Ada: standup 1", '{"action_items": [], "decisions": []}',
+        "Ada: standup 2 (should not fire)", '{"action_items": [], "decisions": []}',
+    ])
+    asyncio.run(manager._maybe_trigger_standup(team, settings))
+    assert len(completions.calls) == 2  # transcript + follow-up extraction
+
+    asyncio.run(manager._maybe_trigger_standup(team, settings))
+    assert len(completions.calls) == 2  # unchanged — a standup already ran today
+
+
 class RecordingMainStore(FakeMainStore):
     """FakeMainStore plus the task surface `_run_code_work_item` touches."""
     def __init__(self):

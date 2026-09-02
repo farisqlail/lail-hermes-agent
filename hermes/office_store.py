@@ -82,6 +82,15 @@ class OfficeStore:
                 c.execute("ALTER TABLE employees ADD COLUMN is_lead INTEGER DEFAULT 0")
             except sqlite3.OperationalError:
                 pass
+            try:
+                # Distinct from the existing `model` column: that one picks
+                # the claude_model/agy_model override for a project-bound
+                # session's background CLI task. This one picks which model
+                # answers casual (project-less) chat — a plain OpenAI-
+                # compatible completion, unrelated to either CLI.
+                c.execute("ALTER TABLE office_sessions ADD COLUMN chat_model TEXT")
+            except sqlite3.OperationalError:
+                pass
 
     # --- employees ---
 
@@ -325,12 +334,15 @@ class OfficeStore:
             r = c.execute("SELECT * FROM meetings WHERE meeting_id=?", (meeting_id,)).fetchone()
             return _row_to_meeting(r) if r else None
 
-    def list_meetings(self, team_id=None, limit=50) -> list[dict]:
+    def list_meetings(self, team_id=None, triggered_by=None, limit=50) -> list[dict]:
         q = "SELECT * FROM meetings WHERE 1=1"
         args = []
         if team_id is not None:
             q += " AND team_id=?"
             args.append(team_id)
+        if triggered_by is not None:
+            q += " AND triggered_by=?"
+            args.append(triggered_by)
         q += " ORDER BY created DESC LIMIT ?"
         args.append(limit)
         with self._conn() as c:
@@ -361,7 +373,7 @@ class OfficeStore:
         return row
 
     def update_session(self, session_id, **fields) -> dict | None:
-        allowed = {"title", "project", "model", "engine"}
+        allowed = {"title", "project", "model", "engine", "chat_model"}
         sets, vals = [], []
         for k, v in fields.items():
             if k not in allowed:

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, errorMessage } from '../api/client';
-import { ChatMessage, EngineModels, OfficeSession, PendingAction, Project } from '../api/types';
+import { ChatMessage, ChatModels, EngineModels, OfficeSession, PendingAction, Project } from '../api/types';
 import { parseStreamBuffer } from '../api/stream';
 import { confirmTask } from '../components/TaskCard';
 import { useToast } from '../components/Toast';
@@ -19,6 +19,21 @@ import { VoiceTagExtractor } from '../voicetag';
 export interface OfficeChatMessage extends ChatMessage {
   images?: string[];
   docNames?: string[];
+}
+
+/** What the operator is currently replying to, captured off a rendered
+ *  bubble (role + snippet, not a message id — a message that just streamed
+ *  in this session has no server id to key off of yet). Cleared once sent. */
+export interface ReplyTarget {
+  role: 'user' | 'assistant';
+  snippet: string;
+}
+
+const REPLY_SNIPPET_MAX = 300;
+
+export function truncateReplySnippet(text: string, max: number = REPLY_SNIPPET_MAX): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? flat.slice(0, max).trimEnd() + '...' : flat;
 }
 
 // Mirrors hermes/uploads.py's _DOCUMENT_EXTENSIONS (see Dashboard.tsx's own copy).
@@ -74,6 +89,11 @@ export function useOfficeChatSession({
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [engineModels, setEngineModels] = useState<EngineModels | null>(null);
+  // Live catalog for the CASUAL-chat model picker — distinct from
+  // engineModels above, which is the claude/agy CLI used by a project-bound
+  // session's background task. '' picked from this list means "use
+  // Settings' default", same convention as the main chat pane.
+  const [chatModels, setChatModels] = useState<ChatModels | null>(null);
 
   const [pending, setPending] = useState<PendingAction[]>([]);
   const [resolving, setResolving] = useState(false);
@@ -101,6 +121,12 @@ export function useOfficeChatSession({
   const [streamContent, setStreamContent] = useState('');
   const abortControllerRef = useRef<AbortController | null>(null);
   const sendTurnRef = useRef<(text: string, opts?: { resume?: boolean }) => Promise<void>>(async () => {});
+
+  const [replyingTo, setReplyingTo] = useState<ReplyTarget | null>(null);
+  // sendTurn is memoized without `replyingTo` in its deps (same reasoning as
+  // messagesRef below) — read the current target through this ref instead.
+  const replyingToRef = useRef(replyingTo);
+  replyingToRef.current = replyingTo;
 
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollAttempts = useRef(0);
@@ -161,6 +187,7 @@ export function useOfficeChatSession({
   const loadCatalog = useCallback(() => {
     api.getProjects().then(setProjects).catch(() => {});
     api.getEngineModels().then(setEngineModels).catch(() => {});
+    api.getChatModels().then(setChatModels).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -369,10 +396,15 @@ export function useOfficeChatSession({
     if (sess.project && !resume) {
       const trimmed = text.trim();
       const countBefore = messagesRef.current.length;
+      const reply = replyingToRef.current;
       setInputText('');
-      setMessages((prev) => [...prev, { role: 'user', content: trimmed }]);
+      setReplyingTo(null);
+      setMessages((prev) => [...prev, {
+        role: 'user', content: trimmed,
+        reply_snippet: reply?.snippet ?? null, reply_role: reply?.role ?? null,
+      }]);
       try {
-        const res = await api.sendOfficeSessionMessage(sid, trimmed);
+        const res = await api.sendOfficeSessionMessage(sid, trimmed, reply ?? undefined);
         if (res.kind === 'task') {
           setWaitingOnTask(true);
           pollForTaskReply(sid, countBefore + 1);
@@ -394,6 +426,8 @@ export function useOfficeChatSession({
       return { imageIds: imgIds, docIds: docResults.map((d) => d.id), docNames: docResults.map((d) => d.file.name) };
     })();
     setAttached([]);
+    const reply = resume ? null : replyingToRef.current;
+    if (!resume) setReplyingTo(null);
 
     setInputText('');
     setStreaming(true);
@@ -407,6 +441,7 @@ export function useOfficeChatSession({
         role: 'user', content: text,
         images: staged.filter((a) => a.kind === 'image').map((a) => a.url),
         docNames,
+        reply_snippet: reply?.snippet ?? null, reply_role: reply?.role ?? null,
       }]);
     }
 
@@ -425,7 +460,10 @@ export function useOfficeChatSession({
       const res = await fetch(`/api/office/sessions/${sid}/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, images: imageIds, documents: docIds, resume }),
+        body: JSON.stringify({
+          text, images: imageIds, documents: docIds, resume,
+          reply_snippet: reply?.snippet, reply_role: reply?.role,
+        }),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error('Stream unavailable');
@@ -543,12 +581,13 @@ export function useOfficeChatSession({
   return {
     messages, setMessages, loading, waitingOnTask,
     inputText, setInputText, handleSend, handleStop, sendTurn,
+    replyingTo, setReplyingTo,
     streaming, streamContent,
     pending, resolving, resolvePending,
     confirmingMap, handleConfirmTask,
     attached, addFiles, removeAttached, fileInputRef,
     ttsEnabled, setTtsEnabled, speaking, shutUp,
     micState, pushToTalkStart, pushToTalkStop,
-    projects, engineModels, loadCatalog,
+    projects, engineModels, chatModels, loadCatalog,
   };
 }

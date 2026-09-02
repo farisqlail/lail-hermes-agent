@@ -273,6 +273,16 @@ class Settings(BaseModel):
     office_meeting_cooldown_s: int = 1800
     office_max_auto_meetings_per_day: int = 5
 
+    # Daily standup: unlike the ambient "quick sync" above (random 2-4
+    # idle members, cooldown-gated, can fire several times a day), this is a
+    # real recurring ritual — the WHOLE active team, once per calendar day,
+    # at a fixed wall-clock time, each member reporting against their own
+    # actual completed work items (see OfficeManager.run_standup) rather than
+    # a freeform topic. Off by default for the same LLM-cost-with-no-operator
+    # reason as office_meetings_enabled.
+    office_standup_enabled: bool = False
+    office_standup_time: str = "09:00"
+
     # Wake word, run by the native tray helper so the mic stays live with the
     # browser closed. Off by default: an always-listening microphone is opt-in.
     # "auto" derives the phrase from `agent_name` ("Jarvis" -> "Hey Jarvis",
@@ -311,6 +321,14 @@ class Settings(BaseModel):
             .replace("—", "-")
         )
         v = "".join(c for c in v if c.isascii() and c.isprintable()).strip()
+        return v
+
+    @field_validator("office_standup_time")
+    @classmethod
+    def _office_standup_time_shape(cls, v: str) -> str:
+        if v and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", v):
+            raise ValueError(
+                "office standup time must be 24-hour HH:MM, e.g. '09:00' or '17:30'")
         return v
 
     @field_validator("stt_language")
@@ -423,6 +441,14 @@ class Secrets(BaseModel):
     nvidia_api_key: str = ""
     telegram_bot_token: str = ""
     unsplash_access_key: str = ""
+    # GitHub App auth for the PR-review chat tool (hermes/github_app.py) —
+    # not a PAT: App ID + private key mint a short-lived JWT, traded for a
+    # per-installation access token. The PEM's real newlines are escaped to
+    # literal "\n" for the single-line KEY=value .env format below and
+    # un-escaped on load — see load_secrets/save_secrets.
+    github_app_id: str = ""
+    github_app_private_key: str = ""
+    github_app_installation_id: str = ""
 
 def _settings_file():
     return paths.config_dir() / "config.yaml"  # stored as JSON for zero-dep parsing
@@ -446,6 +472,9 @@ def load_secrets() -> Secrets:
         nvidia_api_key=vals.get("NVIDIA_API_KEY", "") or "",
         telegram_bot_token=vals.get("TELEGRAM_BOT_TOKEN", "") or "",
         unsplash_access_key=vals.get("UNSPLASH_ACCESS_KEY", "") or "",
+        github_app_id=vals.get("GITHUB_APP_ID", "") or "",
+        github_app_private_key=(vals.get("GITHUB_APP_PRIVATE_KEY", "") or "").replace("\\n", "\n"),
+        github_app_installation_id=vals.get("GITHUB_APP_INSTALLATION_ID", "") or "",
     )
 
 def save_secrets(s: Secrets) -> None:
@@ -454,5 +483,8 @@ def save_secrets(s: Secrets) -> None:
         f"NVIDIA_API_KEY={s.nvidia_api_key}",
         f"TELEGRAM_BOT_TOKEN={s.telegram_bot_token}",
         f"UNSPLASH_ACCESS_KEY={s.unsplash_access_key}",
+        f"GITHUB_APP_ID={s.github_app_id}",
+        f"GITHUB_APP_PRIVATE_KEY={s.github_app_private_key.replace(chr(10), '\\n')}",
+        f"GITHUB_APP_INSTALLATION_ID={s.github_app_installation_id}",
     ]
     _env_file().write_text("\n".join(lines) + "\n", encoding="utf-8")

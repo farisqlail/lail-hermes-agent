@@ -14,6 +14,7 @@ import { AssignTaskModal } from '../components/AssignTaskModal';
 import { CallMeetingModal } from '../components/CallMeetingModal';
 import { OfficeUnifiedChat } from '../components/OfficeUnifiedChat';
 import { WorkOutputFeed } from '../components/WorkOutputFeed';
+import { StandupPanel } from '../components/StandupPanel';
 import { OfficeCanvas } from '../components/OfficeCanvas';
 import { useToast } from '../components/Toast';
 import { Plus, Users, Trash2, Pencil, Briefcase, Send, Wifi, WifiOff, Crown, Users2 } from 'lucide-react';
@@ -402,6 +403,12 @@ export function Office() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {teams.length > 0 && (
+        <div style={{ marginTop: '28px' }}>
+          <StandupPanel teams={teams} />
         </div>
       )}
 

@@ -166,7 +166,8 @@ class Store:
                   ON trace_events(task_id, id);
                 CREATE TABLE IF NOT EXISTS messages(
                   id INTEGER PRIMARY KEY AUTOINCREMENT, conv_id TEXT,
-                  role TEXT, content TEXT, ts REAL);
+                  role TEXT, content TEXT, ts REAL,
+                  reply_snippet TEXT, reply_role TEXT);
                 CREATE TABLE IF NOT EXISTS scheduled_jobs(
                   job_id TEXT PRIMARY KEY, description TEXT,
                   interval_s INTEGER, next_run_ts REAL,
@@ -194,7 +195,19 @@ class Store:
             except sqlite3.OperationalError:
                 pass
             try:
+                c.execute("ALTER TABLE sessions ADD COLUMN chat_model TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
                 c.execute("CREATE TABLE IF NOT EXISTS scheduled_jobs(job_id TEXT PRIMARY KEY, description TEXT, interval_s INTEGER, next_run_ts REAL, last_run_ts REAL, enabled INTEGER DEFAULT 1, chat_id INTEGER, created REAL)")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                c.execute("ALTER TABLE messages ADD COLUMN reply_snippet TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                c.execute("ALTER TABLE messages ADD COLUMN reply_role TEXT")
             except sqlite3.OperationalError:
                 pass
 
@@ -228,18 +241,19 @@ class Store:
             c.execute("UPDATE sessions SET title=? WHERE session_id=?", (title, session_id))
         self.publish({"type": "session_renamed", "session_id": session_id, "title": title})
 
-    def update_session_settings(self, session_id, project=None, engine=None, title=None):
+    def update_session_settings(self, session_id, project=None, engine=None, title=None, chat_model=None):
         with self._conn() as c:
-            row = c.execute("SELECT title, project, engine FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+            row = c.execute("SELECT title, project, engine, chat_model FROM sessions WHERE session_id=?", (session_id,)).fetchone()
             if not row:
                 return False
             new_title = title if title is not None else row["title"]
             new_project = project if project is not None else row["project"]
             new_engine = engine if engine is not None else row["engine"]
+            new_chat_model = chat_model if chat_model is not None else row["chat_model"]
             c.execute(
-                "UPDATE sessions SET title=?, project=?, engine=? WHERE session_id=?",
-                (new_title, new_project, new_engine, session_id))
-        self.publish({"type": "session_updated", "session_id": session_id, "title": new_title, "project": new_project, "engine": new_engine})
+                "UPDATE sessions SET title=?, project=?, engine=?, chat_model=? WHERE session_id=?",
+                (new_title, new_project, new_engine, new_chat_model, session_id))
+        self.publish({"type": "session_updated", "session_id": session_id, "title": new_title, "project": new_project, "engine": new_engine, "chat_model": new_chat_model})
         return True
 
     def get_session(self, session_id):
@@ -461,21 +475,40 @@ class Store:
     # discrete unit of work. The chat agent is fed the tail of this log so it
     # remembers the exchange across turns.
 
-    def add_message(self, conv_id, role, content):
+    def add_message(self, conv_id, role, content, reply_snippet=None, reply_role=None):
         with self._conn() as c:
-            c.execute("INSERT INTO messages(conv_id,role,content,ts) VALUES(?,?,?,?)",
-                      (conv_id, role, content, time.time()))
+            cur = c.execute(
+                "INSERT INTO messages(conv_id,role,content,ts,reply_snippet,reply_role) "
+                "VALUES(?,?,?,?,?,?)",
+                (conv_id, role, content, time.time(), reply_snippet, reply_role))
+            return cur.lastrowid
 
     def get_messages(self, conv_id, limit=20):
         """The last `limit` messages for a conversation, oldest-first.
 
         Fetched newest-first so the LIMIT keeps the *recent* tail, then
-        reversed back into reading order for the model.
+        reversed back into reading order for the model. role/content only —
+        this feeds the model's history list directly, so it stays exactly
+        the shape the chat SDK expects. See get_messages_full for the
+        reply_snippet/reply_role the UI needs to render a quote box.
         """
         with self._conn() as c:
             rows = c.execute(
                 "SELECT role, content FROM messages WHERE conv_id=? "
                 "ORDER BY id DESC LIMIT ?", (conv_id, limit)).fetchall()
+            return [dict(r) for r in reversed(rows)]
+
+    def get_messages_full(self, conv_id, limit=20):
+        """Same window as get_messages, plus id/reply_snippet/reply_role/ts —
+        what the chat pane needs to render a reply's quote box. reply_snippet
+        is the quoted text itself (captured client-side at reply time), not a
+        foreign key — so it renders correctly even for a message that hadn't
+        round-tripped a server id yet when it was replied to."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, role, content, reply_snippet, reply_role, ts "
+                "FROM messages WHERE conv_id=? ORDER BY id DESC LIMIT ?",
+                (conv_id, limit)).fetchall()
             return [dict(r) for r in reversed(rows)]
 
     def conversation_ids(self) -> set[str]:

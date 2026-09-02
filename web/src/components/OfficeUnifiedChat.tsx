@@ -7,11 +7,11 @@ import { Markdown } from './Markdown';
 import { findTaskIds, InlineTaskCard, ClaudeThinkingIndicator } from './TaskCard';
 import { CopyButton } from './CopyButton';
 import { useToast } from './Toast';
-import { useOfficeChatSession } from '../hooks/useOfficeChatSession';
+import { useOfficeChatSession, truncateReplySnippet } from '../hooks/useOfficeChatSession';
 import {
   Crosshair, Settings as SettingsIcon, Trash2, ShieldAlert,
   Mic, Volume2, VolumeX, Volume1, Square, ChevronDown, Wrench,
-  Paperclip, Crown,
+  Paperclip, Crown, CornerUpLeft, X,
 } from 'lucide-react';
 
 interface OfficeUnifiedChatProps {
@@ -95,13 +95,14 @@ export function OfficeUnifiedChat({
   const {
     messages, setMessages, waitingOnTask,
     inputText, setInputText, handleSend, handleStop, sendTurn,
+    replyingTo, setReplyingTo,
     streaming, streamContent,
     pending, resolving, resolvePending,
     handleConfirmTask,
     attached, addFiles, removeAttached, fileInputRef,
     ttsEnabled, setTtsEnabled, speaking, shutUp,
     micState, pushToTalkStart, pushToTalkStop,
-    projects, engineModels,
+    projects, engineModels, chatModels,
   } = useOfficeChatSession({
     session, employeeName, onStreamingChange, employeeId: activeEmployee?.employee_id ?? null,
     ensureSession, eagerLoadCatalog: true,
@@ -154,6 +155,19 @@ export function OfficeUnifiedChat({
       toast(`Model set to ${model || 'default'}`, 'ok');
     } catch (err) {
       toast(errorMessage(err, 'Failed to update model'), 'err');
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const handleUpdateChatModel = async (chat_model: string) => {
+    if (!session) return;
+    setSavingSettings(true);
+    try {
+      const updated = await api.updateOfficeSession(session.session_id, { chat_model });
+      setSession(updated);
+    } catch (err) {
+      toast(errorMessage(err, 'Failed to update chat model'), 'err');
     } finally {
       setSavingSettings(false);
     }
@@ -321,6 +335,21 @@ export function OfficeUnifiedChat({
                 ))}
               </select>
             </div>
+            {!session?.project && (
+              <div style={{ flex: '1 1 180px' }}>
+                <label className="tools-field-label">CHAT MODEL</label>
+                <select
+                  className="field-select"
+                  value={session?.chat_model || ''}
+                  onChange={(e) => handleUpdateChatModel(e.target.value)}
+                  disabled={savingSettings}
+                  style={{ width: '100%', fontSize: '11px', padding: '4px 8px' }}
+                >
+                  <option value="">Default ({chatModels?.default || 'Settings'})</option>
+                  {chatModels?.models.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+            )}
           </div>
         )}
 
@@ -363,9 +392,25 @@ export function OfficeUnifiedChat({
               <div key={i} className={`chat-message-row ${m.role}`}>
                 <div className="chat-author-line">
                   <span>{m.role === 'user' ? 'YOU' : employeeName.toUpperCase()}</span>
+                  <button
+                    type="button"
+                    title="Reply to this message"
+                    onClick={() => setReplyingTo({ role: m.role, snippet: truncateReplySnippet(m.content) })}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-faint)', padding: '2px', display: 'inline-flex', alignItems: 'center' }}
+                  >
+                    <CornerUpLeft size={12} />
+                  </button>
                   <CopyButton text={m.content} />
                 </div>
                 <div className={`chat-bubble ${m.role}`}>
+                  {m.reply_snippet && (
+                    <div style={{ borderLeft: '2px solid var(--accent)', paddingLeft: '8px', marginBottom: '8px', fontSize: '12px', color: 'var(--text-faint)', opacity: 0.85 }}>
+                      <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>
+                        Replying to {m.reply_role === 'assistant' ? employeeName : 'You'}
+                      </div>
+                      {m.reply_snippet}
+                    </div>
+                  )}
                   {m.role === 'user' ? (
                     <div>
                       <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>
@@ -439,6 +484,24 @@ export function OfficeUnifiedChat({
             </div>
           )}
         </div>
+
+        {/* Reply-to preview, cancellable */}
+        {replyingTo && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', margin: '0 12px 8px', border: '1px solid var(--border)', borderLeft: '2px solid var(--accent)', borderRadius: '8px', background: 'var(--surface-card)' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--accent)' }}>
+                Replying to {replyingTo.role === 'assistant' ? employeeName : 'You'}
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--text-faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {replyingTo.snippet}
+              </div>
+            </div>
+            <button type="button" title="Cancel reply" onClick={() => setReplyingTo(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-faint)', display: 'inline-flex' }}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
 
         {/* Attached files preview */}
         {attached.length > 0 && (

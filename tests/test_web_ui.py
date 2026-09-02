@@ -32,8 +32,12 @@ def test_settings_post_malformed_returns_422(hermes_home):
     assert r.status_code == 422
     r = client.post("/api/settings", json={"claude_model": "has space"})
     assert r.status_code == 422
+    # agy_model is auto-sanitized (ANSI/control chars/smart quotes stripped)
+    # rather than rejected — see config._agy_model_shape — so this is 200
+    # with the cleaned value persisted, not a 422.
     r = client.post("/api/settings", json={"agy_model": "line\nbreak"})
-    assert r.status_code == 422
+    assert r.status_code == 200
+    assert config.load_settings().agy_model == "linebreak"
     # agy display names with spaces are valid, not malformed
     r = client.post("/api/settings", json={"agy_model": "Gemini 3.5 Flash (High)"})
     assert r.status_code == 200
@@ -614,6 +618,7 @@ async def test_chat_tools_query_state_and_propose_task(hermes_home):
     if importlib.util.find_spec("yt_dlp") is not None:
         expected += ["youtube_clip", "viral_clip", "viral_clips"]
     expected += ["schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"]
+    expected += ["github_review_pr"]
     expected += ["figma_web_design", "figma_web_design_flow",
                  "stitch_design_screen", "figma_web_fix_photo",
                  "figma_web_fix_text", "figma_web_fix_property",

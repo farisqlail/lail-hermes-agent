@@ -405,6 +405,105 @@ async def test_resolve_pending_approved_runs_the_tool_and_says_so(hermes_home):
     assert "selesai" in msgs[-1]["content"].lower()
 
 
+# --- github_review_pr: always parked, never posts without approval ---
+
+async def test_dispatch_github_review_pr_parks_a_pending_action_not_a_post(hermes_home, monkeypatch):
+    """The tool call itself must only ever produce a parked PendingAction —
+    posting to GitHub is a public, visible-to-others action, so it goes
+    through the same approve/decline gate as any other write, regardless of
+    Settings.confirm_risky (unlike MCP tools, this one isn't conditional)."""
+    store = _store(hermes_home)
+    engine = ChatEngine(store)
+    dispatch = engine.make_dispatch("tg-5", chat_id=5)
+
+    import hermes.github_app as github_app
+
+    async def fake_get_pr(owner, repo, number, secrets):
+        assert (owner, repo, number) == ("acme", "widget", 42)
+        return {"title": "Fix off-by-one", "html_url": "https://github.com/acme/widget/pull/42", "body": ""}
+
+    async def fake_get_pr_diff(owner, repo, number, secrets):
+        return "diff --git a/x.py b/x.py\n+bug here"
+
+    async def fake_review(pr, diff, settings, secrets):
+        assert "bug here" in diff
+        return {"body": "Looks like a real bug on line 3.", "event": "REQUEST_CHANGES"}
+
+    def fail_post(*a, **kw):
+        raise AssertionError("must never post before approval")
+
+    monkeypatch.setattr(github_app, "get_pr", fake_get_pr)
+    monkeypatch.setattr(github_app, "get_pr_diff", fake_get_pr_diff)
+    monkeypatch.setattr(github_app, "review_diff_with_llm", fake_review)
+    monkeypatch.setattr(github_app, "post_pr_review", fail_post)
+
+    result = json.loads(await dispatch("github_review_pr", {"pr": "acme/widget#42"}))
+
+    assert result["status"] == "pending_confirmation"
+    assert result["recommended_event"] == "REQUEST_CHANGES"
+    assert result["pr_url"] == "https://github.com/acme/widget/pull/42"
+    pa = engine.pending.get(result["pending_id"])
+    assert pa.tool == "github__post_pr_review"
+    assert pa.args == {"owner": "acme", "repo": "widget", "number": 42,
+                       "body": "Looks like a real bug on line 3.", "event": "REQUEST_CHANGES"}
+    assert pa.chat_id == 5
+
+
+async def test_dispatch_github_review_pr_surfaces_a_bad_ref_as_an_error(hermes_home):
+    store = _store(hermes_home)
+    engine = ChatEngine(store)
+    dispatch = engine.make_dispatch("tg-5")
+
+    result = json.loads(await dispatch("github_review_pr", {"pr": "not a pr"}))
+    assert "error" in result
+
+
+async def test_resolve_pending_github_review_posts_via_native_path_not_hub(hermes_home, monkeypatch):
+    """github__post_pr_review must never reach hub.call — no MCP server named
+    'github' is registered; resolve_pending's native-tool registry has to
+    intercept it first."""
+    store = _store(hermes_home)
+
+    class FakeHub:
+        async def call(self, name, args):
+            raise AssertionError("github__post_pr_review must not go through the MCP hub")
+
+    engine = ChatEngine(store, hub=FakeHub())
+    pa = engine.pending.add("github__post_pr_review",
+                            {"owner": "acme", "repo": "widget", "number": 42,
+                             "body": "Looks good.", "event": "APPROVE"}, "tg-5")
+
+    import hermes.github_app as github_app
+    posted = []
+
+    async def fake_post(owner, repo, number, body, event, secrets):
+        posted.append((owner, repo, number, body, event))
+        return json.dumps({"status": "posted", "html_url": "https://github.com/acme/widget/pull/42#review-1"})
+
+    monkeypatch.setattr(github_app, "post_pr_review", fake_post)
+
+    out = await engine.resolve_pending(pa, approved=True)
+
+    assert posted == [("acme", "widget", 42, "Looks good.", "APPROVE")]
+    assert out["approved"] is True and out["resume"] is True
+    assert "selesai" in store.get_messages("tg-5")[-1]["content"].lower()
+
+
+async def test_resolve_pending_github_review_declined_never_posts(hermes_home, monkeypatch):
+    store = _store(hermes_home)
+    engine = ChatEngine(store)
+    pa = engine.pending.add("github__post_pr_review",
+                            {"owner": "acme", "repo": "widget", "number": 42,
+                             "body": "x", "event": "COMMENT"}, "tg-5")
+
+    import hermes.github_app as github_app
+    monkeypatch.setattr(github_app, "post_pr_review",
+                        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not post")))
+
+    out = await engine.resolve_pending(pa, approved=False)
+    assert out["approved"] is False
+
+
 async def test_wrap_dispatch_routes_known_names_to_the_extra_map(hermes_home):
     store = _store(hermes_home)
     engine = ChatEngine(store)

@@ -583,7 +583,7 @@ def build_nim_chat(settings, secrets):
         "isi skill itu jadi panduan cara kamu menyusun jawaban untuk permintaan itu.\n\n"
     )
 
-    async def chat(history: list[dict], tools=None, dispatch=None) -> str:
+    async def chat(history: list[dict], tools=None, dispatch=None, model: str | None = None) -> str:
         if not secrets.nvidia_api_key:
             raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
         current_settings = config.load_settings()
@@ -592,7 +592,10 @@ def build_nim_chat(settings, secrets):
         client = _client(current_settings.nvidia_base_url, secrets.nvidia_api_key,
                          PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
-        effective_model = _pick_chat_model(current_settings, history)
+        # An explicit per-turn model (the web/office chat pane's model picker,
+        # sourced live from whatever provider Settings.nvidia_base_url points
+        # at — see web_ui.list_chat_models) wins over the vision/settings pick.
+        effective_model = model or _pick_chat_model(current_settings, history)
         # tools + dispatch are a curated, safe set supplied by the web layer
         # (list_projects, recent_tasks, get_task_detail, start_task) — NOT the
         # MCP hub, which carries ask_user and would deadlock a chat turn. Absent,
@@ -640,7 +643,7 @@ def build_nim_chat(settings, secrets):
             msgs.append({"role": "user", "content": EMPTY_REPLY_NUDGE})
         return ""
 
-    async def stream(history: list[dict], tools=None, dispatch=None):
+    async def stream(history: list[dict], tools=None, dispatch=None, model: str | None = None):
         """Token-streaming twin of chat(): yields ("token", str) as the model
         emits, ("usage", {...}) once at the end. Tool rounds run inline — their
         content is not the final answer, so the loop resolves them and only the
@@ -658,7 +661,7 @@ def build_nim_chat(settings, secrets):
         client = _client(current_settings.nvidia_base_url, secrets.nvidia_api_key,
                          PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
-        effective_model = _pick_chat_model(current_settings, history)
+        effective_model = model or _pick_chat_model(current_settings, history)
         use_tools = bool(tools and dispatch)
         # Timing on the path the operator watches fill. TTFT is measured from the
         # first request, not per round, so a tool round-trip shows up as the gap
@@ -1530,6 +1533,16 @@ async def run():
                 # consume it before falling through to the conversational agent.
                 if await on_ask_text(c, text):
                     return
+                # Telegram's own swipe-to-reply already shows the quoted
+                # message natively in the client — this only needs to make
+                # the model see it too, so it's folded straight into the text
+                # rather than plumbed through as a separate id like the web
+                # UI (which has no native reply affordance of its own).
+                quoted = update.message.reply_to_message
+                if quoted is not None and (quoted.text or quoted.caption):
+                    from .chat_engine import format_reply_quote
+                    quoted_role = "assistant" if quoted.from_user and quoted.from_user.is_bot else "user"
+                    text = format_reply_quote(quoted_role, quoted.text or quoted.caption) + text
                 t = asyncio.create_task(_run_chat_turn(u, c, text))
                 t.add_done_callback(crash_reporter(c))
 

@@ -93,6 +93,8 @@ export interface Settings {
   office_meetings_enabled: boolean;
   office_meeting_cooldown_s: number;
   office_max_auto_meetings_per_day: number;
+  office_standup_enabled: boolean;
+  office_standup_time: string;
   mcp_servers: McpServer[];
   // Skill content lives on disk (SKILL.md), not in Settings — use
   // api.getSkills()/saveSkills() (backed by /api/skills), not this object.
@@ -102,17 +104,32 @@ export interface Settings {
 export interface SecretsStatus {
   nvidia_api_key_set: boolean;
   telegram_bot_token_set: boolean;
+  github_app_configured: boolean;
 }
 
 export interface SecretsUpdate {
   nvidia_api_key?: string;
   telegram_bot_token?: string;
+  github_app_id?: string;
+  github_app_private_key?: string;
+  github_app_installation_id?: string;
 }
 
 export interface EngineModels {
   claude: string[];
   agy: string[];
   agy_live: boolean;
+}
+
+/** Live catalog of the conversational LLM's models — whatever endpoint
+ *  Settings.nvidia_base_url points at (NVIDIA NIM, DeepSeek, a local
+ *  9Router gateway, or any other OpenAI-compatible "custom" target). See
+ *  GET /api/chat-models. Distinct from EngineModels, which is about the
+ *  claude/agy CLI that runs background @project tasks, not casual chat. */
+export interface ChatModels {
+  models: string[];
+  live: boolean;
+  default: string;
 }
 
 export interface Project {
@@ -215,6 +232,8 @@ export interface Meeting {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  reply_snippet?: string | null;
+  reply_role?: 'user' | 'assistant' | null;
 }
 
 export interface OfficeSession {
@@ -224,6 +243,7 @@ export interface OfficeSession {
   project: string | null;
   model: string;
   engine: string;
+  chat_model: string | null;
   created: number;
   updated: number;
 }

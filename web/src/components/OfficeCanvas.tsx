@@ -15,6 +15,7 @@ import {
   Monitor,
   Users,
   Coffee,
+  Gamepad2,
   ZoomIn,
   ZoomOut,
   ChevronDown,
@@ -36,7 +37,7 @@ interface OfficeCanvasProps {
 }
 
 type LightingPreset = 'day' | 'night' | 'sunset';
-type CameraViewPreset = 'overview' | 'desks' | 'meeting' | 'lounge' | 'focus';
+type CameraViewPreset = 'overview' | 'desks' | 'meeting' | 'lounge' | 'focus' | 'fun';
 
 // Specific POIs (Points of Interest) across the 3D Office
 interface OfficePOI {
@@ -46,7 +47,7 @@ interface OfficePOI {
   z: number;
   rotationY: number;
   isSeated: boolean;
-  zone: 'desk' | 'meeting' | 'lounge' | 'hallway' | 'focus';
+  zone: 'desk' | 'meeting' | 'lounge' | 'hallway' | 'focus' | 'fun';
 }
 
 // rotationY: Math.PI — createWorkstation's chair sits at local +Z (behind the
@@ -84,6 +85,23 @@ const LOUNGE_POIS: OfficePOI[] = [
   { id: 'lounge-clock', name: 'Clock Wall View', x: -9.0, z: -11.0, rotationY: 0, isSeated: false, zone: 'lounge' },
 ];
 
+// Fun Room — tucked behind the meeting room's back wall (past z=-7.6, same
+// x-band as the meeting floor). No new employee status exists for "playing"
+// (Employee['status'] is fixed to working/in_meeting/on_break/idle), so this
+// reuses on_break's wander pool below (LOUNGE_AND_FUN_POIS) rather than
+// inventing a status the rest of the stack doesn't know about — an
+// on-break employee now sometimes relaxes here instead of the lounge.
+const FUN_POIS: OfficePOI[] = [
+  { id: 'fun-pingpong-a', name: 'Ping-Pong Table (Side A)', x: 6.4, z: -11.6, rotationY: Math.PI / 2, isSeated: false, zone: 'fun' },
+  { id: 'fun-pingpong-b', name: 'Ping-Pong Table (Side B)', x: 10.6, z: -11.6, rotationY: -Math.PI / 2, isSeated: false, zone: 'fun' },
+  { id: 'fun-arcade', name: 'Arcade Cabinet', x: 8.5, z: -14.6, rotationY: 0, isSeated: false, zone: 'fun' },
+  { id: 'fun-beanbag', name: 'Beanbag Corner', x: 3.2, z: -13.5, rotationY: Math.PI * 0.6, isSeated: true, zone: 'fun' },
+];
+
+// on_break's wander/spawn pool: the lounge plus the fun room, so a resting
+// employee splits time between both instead of the fun room sitting empty.
+const LOUNGE_AND_FUN_POIS: OfficePOI[] = [...LOUNGE_POIS, ...FUN_POIS];
+
 const IDLE_EXPLORATION_POIS: OfficePOI[] = [
   { id: 'hall-welcome', name: 'Office Entrance', x: 0, z: 12.0, rotationY: -Math.PI * 0.25, isSeated: false, zone: 'hallway' },
   { id: 'hall-mid', name: 'Central Hallway', x: 0, z: 5.0, rotationY: Math.PI * 0.5, isSeated: false, zone: 'hallway' },
@@ -94,6 +112,7 @@ const IDLE_EXPLORATION_POIS: OfficePOI[] = [
   { id: 'meet-whiteboard-view', name: 'Whiteboard Observer', x: 5.0, z: -2.5, rotationY: Math.PI * 0.75, isSeated: false, zone: 'meeting' },
   { id: 'meet-glass-view', name: 'Glass Wall View', x: 13.5, z: 6.0, rotationY: -Math.PI * 0.4, isSeated: false, zone: 'meeting' },
   { id: 'lounge-relax', name: 'Lounge Relax', x: -7.0, z: -9.0, rotationY: Math.PI * 0.3, isSeated: false, zone: 'lounge' },
+  { id: 'fun-room-view', name: 'Fun Room Doorway', x: 8.5, z: -9.5, rotationY: Math.PI, isSeated: false, zone: 'fun' },
 ];
 
 const STATUS_COLOR_HEX = {
@@ -405,6 +424,14 @@ interface AvatarMeshGroup {
   nextMoveAt: number;
   arrived: boolean;
   zoneStatus: Employee['status'];
+  // Gait state (box-people walk cycle). walkPhase advances with distance
+  // actually covered, not the wall clock, so the stride always matches real
+  // movement and starts at a random offset per avatar so a group walking
+  // together doesn't step in unison. walkBlend eases the swing amplitude in
+  // and out (0→1 while walking, back to 0 once still) instead of snapping
+  // straight from a mid-stride leg angle to the seated/idle pose.
+  walkPhase: number;
+  walkBlend: number;
 }
 
 // Name tag / speech bubble / halo / aura — shared between the box-people and
@@ -559,6 +586,8 @@ function buildBoxAvatar(group: THREE.Group, emp: Employee, chosenPoi: OfficePOI,
     nextMoveAt: Date.now() / 1000 + 4 + Math.random() * 6,
     arrived: true,
     zoneStatus: emp.status,
+    walkPhase: Math.random() * Math.PI * 2,
+    walkBlend: 0,
   };
 }
 
@@ -613,6 +642,8 @@ function buildRiggedAvatar(
     nextMoveAt: Date.now() / 1000 + 4 + Math.random() * 6,
     arrived: true,
     zoneStatus: emp.status,
+    walkPhase: Math.random() * Math.PI * 2,
+    walkBlend: 0,
   };
 }
 
@@ -692,6 +723,10 @@ export function OfficeCanvas({
       case 'lounge':
         camTargetPos.current.set(-2, 14, -2);
         camTargetLookAt.current.set(-7.5, 2, -8);
+        break;
+      case 'fun':
+        camTargetPos.current.set(18, 12, -20);
+        camTargetLookAt.current.set(8.5, 2, -11.6);
         break;
       case 'focus':
         camTargetPos.current.set(4, 10, -5);
@@ -843,6 +878,19 @@ export function OfficeCanvas({
     scene.add(meetingLight);
     deskLights.push(meetingLight);
 
+    // Fun Room accent lights — deliberately NOT pushed into deskLights: that
+    // array gets its color overwritten wholesale by every lighting-preset
+    // switch above (day/night/sunset each force one uniform tint on it), which
+    // would strip the game-room its own colorful mood lighting. A real arcade
+    // keeps its neon glow lit the same way regardless of the office's time of
+    // day, so these stay constant instead.
+    const funLightPink = new THREE.PointLight(0xec4899, 0.9, 14);
+    funLightPink.position.set(6.0, 5, -11.6);
+    scene.add(funLightPink);
+    const funLightCyan = new THREE.PointLight(0x22d3ee, 0.9, 14);
+    funLightCyan.position.set(11.0, 5, -13.5);
+    scene.add(funLightCyan);
+
     lightsRef.current = { dirLight, ambLight: ambientLight, deskLights };
 
     // Kick off the rigged-model fetch once per mount. Resolves null (404 or
@@ -960,6 +1008,16 @@ export function OfficeCanvas({
     meetingFloor.receiveShadow = true;
     officeGroup.add(meetingFloor);
 
+    // Floor 2b: Fun Room (behind the meeting room, past its back wall) —
+    // vibrant purple carpet so it reads as a distinct "off the clock" zone
+    // rather than more office parquet.
+    const matFunCarpet = new THREE.MeshStandardMaterial({ color: 0x4c1d95, roughness: 0.85 });
+    const funFloorGeo = new THREE.BoxGeometry(15, 0.1, 8);
+    const funFloor = new THREE.Mesh(funFloorGeo, matFunCarpet);
+    funFloor.position.set(8.5, 0.05, -11.6);
+    funFloor.receiveShadow = true;
+    officeGroup.add(funFloor);
+
     // Floor 3: Break Lounge (Top-Left) — chestnut
     const loungeFloorGeo = new THREE.BoxGeometry(14, 0.1, 11);
     const loungeFloor = new THREE.Mesh(loungeFloorGeo, createWoodMaterial(WOOD_CHESTNUT, 14, 11));
@@ -987,7 +1045,12 @@ export function OfficeCanvas({
 
     // Outer Cutaway Walls
     createWall(-8.5, 2.5, -13.6, 17, 5, 0.6); // Top-left back wall
-    createWall(8.5, 2.5, -7.6, 17, 5, 0.6, matBrick); // Meeting room back brick wall
+    // Meeting room back brick wall — split into two segments (was one solid
+    // 17-wide slab) leaving an open portal at x:[7.1,9.9] so the fun room
+    // behind it is a real walk-through room, not a sealed one seen only from
+    // the camera preset.
+    createWall(3.55, 2.5, -7.6, 7.1, 5, 0.6, matBrick);
+    createWall(13.45, 2.5, -7.6, 7.1, 5, 0.6, matBrick);
     createWall(-16.8, 2.5, 0, 0.6, 5, 27); // Far left wall
     const wavePanel = createWall(-16.4, 2.5, 6, 0.3, 4, 12, matYellowAccent); // Yellow acoustic wave panel
     wavePanel.castShadow = true;
@@ -995,6 +1058,28 @@ export function OfficeCanvas({
     createWall(16.8, 2.5, 1.5, 0.6, 5, 18, matGlass); // Far right glass facade
     createWall(16.8, 0.2, 1.5, 0.7, 0.4, 18, matGlassFrame);
     createWall(16.8, 4.8, 1.5, 0.7, 0.4, 18, matGlassFrame);
+
+    // --- Fun Room (behind the meeting room, through the portal above) ---
+    const matFunAccent = new THREE.MeshStandardMaterial({ color: 0x0d9488, roughness: 0.5, metalness: 0.1 });
+    // Teal accent doorway frame around the portal cut into the brick wall.
+    // The brick wall runs long the X axis (thin in Z) — unlike the meeting
+    // room's glass partition this frame was first copied from, which runs
+    // long in Z. The lintel must span the gap in X (2.8) and stay thin in Z
+    // (0.6, flush with the wall) — swapped from the copied w/d, which had it
+    // backwards (a thin 0.35-wide sliver poking 2.8 out sideways).
+    createWall(8.5, 4.5, -7.6, 2.8, 0.6, 0.6, matFunAccent); // Top lintel
+    createWall(7.1, 2.2, -7.6, 0.35, 4.4, 0.6, matFunAccent); // Left jamb
+    createWall(9.9, 2.2, -7.6, 0.35, 4.4, 0.6, matFunAccent); // Right jamb
+    // Back wall
+    createWall(8.5, 2.5, -15.9, 17, 5, 0.6, matFunAccent);
+    // Left wall (plain, matches the building's dark envelope elsewhere)
+    createWall(1.0, 2.5, -11.6, 0.6, 5, 8.6);
+    // Right wall — continues the far-right glass facade down past the
+    // meeting room so the whole east side of the building reads as one
+    // glass wall, not a patchwork.
+    createWall(16.8, 2.5, -11.6, 0.6, 5, 8.6, matGlass);
+    createWall(16.8, 0.2, -11.6, 0.7, 0.4, 8.6, matGlassFrame);
+    createWall(16.8, 4.8, -11.6, 0.7, 0.4, 8.6, matGlassFrame);
 
     // --- Elegant Wood Slat Screen on LEFT of Hallway (Separates Front Desks from Corridor) ---
     // Placed at x: -2.2 from z: 1.0 to z: 13.0, leaving the central corridor x:[-1.5, 1.8] wide open!
@@ -1149,6 +1234,108 @@ export function OfficeCanvas({
     boardGroup.add(boardSurface, boardFrame, boardLegL, boardLegR);
     officeGroup.add(boardGroup);
 
+    // --- Fun Room furniture: ping-pong table, arcade cabinet, beanbag ---
+    const matTableBlue = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.4 });
+    const matPaddle = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.6 });
+    const matArcadeBody = new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.4, metalness: 0.3 });
+    const matArcadeScreen = new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0e7490, emissiveIntensity: 1.0 });
+    const matBeanbag = new THREE.MeshStandardMaterial({ color: 0xea580c, roughness: 0.9 });
+
+    const pingPongGroup = new THREE.Group();
+    pingPongGroup.position.set(8.5, 0, -11.6);
+    const pingPongTop = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.08, 2.6), matTableBlue);
+    pingPongTop.position.set(0, 0.76, 0);
+    pingPongTop.castShadow = true;
+    pingPongTop.receiveShadow = true;
+    pingPongGroup.add(pingPongTop);
+    const pingPongNet = new THREE.Mesh(
+      new THREE.BoxGeometry(0.04, 0.3, 2.6),
+      new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.7, transparent: true, opacity: 0.75 })
+    );
+    pingPongNet.position.set(0, 0.95, 0);
+    pingPongGroup.add(pingPongNet);
+    for (const px of [-1.6, 1.6]) {
+      const paddle = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.03, 12), matPaddle);
+      paddle.rotation.x = Math.PI / 2;
+      paddle.position.set(px, 0.81, 0.9);
+      pingPongGroup.add(paddle);
+    }
+    for (const lx of [-1.9, 1.9]) {
+      for (const lz of [-1.1, 1.1]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.76, 0.1), matBlackLegs);
+        leg.position.set(lx, 0.38, lz);
+        pingPongGroup.add(leg);
+      }
+    }
+    officeGroup.add(pingPongGroup);
+
+    const arcadeGroup = new THREE.Group();
+    arcadeGroup.position.set(8.5, 0, -14.6);
+    const arcadeBody = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.2, 0.9), matArcadeBody);
+    arcadeBody.position.set(0, 1.1, 0);
+    arcadeBody.castShadow = true;
+    arcadeGroup.add(arcadeBody);
+    const arcadeScreen = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.55), matArcadeScreen);
+    arcadeScreen.position.set(0, 1.55, 0.46);
+    arcadeGroup.add(arcadeScreen);
+    const arcadeMarquee = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.3, 0.3), matYellowAccent);
+    arcadeMarquee.position.set(0, 2.25, 0.3);
+    arcadeGroup.add(arcadeMarquee);
+    officeGroup.add(arcadeGroup);
+
+    const beanbagGroup = new THREE.Group();
+    beanbagGroup.position.set(3.2, 0, -13.5);
+    const beanbag = new THREE.Mesh(new THREE.SphereGeometry(0.65, 16, 12), matBeanbag);
+    beanbag.scale.set(1, 0.7, 1);
+    beanbag.position.set(0, 0.5, 0);
+    beanbag.castShadow = true;
+    beanbagGroup.add(beanbag);
+    officeGroup.add(beanbagGroup);
+
+    // Yellow floor rim — traces the fun room's floor edge (x:[1,16],
+    // z:[-15.6,-7.6]) so the boundary of the room reads clearly against the
+    // open portal, same accent color the rest of the building's doorways use.
+    const rimY = 0.11;
+    const rimThickness = 0.15;
+    const funRim = [
+      { x: 8.5, z: -15.6, w: 15, d: rimThickness },   // back edge
+      { x: 1.0, z: -11.6, w: rimThickness, d: 8 },     // left edge
+      { x: 16.0, z: -11.6, w: rimThickness, d: 8 },    // right edge
+    ];
+    for (const r of funRim) {
+      const rim = new THREE.Mesh(new THREE.BoxGeometry(r.w, 0.04, r.d), matYellowAccent);
+      rim.position.set(r.x, rimY, r.z);
+      officeGroup.add(rim);
+    }
+
+    // "FUN ROOM" wall sign, mounted on the back wall above the arcade
+    // cabinet — a real texture (not a camera-facing sprite, unlike the name
+    // labels above avatars) so it reads as a fixed part of the room from any
+    // angle, the same way the whiteboard/desk textures are painted on.
+    const signCanvas = document.createElement('canvas');
+    signCanvas.width = 512;
+    signCanvas.height = 128;
+    const signCtx = signCanvas.getContext('2d')!;
+    signCtx.fillStyle = '#1e1b4b';
+    signCtx.fillRect(0, 0, 512, 128);
+    signCtx.strokeStyle = '#facc15';
+    signCtx.lineWidth = 6;
+    signCtx.strokeRect(6, 6, 500, 116);
+    signCtx.fillStyle = '#f472b6';
+    signCtx.font = 'bold 56px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    signCtx.textAlign = 'center';
+    signCtx.textBaseline = 'middle';
+    signCtx.shadowColor = '#ec4899';
+    signCtx.shadowBlur = 18;
+    signCtx.fillText('FUN ROOM', 256, 66);
+    const signTexture = new THREE.CanvasTexture(signCanvas);
+    const signMat = new THREE.MeshStandardMaterial({
+      map: signTexture, emissiveMap: signTexture, emissive: 0xffffff, emissiveIntensity: 0.5,
+    });
+    const signPlane = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 0.9), signMat);
+    signPlane.position.set(8.5, 3.3, -15.55);
+    officeGroup.add(signPlane);
+
     // Break Lounge Sofa & Water Cooler
     const sofaGroup = new THREE.Group();
     sofaGroup.position.set(-9.5, 0, -7.5);
@@ -1255,6 +1442,18 @@ export function OfficeCanvas({
       }
 
       const nowS = Date.now() / 1000;
+      // Frame-rate-independent walking: the old code moved each avatar a
+      // FRACTION of its remaining distance per frame (`dx * 0.04`) rather
+      // than a fixed speed per second, so it drifted slower/faster with the
+      // frame rate and any stutter (a dropped frame, a tab coming back from
+      // background) showed up as a visible jump. A real person walks at a
+      // constant pace and stops — not an exponential glide that never quite
+      // arrives — so this instead covers a fixed distance per second,
+      // clamped so it can't overshoot the target. `dt` caps a single frame's
+      // step so one huge stall (e.g. the tab was backgrounded) can't move an
+      // avatar most of the way across the room in one jump.
+      const WALK_SPEED = 3.4; // units/sec, a brisk-walk pace at this scale
+      const dt = Math.min(delta, 0.1);
       let anyWorking = false;
       avatarsRef.current.forEach((av) => {
         av.mixer?.update(delta);
@@ -1265,39 +1464,56 @@ export function OfficeCanvas({
         const walking = dist > 0.06;
 
         if (walking) {
-          av.currentX += dx * 0.04;
-          av.currentZ += dz * 0.04;
+          const step = Math.min(dist, WALK_SPEED * dt);
+          av.currentX += (dx / dist) * step;
+          av.currentZ += (dz / dist) * step;
           av.group.position.x = av.currentX;
           av.group.position.z = av.currentZ;
-          av.group.position.y = Math.abs(Math.sin(time * 8)) * 0.06;
-          av.group.rotation.y = THREE.MathUtils.lerp(av.group.rotation.y, Math.atan2(dx, dz), 0.15);
+          av.group.rotation.y = THREE.MathUtils.lerp(av.group.rotation.y, Math.atan2(dx, dz), 1 - Math.exp(-10 * dt));
           av.arrived = false;
+
+          // Stride phase tracks distance actually covered (not the wall
+          // clock), so faster/slower frames never desync the gait from the
+          // walk, and walkBlend eases the swing amplitude in instead of
+          // snapping straight to full stride the instant movement starts.
+          av.walkPhase += step * 3.0;
+          av.walkBlend = THREE.MathUtils.lerp(av.walkBlend, 1, 1 - Math.exp(-8 * dt));
+          av.group.position.y = Math.abs(Math.sin(av.walkPhase)) * 0.06 * av.walkBlend;
 
           // Walking limb cycle
           if (av.rigged) {
             setRiggedAction(av, 'walk');
           } else {
-            const swing = Math.sin(time * 8) * 0.6;
+            const swing = Math.sin(av.walkPhase) * 0.6 * av.walkBlend;
             av.leftLegPivot!.rotation.x = swing;
             av.rightLegPivot!.rotation.x = -swing;
             av.leftArmPivot!.rotation.x = -swing * 0.7;
             av.rightArmPivot!.rotation.x = swing * 0.7;
           }
         } else {
+          av.currentX = av.targetX;
+          av.currentZ = av.targetZ;
           av.group.position.x = av.targetX;
           av.group.position.z = av.targetZ;
-          av.group.position.y = av.isSeated ? -0.22 : 0;
-          av.group.rotation.y = THREE.MathUtils.lerp(av.group.rotation.y, av.targetRotY, 0.08);
+          // Eases the swing back to zero and the height back to the resting
+          // floor/seat level instead of popping — this is what used to snap
+          // a mid-stride leg angle straight into the seated bend the instant
+          // `dist` crossed the arrival threshold.
+          av.walkBlend = THREE.MathUtils.lerp(av.walkBlend, 0, 1 - Math.exp(-8 * dt));
+          const restY = av.isSeated ? -0.22 : 0;
+          av.group.position.y = THREE.MathUtils.lerp(av.group.position.y, restY, 1 - Math.exp(-10 * dt));
+          av.group.rotation.y = THREE.MathUtils.lerp(av.group.rotation.y, av.targetRotY, 1 - Math.exp(-5 * dt));
 
           // Seated vs Standing Pose
           if (av.isSeated) {
             if (av.rigged) {
               setRiggedAction(av, av.zoneStatus === 'working' ? 'type' : 'sit');
             } else {
-              av.leftLegPivot!.rotation.x = -Math.PI / 2.2;
-              av.rightLegPivot!.rotation.x = -Math.PI / 2.2;
-              av.leftArmPivot!.rotation.x = -Math.PI / 3 + Math.sin(time * 6) * 0.1; // Typing motion
-              av.rightArmPivot!.rotation.x = -Math.PI / 3 - Math.sin(time * 6) * 0.1;
+              const seatBlend = 1 - Math.exp(-10 * dt);
+              av.leftLegPivot!.rotation.x = THREE.MathUtils.lerp(av.leftLegPivot!.rotation.x, -Math.PI / 2.2, seatBlend);
+              av.rightLegPivot!.rotation.x = THREE.MathUtils.lerp(av.rightLegPivot!.rotation.x, -Math.PI / 2.2, seatBlend);
+              av.leftArmPivot!.rotation.x = THREE.MathUtils.lerp(av.leftArmPivot!.rotation.x, -Math.PI / 3 + Math.sin(time * 6) * 0.1, seatBlend); // Typing motion
+              av.rightArmPivot!.rotation.x = THREE.MathUtils.lerp(av.rightArmPivot!.rotation.x, -Math.PI / 3 - Math.sin(time * 6) * 0.1, seatBlend);
               av.headMesh!.position.y = 1.42 + Math.sin(time * 3) * 0.02;
               av.headMesh!.rotation.x = 0.15 + Math.sin(time * 5) * 0.03;
             }
@@ -1337,8 +1553,9 @@ export function OfficeCanvas({
               av.assignedPoi = randomPoi;
               av.arrived = false;
             } else if (av.zoneStatus === 'on_break') {
-              // Break employees switch between sofa, coffee, water, and lounge views
-              const randomPoi = LOUNGE_POIS[Math.floor(Math.random() * LOUNGE_POIS.length)];
+              // Break employees switch between sofa, coffee, water, lounge
+              // views, and the fun room out back
+              const randomPoi = LOUNGE_AND_FUN_POIS[Math.floor(Math.random() * LOUNGE_AND_FUN_POIS.length)];
               av.targetX = randomPoi.x;
               av.targetZ = randomPoi.z;
               av.targetRotY = randomPoi.rotationY;
@@ -1459,7 +1676,7 @@ export function OfficeCanvas({
       } else if (emp.status === 'in_meeting') {
         chosenPoi = MEETING_POIS[idx % MEETING_POIS.length];
       } else if (emp.status === 'on_break') {
-        chosenPoi = LOUNGE_POIS[idx % LOUNGE_POIS.length];
+        chosenPoi = LOUNGE_AND_FUN_POIS[idx % LOUNGE_AND_FUN_POIS.length];
       } else {
         chosenPoi = IDLE_EXPLORATION_POIS[idx % IDLE_EXPLORATION_POIS.length];
       }
@@ -1668,6 +1885,15 @@ export function OfficeCanvas({
           >
             <Coffee size={12} />
             <span>Lounge</span>
+          </button>
+          <button
+            type="button"
+            className={`btn-office-nav ${activeView === 'fun' ? 'active' : ''}`}
+            onClick={() => setCameraPreset('fun')}
+            title="Fun Room"
+          >
+            <Gamepad2 size={12} />
+            <span>Fun Room</span>
           </button>
         </div>
 

@@ -38,6 +38,7 @@ import {
   X,
   Activity,
   AlertTriangle,
+  CornerUpLeft,
 } from 'lucide-react';
 
 interface Message {
@@ -51,6 +52,25 @@ interface Message {
   usage?: {
     total: number;
   };
+  /** Set when this turn was sent as a reply — the quoted snippet + whose
+   *  message it quoted, rendered as a small quote box above the bubble. */
+  reply_snippet?: string | null;
+  reply_role?: 'user' | 'assistant' | null;
+}
+
+/** What the operator is currently replying to, captured off a rendered
+ *  bubble — not a message id, so it works even for a message that streamed
+ *  in this session and has no server id yet. Cleared once sent. */
+interface ReplyTarget {
+  role: 'user' | 'assistant';
+  snippet: string;
+}
+
+const REPLY_SNIPPET_MAX = 300;
+
+function truncateSnippet(text: string, max: number = REPLY_SNIPPET_MAX): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? flat.slice(0, max).trimEnd() + '...' : flat;
 }
 
 interface GraphNode {
@@ -86,6 +106,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [replyingTo, setReplyingTo] = useState<ReplyTarget | null>(null);
   const [agentName, setAgentName] = useState('Lail Agent');
 
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
@@ -119,9 +140,15 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
   const sinkRef = useRef<HtmlAudioSink | null>(null);
   const queueRef = useRef<SpeechQueue | null>(null);
 
-  const [sessions, setSessions] = useState<{ session_id: string; title: string; created: number; project?: string; engine?: string }[]>([]);
+  const [sessions, setSessions] = useState<{ session_id: string; title: string; created: number; project?: string; engine?: string; chat_model?: string }[]>([]);
   const [projects, setProjects] = useState<string[]>([]);
-  const [plannerModel, setPlannerModel] = useState<string>('Gemini 3.6 Flash High');
+  // '' = use Settings' default chat model. A non-empty value is an explicit
+  // per-session override, picked from the live catalog /api/chat-models
+  // pulls off whatever provider Settings.nvidia_base_url points at (NVIDIA,
+  // DeepSeek, a local 9Router gateway, ...).
+  const [plannerModel, setPlannerModel] = useState<string>('');
+  const [chatModels, setChatModels] = useState<string[]>([]);
+  const [defaultChatModel, setDefaultChatModel] = useState<string>('');
   const [selectedProject, setSelectedProject] = useState<string>('');
   const [selectedEngine, setSelectedEngine] = useState<string>('auto');
 
@@ -131,11 +158,19 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
     if (currentSession) {
       setSelectedProject(currentSession.project || '');
       setSelectedEngine(currentSession.engine || 'auto');
+      setPlannerModel(currentSession.chat_model || '');
     } else {
       setSelectedProject('');
       setSelectedEngine('auto');
+      setPlannerModel('');
     }
   }, [currentSession]);
+
+  useEffect(() => {
+    api.getChatModels()
+      .then((res) => { setChatModels(res.models); setDefaultChatModel(res.default); })
+      .catch(() => {});
+  }, []);
 
   const handleProjectChange = async (proj: string) => {
     setSelectedProject(proj);
@@ -164,6 +199,21 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
       fetchSessions();
     } catch (e) {
       console.error('Gagal memperbarui engine session:', e);
+    }
+  };
+
+  const handleModelChange = async (model: string) => {
+    setPlannerModel(model);
+    const activeSid = sessionId || 'web';
+    try {
+      await fetch(`/api/sessions/${activeSid}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_model: model }),
+      });
+      fetchSessions();
+    } catch (e) {
+      console.error('Gagal memperbarui model chat session:', e);
     }
   };
 
@@ -622,6 +672,10 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
     const { imageIds: stagedImageIds, docIds, docNames } = await uploadAttached();
     const imageIds = [...stagedImageIds, ...(await uploadFiles(direct))];
     setAttached([]);
+    // Captured once, cleared right away — a resume turn or a slow upload must
+    // not leave a stale reply preview attached to whatever gets sent next.
+    const reply = resume ? null : replyingTo;
+    if (!resume) setReplyingTo(null);
 
     // Captured once: every later update belongs to THIS conversation, whatever
     // the operator has open by the time the stream ends.
@@ -644,6 +698,8 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
         role: 'user', content: text,
         images: [...staged.filter((a) => a.kind === 'image').map((a) => a.url), ...directUrls],
         docNames,
+        reply_snippet: reply?.snippet ?? null,
+        reply_role: reply?.role ?? null,
       };
       setMessages((prev) => [...prev, userMsg]);
     }
@@ -674,6 +730,9 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
           images: imageIds,
           documents: docIds,
           resume,
+          reply_snippet: reply?.snippet,
+          reply_role: reply?.role,
+          chat_model: plannerModel || undefined,
           project: selectedProject || undefined,
           engine: selectedEngine !== 'auto' ? selectedEngine : undefined,
         }),
@@ -1161,9 +1220,34 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
               <div key={idx} className={`chat-message-row ${m.role}`}>
                 <div className="chat-author-line">
                   <span>{m.role === 'user' ? 'OPERATOR' : agentName.toUpperCase()}</span>
+                  <button
+                    type="button"
+                    title="Balas pesan ini"
+                    onClick={() => setReplyingTo({ role: m.role, snippet: truncateSnippet(m.content) })}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-faint)', padding: '2px', display: 'inline-flex', alignItems: 'center' }}
+                  >
+                    <CornerUpLeft size={12} />
+                  </button>
                   <CopyButton text={m.content} />
                 </div>
                 <div className={`chat-bubble ${m.role}`}>
+                  {m.reply_snippet && (
+                    <div
+                      style={{
+                        borderLeft: '2px solid var(--accent)',
+                        paddingLeft: '8px',
+                        marginBottom: '8px',
+                        fontSize: '12px',
+                        color: 'var(--text-faint)',
+                        opacity: 0.85,
+                      }}
+                    >
+                      <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>
+                        Membalas {m.reply_role === 'assistant' ? agentName : 'Operator'}
+                      </div>
+                      {m.reply_snippet}
+                    </div>
+                  )}
                   {m.role === 'user' ? (
                     <div>
                       <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>
@@ -1234,6 +1318,47 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Reply-to preview, cancellable, sits above the attachments bar */}
+        {replyingTo && (
+          <div
+            style={{
+              position: 'absolute',
+              bottom: attached.length > 0 ? '148px' : '80px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              width: 'calc(100% - 48px)',
+              maxWidth: '840px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '8px 12px',
+              border: '1px solid var(--border)',
+              borderLeft: '2px solid var(--accent)',
+              borderRadius: 'var(--r-md)',
+              background: 'var(--surface-card)',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+              zIndex: 35,
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--accent)' }}>
+                Membalas {replyingTo.role === 'assistant' ? agentName : 'Operator'}
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--text-faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {replyingTo.snippet}
+              </div>
+            </div>
+            <button
+              type="button"
+              title="Batalkan balasan"
+              onClick={() => setReplyingTo(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-faint)', display: 'inline-flex' }}
+            >
+              <X size={14} />
+            </button>
           </div>
         )}
 
@@ -1333,19 +1458,19 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
           {/* Right Toolbar Actions */}
           <div className="ask-right-actions-group">
             {/* Model Selector Pill */}
-            <div className="ask-model-pill" title="Pilih Model AI">
-              <span className="ask-model-pill-text">{plannerModel}</span>
+            <div className="ask-model-pill" title="Pilih model chat (live dari provider yang terhubung)">
+              <span className="ask-model-pill-text">{plannerModel || defaultChatModel || 'Model'}</span>
               <span className="ask-model-pill-arrow">▾</span>
               <select
                 className="ask-model-select-native"
                 value={plannerModel}
-                onChange={(e) => setPlannerModel(e.target.value)}
+                onChange={(e) => handleModelChange(e.target.value)}
                 disabled={streaming}
               >
-                <option value="Gemini 3.7 flash high -...">Gemini 3.7 flash high -...</option>
-                <option value="Gemini 3.6 Flash High">Gemini 3.6 Flash High</option>
-                <option value="Claude 3.7 Sonnet">Claude 3.7 Sonnet</option>
-                <option value="GPT-4o">GPT-4o</option>
+                <option value="">Default ({defaultChatModel || 'Settings'})</option>
+                {chatModels.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
               </select>
             </div>
 
@@ -1412,7 +1537,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
 
         {/* Bottom Right version badge (Matching Reference Screenshot) */}
         <div style={{ position: 'absolute', bottom: '8px', right: '20px', fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--accent)', opacity: 0.8, pointerEvents: 'none', zIndex: 10 }}>
-          # v0.0.1
+          # v0.0.2
         </div>
       </div>
 

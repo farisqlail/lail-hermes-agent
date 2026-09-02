@@ -1136,9 +1136,9 @@
 
 .claude-plain-thinking .claude-thinking-sparkle {
   font-size: 13px;
-  /* Claude's terracotta, not an accent blue: the glyph is cycled from JS
-     rather than pulsed here, so it needs no animation of its own. */
-  color: #cd694a;
+  /* Blue accent (overrides Claude's default terracotta): the glyph is
+     cycled from JS rather than pulsed here, so it needs no animation of its own. */
+  color: #3b82f6;
   display: inline-block;
   width: 1ch;
   text-align: center;
@@ -1150,7 +1150,7 @@
   font-weight: 400;
   font-style: italic;
   letter-spacing: 0.01em;
-  background: linear-gradient(100deg, #cd694a 43%, #e79475 50%, #cd694a 57%);
+  background: linear-gradient(100deg, #3b82f6 43%, #7dabf8 50%, #3b82f6 57%);
   background-size: 200% 100%;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -1205,8 +1205,8 @@
   }
   .claude-plain-thinking .claude-thinking-text {
     background-image: none;
-    -webkit-text-fill-color: #cd694a;
-    color: #cd694a;
+    -webkit-text-fill-color: #3b82f6;
+    color: #3b82f6;
   }
 }
 

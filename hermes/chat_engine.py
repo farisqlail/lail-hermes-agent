@@ -16,7 +16,7 @@ import json
 import re
 from pathlib import Path
 
-from . import brain, config, figma_browser, ics, imagegen, launcher, mcp_hub, mcp_risk, paths, postmortem, skills, stitch_bridge, uploads, ytclip
+from . import brain, config, figma_browser, github_app, ics, imagegen, launcher, mcp_hub, mcp_risk, paths, postmortem, skills, stitch_bridge, uploads, ytclip
 from .pending_actions import PendingAction, PendingStore
 from .project_resolve import parse_project_ref
 from .telegram_bridge import new_task_id
@@ -36,6 +36,24 @@ COMPRESS_TRIGGER_EXTRA = 20
 MCP_ROUTING_THRESHOLD = 40
 IMAGE_MARKER = "\n\n[gambar dilampirkan]"
 DOCUMENT_MARKER = "\n\n[berkas dilampirkan]"
+# Max chars of a quoted message kept in the reply prefix below — long enough
+# to be recognizable, short enough not to eat the CHAT_HISTORY_LIMIT budget.
+REPLY_QUOTE_MAX_CHARS = 300
+
+
+def format_reply_quote(quoted_role: str, quoted_text: str,
+                       max_len: int = REPLY_QUOTE_MAX_CHARS) -> str:
+    """A short quoted excerpt prepended to a reply turn's content, so the
+    model sees what the operator is responding to even after the original
+    has scrolled out of the live CHAT_HISTORY_LIMIT window. Returns "" for
+    an empty quote so callers can unconditionally prepend the result."""
+    snippet = re.sub(r"\s+", " ", (quoted_text or "").strip())
+    if not snippet:
+        return ""
+    if len(snippet) > max_len:
+        snippet = snippet[:max_len].rstrip() + "..."
+    who = "Anda" if quoted_role == "user" else "asisten"
+    return f'[Membalas pesan {who} sebelumnya: "{snippet}"]\n\n'
 
 # How long the start_task tool waits for handle_task to settle its gate before
 # answering the model. The slow part is one `git status` subprocess, so this is
@@ -392,6 +410,25 @@ CHAT_TOOLS = [
             "job_id": {"type": "string", "description": "ID tugas terjadwal yang ingin dibatalkan"},
         }, "required": ["job_id"]}}},
     {"type": "function", "function": {
+        "name": "github_review_pr",
+        "description": ("Review sebuah GitHub Pull Request: ambil diff-nya, jalankan "
+                        "review kode oleh model (bug nyata/security/correctness "
+                        "diutamakan, baru gaya/naming), dan siapkan komentar review "
+                        "beserta rekomendasi verdict (APPROVE/REQUEST_CHANGES/COMMENT). "
+                        "Butuh GitHub App terpasang (App ID, private key, installation "
+                        "ID di Settings > Secrets) — kalau belum dikonfigurasi, hasilnya "
+                        "berisi error yang menjelaskan itu. HASIL REVIEW BELUM DIPOSTING "
+                        "ke GitHub — selalu tertahan menunggu persetujuan operator "
+                        "(pending_confirmation), sama seperti aksi tulis MCP lain, "
+                        "karena ini komentar publik ke PR nyata. Jangan mengaku sudah "
+                        "memposting review sebelum operator menyetujui."),
+        "parameters": {"type": "object", "properties": {
+            "pr": {"type": "string", "description": (
+                "Referensi PR: link penuh (https://github.com/owner/repo/pull/123) "
+                "atau bentuk singkat 'owner/repo#123'"
+            )}},
+            "required": ["pr"]}}},
+    {"type": "function", "function": {
         "name": "figma_web_design",
         "description": ("Desain frame/UI baru langsung di Figma Web (browser) "
                         "menggunakan automation UI asli (draw tools + panel Figma), "
@@ -707,6 +744,21 @@ CHAT_TOOLS = [
             "required": ["name"]}}},
 ]
 
+# Write actions parked as a PendingAction that resolve_pending must execute
+# itself rather than through hub.call — the tool never came from the MCP hub
+# in the first place (no "github" MCP server is registered; github_app.py
+# talks to GitHub directly). Keyed by the same "namespace__tool" shape MCP
+# names use so the pending card's summary() still reads sensibly, but
+# resolve_pending checks this dict BEFORE falling through to hub.call.
+async def _execute_native_pending(tool: str, args: dict) -> str | None:
+    """Returns None for any tool this registry doesn't own, so resolve_pending
+    falls through to the MCP hub unchanged for everything else."""
+    if tool == "github__post_pr_review":
+        secrets = config.load_secrets()
+        return await github_app.post_pr_review(
+            args["owner"], args["repo"], args["number"], args["body"], args["event"], secrets)
+    return None
+
 
 class ChatEngine:
     """One conversational agent, shared by every transport that talks to it.
@@ -768,6 +820,8 @@ class ChatEngine:
     async def history_for_turn(self, sid: str, text: str, images: list[Path] | None,
                                dispatch, documents: list[Path] | None = None,
                                system_override: str | None = None,
+                               reply_quote_text: str | None = None,
+                               reply_quote_role: str | None = None,
                                ) -> tuple[list[dict], str | None]:
         # A big PDF/XLSX can take real CPU time to parse; run it off the event
         # loop so it doesn't stall every other concurrent turn (web + Telegram
@@ -777,6 +831,16 @@ class ChatEngine:
                 self.history_with_context, sid, images, documents, system_override)
         else:
             history = self.history_with_context(sid, images, documents, system_override)
+        # Quote prefix is model-facing only — the stored row keeps the raw
+        # text plus the snippet/role separately for the UI's own quote box.
+        # reply_quote_text is the snippet itself (captured client-side at
+        # reply time), not a lookup, so this works even for a message that
+        # hasn't round-tripped a server id yet. Skipped when this turn's
+        # content became image/doc parts (a list, not str) above.
+        quote = format_reply_quote(reply_quote_role or "user", reply_quote_text or "")
+        if quote and history and history[-1]["role"] == "user" \
+                and isinstance(history[-1]["content"], str):
+            history[-1] = {**history[-1], "content": quote + history[-1]["content"]}
         # sid is an office session id when system_override is set — those live
         # in OfficeStore's own table, not here, so self.store.get_session(sid)
         # correctly returns None and sproj falls back to "no bound project"
@@ -1389,6 +1453,38 @@ class ChatEngine:
                 if name == "open_app":
                     return json.dumps(launcher.open_app(str(args.get("target") or "")),
                                       ensure_ascii=False)
+                if name == "github_review_pr":
+                    owner, repo, number = github_app.parse_pr_ref(str(args.get("pr") or ""))
+                    s = config.load_settings()
+                    sec = config.load_secrets()
+                    pr = await github_app.get_pr(owner, repo, number, sec)
+                    diff = await github_app.get_pr_diff(owner, repo, number, sec)
+                    review = await github_app.review_diff_with_llm(pr, diff, s, sec)
+                    # The write step (posting to GitHub) is always parked for
+                    # approval, unconditionally — unlike MCP tools, which only
+                    # gate on Settings.confirm_risky. Posting a review comment
+                    # is a public, visible-to-others action on a real PR; that
+                    # should never be a silent auto-execute regardless of the
+                    # general risk-confirmation toggle.
+                    pa = self.pending.add(
+                        "github__post_pr_review",
+                        {"owner": owner, "repo": repo, "number": number,
+                         "body": review["body"], "event": review["event"]},
+                        session_id, chat_id=chat_id or None,
+                        risk_note=f"Akan memposting review ({review['event']}) ke PR nyata: "
+                                  f"{pr.get('html_url', f'{owner}/{repo}#{number}')}")
+                    pending_created.append(pa)
+                    return json.dumps({
+                        "status": "pending_confirmation",
+                        "pending_id": pa.id,
+                        "pr_title": pr.get("title"),
+                        "pr_url": pr.get("html_url"),
+                        "recommended_event": review["event"],
+                        "review_preview": review["body"][:600],
+                        "note": ("Review sudah disiapkan tapi BELUM diposting ke GitHub — "
+                                 "menunggu persetujuan operator (tombol atau ucapkan "
+                                 "'konfirmasi' / 'batal'). JANGAN mengaku sudah memposting."),
+                    }, ensure_ascii=False)
                 # integrate_mcp/integrate_status/integrate_secret are NOT here —
                 # see Global Constraints: that wizard stays web-only, layered on
                 # top of this dispatch by web_ui.py (Task 3), not inside it.
@@ -1478,19 +1574,29 @@ class ChatEngine:
             msg = f"\u274c Aksi dibatalkan: {pa.summary()}."
             self.store.add_message(pa.conv_id, "assistant", msg)
             return {"id": pa.id, "approved": False, "tool": pa.tool, "message": msg}
-        hub = self.hub
-        if hub is None:
-            msg = f"\u26a0\ufe0f Tidak bisa menjalankan {pa.summary()}: MCP tidak tersedia."
-            self.store.add_message(pa.conv_id, "assistant", msg)
-            return {"id": pa.id, "approved": True, "resume": True,
-                    "error": "hub tidak tersedia", "message": msg}
         try:
-            result = await hub.call(pa.tool, pa.args)
+            native_result = await _execute_native_pending(pa.tool, pa.args)
         except Exception as e:
             safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
             msg = f"\u26a0\ufe0f Gagal menjalankan {pa.summary()}: {safe}"
             self.store.add_message(pa.conv_id, "assistant", msg)
             return {"id": pa.id, "approved": True, "resume": True, "error": safe, "message": msg}
+        if native_result is not None:
+            result = native_result
+        else:
+            hub = self.hub
+            if hub is None:
+                msg = f"\u26a0\ufe0f Tidak bisa menjalankan {pa.summary()}: MCP tidak tersedia."
+                self.store.add_message(pa.conv_id, "assistant", msg)
+                return {"id": pa.id, "approved": True, "resume": True,
+                        "error": "hub tidak tersedia", "message": msg}
+            try:
+                result = await hub.call(pa.tool, pa.args)
+            except Exception as e:
+                safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
+                msg = f"\u26a0\ufe0f Gagal menjalankan {pa.summary()}: {safe}"
+                self.store.add_message(pa.conv_id, "assistant", msg)
+                return {"id": pa.id, "approved": True, "resume": True, "error": safe, "message": msg}
         text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
         reason = mcp_hub.failure_reason(text)
         if reason:
@@ -1505,7 +1611,10 @@ class ChatEngine:
                        images: list[Path] | None = None, chat=None,
                        chat_id: int = 0, user_id: int = 0,
                        documents: list[Path] | None = None,
-                       system_prompt: str | None = None) -> dict:
+                       system_prompt: str | None = None,
+                       reply_snippet: str | None = None,
+                       reply_role: str | None = None,
+                       chat_model: str | None = None) -> dict:
         """One non-streaming conversational turn: record it, run the model
         (with auto-task routing and tool dispatch), persist the answer, learn
         from it. Used by both the web UI's non-streaming endpoint, every
@@ -1515,7 +1624,8 @@ class ChatEngine:
         text = (text or "").strip()
         self.store.add_message(session_id, "user", text
                                + (IMAGE_MARKER if images else "")
-                               + (DOCUMENT_MARKER if documents else ""))
+                               + (DOCUMENT_MARKER if documents else ""),
+                               reply_snippet=reply_snippet, reply_role=reply_role)
         dispatch = self.make_dispatch(session_id, images, chat_id=chat_id, user_id=user_id)
         if chat is None:
             s = config.load_settings()
@@ -1527,8 +1637,11 @@ class ChatEngine:
             try:
                 turn, auto_id = await self.history_for_turn(session_id, text, images,
                                                              dispatch, documents,
-                                                             system_override=system_prompt)
-                reply = await chat(turn, tools=await self.chat_tools(text), dispatch=dispatch)
+                                                             system_override=system_prompt,
+                                                             reply_quote_text=reply_snippet,
+                                                             reply_quote_role=reply_role)
+                reply = await chat(turn, tools=await self.chat_tools(text), dispatch=dispatch,
+                                   **({"model": chat_model} if chat_model else {}))
             except Exception as e:
                 safe = str(e).encode("ascii", "backslashreplace").decode("ascii")
                 reply = f"(Maaf, chat gagal: {safe})"
