@@ -45,10 +45,12 @@ export function renderMarkdown(src: string): string {
   // Links
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   
-  // Headers (multiline search)
-  s = s.replace(/^(\s*)### (.*)$/gm, '<h3>$2</h3>');
-  s = s.replace(/^(\s*)## (.*)$/gm, '<h2>$2</h2>');
-  s = s.replace(/^(\s*)# (.*)$/gm, '<h1>$2</h1>');
+  // Headers. One rule for all six levels, deepest-first by construction: the
+  // old per-level rules stopped at ### and left `#### Heading` on screen with
+  // its hashes, because a four-hash run matches none of `### `, `## `, `# `.
+  // Capped at six, which is where the spec stops — `#######` is text.
+  s = s.replace(/^[ \t]*(#{1,6}) +(.*)$/gm, (_m, hashes: string, body: string) =>
+    `<h${hashes.length}>${body.trim()}</h${hashes.length}>`);
 
   // Blockquotes
   s = s.replace(/^&gt; (.*)$/gm, '<blockquote class="md-blockquote">$1</blockquote>');
@@ -58,6 +60,13 @@ export function renderMarkdown(src: string): string {
 
   // Bullet lists
   s = s.replace(/^(\s*)[-*] +(.+)$/gm, '$1&bull; $2');
+
+  // Italics, deliberately after bullets and after bold: a leading `* item` is
+  // a list marker, not an opening emphasis, and by here it is already a
+  // bullet. Only asterisks — `_` emphasis stays unsupported on purpose, since
+  // one line naming `old_string` and `new_string` would otherwise go italic
+  // through the middle.
+  s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
   
   // Parse Tables
   const lines = s.split('\n');
@@ -115,11 +124,9 @@ export function renderMarkdown(src: string): string {
   for (let i = 0; i < newLines.length; i++) {
     const line = newLines[i];
     const trimmed = line.trim();
-    const isBlock = trimmed.startsWith('<table') || 
-                    trimmed.startsWith('<h1') || 
-                    trimmed.startsWith('<h2') || 
-                    trimmed.startsWith('<h3') || 
-                    trimmed.startsWith('<blockquote') || 
+    const isBlock = trimmed.startsWith('<table') ||
+                    /^<h[1-6][ >]/.test(trimmed) ||
+                    trimmed.startsWith('<blockquote') ||
                     trimmed.startsWith('<hr') ||
                     trimmed.startsWith('<pre') ||
                     trimmed.startsWith('</table');

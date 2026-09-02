@@ -5,6 +5,7 @@ import { useTasksContext } from '../api/events';
 import { Button } from './Button';
 import { Markdown } from './Markdown';
 import { findTaskIds, InlineTaskCard, ClaudeThinkingIndicator } from './TaskCard';
+import { CopyButton } from './CopyButton';
 import { useToast } from './Toast';
 import { useOfficeChatSession } from '../hooks/useOfficeChatSession';
 import {
@@ -362,6 +363,7 @@ export function OfficeUnifiedChat({
               <div key={i} className={`chat-message-row ${m.role}`}>
                 <div className="chat-author-line">
                   <span>{m.role === 'user' ? 'YOU' : employeeName.toUpperCase()}</span>
+                  <CopyButton text={m.content} />
                 </div>
                 <div className={`chat-bubble ${m.role}`}>
                   {m.role === 'user' ? (

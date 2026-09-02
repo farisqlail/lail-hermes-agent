@@ -166,8 +166,13 @@ a {
   letter-spacing: 0.1em;
 }
 
-/* Headings in chat thread */
-.chat-thread h1, .chat-thread h2, .chat-thread h3 {
+/* Headings in any rendered agent reply.
+   `.chat-thread` alone reached only the TaskDetail timeline — the main chat
+   uses `.chat-thread-container` and Office uses `.office-chat-messages-area`,
+   so a heading in either rendered at browser defaults. `.chat-bubble` is the
+   one class all three message surfaces share. */
+.chat-bubble :is(h1, h2, h3, h4, h5, h6),
+.chat-thread :is(h1, h2, h3, h4, h5, h6) {
   font-family: var(--font-title);
   color: var(--accent);
   margin-top: 18px;
@@ -178,16 +183,28 @@ a {
   text-shadow: 0 0 4px hsla(180, 100%, 50%, 0.3);
 }
 
+
+.chat-bubble h1,
 .chat-thread h1 {
   font-size: var(--t-xl);
   border-bottom: 1px dashed var(--border);
   padding-bottom: 4px;
 }
 
-.chat-thread h2 {
-  font-size: var(--t-lg);
-}
+.chat-bubble h2,
+.chat-thread h2 { font-size: var(--t-lg); }
 
-.chat-thread h3 {
-  font-size: var(--t-base);
+.chat-bubble h3,
+.chat-thread h3 { font-size: var(--t-base); }
+
+/* Deeper levels stop shrinking and drop the uppercase shout — at h4 a heading
+   is a sub-section label inside a reply, not a banner. */
+.chat-bubble :is(h4, h5, h6),
+.chat-thread :is(h4, h5, h6) {
+  font-size: var(--t-sm, 12px);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  margin-top: 12px;
+  color: var(--text);
+  text-shadow: none;
 }

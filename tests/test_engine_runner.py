@@ -237,37 +237,104 @@ async def test_run_engine_skips_mcp_config_without_both_url_and_token(tmp_path, 
                                          ask_url="http://x/mcp", ask_token="")
     assert "--mcp-config" not in res.stdout
 
-class _FakeProc:
-    def __init__(self, delay, result=(b"out", b"err")):
-        self._delay, self._result = delay, result
-    async def communicate(self, send=None):
-        await asyncio.sleep(self._delay)
-        return self._result
+async def _sleeper(delay, result=(b"out", b"err")):
+    await asyncio.sleep(delay)
+    return result
 
 
-async def test_communicate_within_returns_when_proc_beats_the_deadline():
+async def test_await_within_returns_when_work_beats_the_deadline():
     from hermes.ask import Deadline
-    out, err = await engine_runner._communicate_within(
-        _FakeProc(0.01), None, Deadline(100), poll_s=0.005)
+    out, err = await engine_runner._await_within(
+        _sleeper(0.01), Deadline(100), poll_s=0.005)
     assert (out, err) == (b"out", b"err")
 
 
-async def test_communicate_within_raises_when_the_deadline_expires():
+async def test_await_within_raises_when_the_deadline_expires():
     from hermes.ask import Deadline
     with pytest.raises(asyncio.TimeoutError):
-        await engine_runner._communicate_within(
-            _FakeProc(10), None, Deadline(0), poll_s=0.005)
+        await engine_runner._await_within(_sleeper(10), Deadline(0), poll_s=0.005)
 
 
-async def test_communicate_within_survives_a_paused_deadline():
+async def test_await_within_survives_a_paused_deadline():
     """The whole reason Deadline exists: a paused clock (operator thinking)
     must not kill an engine that runs past its budget while blocked on ask."""
     from hermes.ask import Deadline
     d = Deadline(0.02)
     d.pause()
-    out, _ = await engine_runner._communicate_within(
-        _FakeProc(0.05), None, d, poll_s=0.005)
+    out, _ = await engine_runner._await_within(_sleeper(0.05), d, poll_s=0.005)
     assert out == b"out"
+
+
+async def _spawn(code: str, stdin_pipe: bool = False):
+    return await asyncio.create_subprocess_exec(
+        sys.executable, "-c", code,
+        stdin=asyncio.subprocess.PIPE if stdin_pipe else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+
+
+async def test_pump_streams_each_line_and_still_returns_the_whole_output():
+    """The live timeline reads the callback; the envelope parser reads the
+    return value. Both must see everything, in order."""
+    proc = await _spawn(
+        "import sys\n"
+        "for i in range(3):\n"
+        "    print('line%d' % i, flush=True)\n"
+        "sys.stderr.write('warned\\n')\n")
+    seen = []
+    out, err = await engine_runner._pump(proc, None, seen.append)
+    assert seen == ["line0", "line1", "line2"]
+    assert out.decode().splitlines() == ["line0", "line1", "line2"]
+    assert b"warned" in err
+
+
+async def test_pump_writes_stdin_and_closes_it():
+    proc = await _spawn("import sys; sys.stdout.write(sys.stdin.read().upper())",
+                        stdin_pipe=True)
+    out, _ = await engine_runner._pump(proc, b"hello", None)
+    assert out.decode().strip() == "HELLO"
+
+
+async def test_pump_does_not_deadlock_on_a_noisy_stderr():
+    """communicate() drained both pipes; so must this. A child that fills its
+    stderr pipe blocks forever if only stdout is being read."""
+    proc = await _spawn(
+        "import sys\n"
+        "sys.stderr.write('x' * 200000)\n"
+        "print('done', flush=True)\n")
+    out, err = await asyncio.wait_for(engine_runner._pump(proc, None, None), timeout=30)
+    assert out.decode().strip() == "done"
+    assert len(err) == 200000
+
+
+async def test_pump_survives_a_callback_that_raises():
+    """A broken trace consumer must not take down a run whose work is fine."""
+    proc = await _spawn("print('still delivered', flush=True)")
+
+    def boom(_line):
+        raise RuntimeError("consumer exploded")
+
+    out, _ = await engine_runner._pump(proc, None, boom)
+    assert out.decode().strip() == "still delivered"
+
+
+async def test_pump_handles_a_line_far_past_the_stream_reader_limit():
+    """A tool result serialised into one JSON line dwarfs asyncio's 64 KiB
+    readline limit. Chunked reading must deliver it whole, both to the callback
+    and in the returned stdout the envelope parser reads."""
+    huge = "y" * 300000
+    proc = await _spawn("print('y' * 300000, flush=True)")
+    seen = []
+    out, _ = await engine_runner._pump(proc, None, seen.append)
+    assert seen == [huge]
+    assert out.decode().strip() == huge
+
+
+async def test_pump_emits_a_final_line_with_no_trailing_newline():
+    proc = await _spawn("import sys; sys.stdout.write('no newline here')")
+    seen = []
+    out, _ = await engine_runner._pump(proc, None, seen.append)
+    assert seen == ["no newline here"]
+    assert out == b"no newline here"
 
 
 async def test_run_engine_honours_a_supplied_deadline(tmp_path, fake_echo):

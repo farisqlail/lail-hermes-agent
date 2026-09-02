@@ -9,8 +9,9 @@ API failed".
 
 Kept as pure functions with no I/O so the awkward shapes — truncated JSON, a
 warning line ahead of the envelope, a missing field — are cheap to pin down in
-tests. `antigravity` has no equivalent flag (verified against `agy --help`,
-2026-07-21), so it never reaches this module and stays on text.
+tests. `agy` gained its own `--output-format` after this module was written
+(verified against `agy --help`, 2026-09-02) and now has a parser here too; its
+envelope shares nothing with claude's but the word "result".
 """
 from __future__ import annotations
 import json
@@ -92,6 +93,39 @@ def _api_error(data: dict) -> str | None:
 
 def _opt(value, kind):
     return value if isinstance(value, kind) else None
+
+
+def parse_agy_stream(stdout: str) -> EngineOutcome | None:
+    """Parse the closing event of `agy --output-format stream-json`.
+
+    Required, not a bonus: switching agy to stream-json turns its stdout from
+    prose into JSONL, so without a parser here `RunResult.final_text` falls
+    back to raw stdout and every reader of it — completion detection, the chat
+    report — would be handed a wall of JSON instead of the answer.
+
+    Its envelope is nothing like claude's: keyed `event`, payload nested under
+    `result`, status a string rather than an `is_error` flag, and no cost at
+    all. It does carry `conversation_id`, which print mode used not to expose —
+    see engine_runner.RESUMABLE.
+    """
+    for data in _result_objects(stdout):
+        if data.get("event") != _RESULT_TYPE:
+            continue
+        body = data.get("result")
+        if not isinstance(body, dict):
+            continue
+        response = body.get("response")
+        status = body.get("status")
+        return EngineOutcome(
+            final_text=response if isinstance(response, str) else "",
+            session_id=_opt(body.get("conversation_id"), str),
+            # agy reports tokens, never money.
+            cost_usd=None,
+            usage=_opt(body.get("usage"), dict),
+            num_turns=_opt(body.get("num_turns"), int),
+            api_error=None if status in (None, "SUCCESS") else str(status),
+        )
+    return None
 
 
 def parse_claude_json(stdout: str) -> EngineOutcome | None:

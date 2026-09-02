@@ -28,6 +28,12 @@ from .chat_engine import DOCUMENT_MARKER, IMAGE_MARKER, RESUME_NUDGE
 from .office_store import OfficeStore
 from .project_resolve import resolve_project
 
+# Stamped on every task this module starts, in `tasks.origin`. An Office task
+# belongs to an employee rather than to a chat, so it has no session_id — which
+# left the UI unable to tell it from any other session-less task, and sending
+# "back" from its detail page to the dashboard instead of the Office.
+TASK_ORIGIN = "office"
+
 # Energy is 0-100. BURNOUT_THRESHOLD is when a working employee is forced onto
 # a break; RECOVERY_THRESHOLD is when a resting employee is considered fit to
 # work again. The gap between them (not a single threshold) is what stops an
@@ -236,9 +242,11 @@ class OfficeManager:
         self.store.update_employee(employee["employee_id"], status="working")
         # chat_id=0: a real, visible task — same sentinel a normal web-submitted
         # task gets (web_ui.py's `/task` branch), so it shows up in the regular
-        # Dashboard/TaskDetail like any other task. `work_items.employee_id` is
-        # what marks it as Office-originated, not a new chat_id sentinel.
-        self.main_store.create_task(task_id, chat_id=0, text=prompt, session_id=None)
+        # Dashboard/TaskDetail like any other task. `work_items.employee_id`
+        # still says who did it; `origin` says where it came from, which is what
+        # the detail page needs to send "back" to the Office.
+        self.main_store.create_task(task_id, chat_id=0, text=prompt, session_id=None,
+                                    origin=TASK_ORIGIN)
 
         async def report(tid, msg, html=False):
             # No chat channel to notify — step-by-step progress already lands
@@ -536,7 +544,8 @@ class OfficeManager:
         task_id = new_task_id()
         self.store.update_work_item(work_id, task_id=task_id, status="running")
         self.store.update_employee(employee["employee_id"], status="working")
-        self.main_store.create_task(task_id, chat_id=0, text=prompt, session_id=None)
+        self.main_store.create_task(task_id, chat_id=0, text=prompt, session_id=None,
+                                    origin=TASK_ORIGIN)
 
         async def report(tid, msg, html=False):
             pass

@@ -193,3 +193,33 @@ def test_scheduled_jobs_crud(tmp_path):
     assert s.delete_scheduled_job("j1") is True
     assert s.get_scheduled_job("j1") is None
 
+
+
+def test_task_origin_defaults_to_none_and_round_trips(tmp_path):
+    """`origin` says where a task came from when `session_id` cannot — an
+    Office task belongs to an employee, not to a conversation."""
+    s = Store(tmp_path / "t.db"); s.init_schema()
+    s.create_task("plain", chat_id=-1, text="from the web", session_id="sess1")
+    s.create_task("office", chat_id=0, text="from an employee", origin="office")
+
+    assert s.get_task("plain")["origin"] is None
+    assert s.get_task("office")["origin"] == "office"
+    assert s.get_task("office")["session_id"] is None
+
+
+def test_origin_column_is_added_to_a_pre_existing_tasks_table(tmp_path):
+    """The migration path: a database written before the column existed must
+    keep working, which is why init_schema pairs CREATE with ALTER."""
+    import sqlite3
+    db = tmp_path / "old.db"
+    con = sqlite3.connect(str(db))
+    with con:
+        con.execute("CREATE TABLE tasks(task_id TEXT PRIMARY KEY, chat_id INTEGER, "
+                    "text TEXT, status TEXT, created REAL)")
+        con.execute("INSERT INTO tasks VALUES('legacy', 7, 'old task', 'done', 1.0)")
+    con.close()
+
+    s = Store(db); s.init_schema()
+    assert s.get_task("legacy")["origin"] is None
+    s.create_task("new", chat_id=0, text="after migration", origin="office")
+    assert s.get_task("new")["origin"] == "office"

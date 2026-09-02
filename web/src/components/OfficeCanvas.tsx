@@ -4,6 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { Employee } from '../api/types';
+import { formatElapsed, thinkingText } from './TaskCard';
 import {
   Maximize2,
   Minimize2,
@@ -25,6 +26,9 @@ interface OfficeCanvasProps {
   onSelectEmployee?: (employee: Employee) => void;
   selectedEmployeeId?: string | null;
   speakingEmployeeId?: string | null;
+  /** Live "what is this employee doing", keyed by employee id. Absent entry =
+   *  no overhead work bubble, even if the roster says `working`. */
+  workActivity?: Record<string, WorkActivity>;
   isChatOpen?: boolean;
   onToggleChat?: () => void;
   focusEmployeeId?: string | null;
@@ -305,12 +309,79 @@ function createSpeechBubbleSprite(): THREE.Sprite {
   return sprite;
 }
 
+/** What one employee is working on right now, as fed to the overhead bubble.
+ *  `line`/`lineTs` are the live log line off the task SSE stream; when they go
+ *  stale the bubble falls back to `prompt`, the task it was actually given. */
+export interface WorkActivity {
+  prompt: string;
+  /** Unix seconds the work item started — drives the elapsed counter. */
+  since: number;
+  line?: string;
+  lineTs?: number;
+}
+
+const WORK_BUBBLE_W = 512;
+const WORK_BUBBLE_H = 96;
+/** Overhead bubbles repaint at ~2.5 fps, not per frame: redrawing a canvas
+ *  texture and re-uploading it to the GPU 60 times a second for a label that
+ *  changes about once a second is pure waste. */
+const WORK_BUBBLE_REDRAW_MS = 400;
+
+function drawWorkBubble(canvas: HTMLCanvasElement, text: string) {
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = 'rgba(8, 15, 26, 0.92)';
+  ctx.beginPath();
+  ctx.roundRect(2, 2, canvas.width - 4, canvas.height - 4, 20);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#38bdf8';
+  ctx.font = 'bold 40px sans-serif';
+  ctx.fillText('✦', 24, canvas.height / 2);
+
+  ctx.fillStyle = '#e2e8f0';
+  ctx.font = '32px sans-serif';
+  // Canvas text has no ellipsis mode, so trim by measurement until it fits.
+  const maxWidth = canvas.width - 100;
+  let label = text;
+  if (ctx.measureText(label).width > maxWidth) {
+    while (label.length > 1 && ctx.measureText(label + '…').width > maxWidth) {
+      label = label.slice(0, -1);
+    }
+    label += '…';
+  }
+  ctx.fillText(label, 72, canvas.height / 2);
+}
+
+function createWorkBubbleSprite(): { sprite: THREE.Sprite; canvas: HTMLCanvasElement } {
+  const canvas = document.createElement('canvas');
+  canvas.width = WORK_BUBBLE_W;
+  canvas.height = WORK_BUBBLE_H;
+  drawWorkBubble(canvas, '');
+
+  const texture = new THREE.CanvasTexture(canvas);
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(2.4, 0.45, 1);
+  return { sprite, canvas };
+}
+
 interface AvatarMeshGroup {
   group: THREE.Group;
   haloRing: THREE.Mesh;
   auraRing: THREE.Mesh;
   nameSprite: THREE.Sprite;
   speechBubble: THREE.Sprite;
+  workBubble: THREE.Sprite;
+  workBubbleCanvas: HTMLCanvasElement;
+  workBubbleText: string;
+  workBubbleDrawnAt: number;
   // Box-people fields (present when rigged === false)
   bodyMesh?: THREE.Mesh;
   headMesh?: THREE.Mesh;
@@ -349,6 +420,14 @@ function createOverheadUI(group: THREE.Group, emp: Employee, isSelected: boolean
   speechBubble.visible = false;
   group.add(speechBubble);
 
+  // Shares the speech bubble's slot above the name tag rather than stacking a
+  // second bubble on top: an employee is either mid-chat or heads-down, and
+  // two floating panels over one head reads as clutter from the overview cam.
+  const { sprite: workBubble, canvas: workBubbleCanvas } = createWorkBubbleSprite();
+  workBubble.position.set(0, 2.95, 0);
+  workBubble.visible = false;
+  group.add(workBubble);
+
   const haloGeo = new THREE.RingGeometry(0.45, 0.55, 32);
   haloGeo.rotateX(-Math.PI / 2);
   const haloMat = new THREE.MeshBasicMaterial({
@@ -374,7 +453,7 @@ function createOverheadUI(group: THREE.Group, emp: Employee, isSelected: boolean
   auraRing.position.set(0, 0.08, 0);
   group.add(auraRing);
 
-  return { nameSprite, speechBubble, haloRing, auraRing };
+  return { nameSprite, speechBubble, workBubble, workBubbleCanvas, haloRing, auraRing };
 }
 
 function buildBoxAvatar(group: THREE.Group, emp: Employee, chosenPoi: OfficePOI, isSelected: boolean): AvatarMeshGroup {
@@ -450,7 +529,7 @@ function buildBoxAvatar(group: THREE.Group, emp: Employee, chosenPoi: OfficePOI,
   rightLegPivot.add(rightLeg);
   group.add(rightLegPivot);
 
-  const { nameSprite, speechBubble, haloRing, auraRing } = createOverheadUI(group, emp, isSelected);
+  const { nameSprite, speechBubble, workBubble, workBubbleCanvas, haloRing, auraRing } = createOverheadUI(group, emp, isSelected);
 
   return {
     group,
@@ -461,6 +540,10 @@ function buildBoxAvatar(group: THREE.Group, emp: Employee, chosenPoi: OfficePOI,
     auraRing,
     nameSprite,
     speechBubble,
+    workBubble,
+    workBubbleCanvas,
+    workBubbleText: '',
+    workBubbleDrawnAt: 0,
     leftArmPivot,
     rightArmPivot,
     leftLegPivot,
@@ -503,7 +586,7 @@ function buildRiggedAvatar(
   const initialKey: RiggedActionKey | undefined = actions.idle ? 'idle' : (Object.keys(actions)[0] as RiggedActionKey | undefined);
   if (initialKey) actions[initialKey]!.play();
 
-  const { nameSprite, speechBubble, haloRing, auraRing } = createOverheadUI(group, emp, isSelected);
+  const { nameSprite, speechBubble, workBubble, workBubbleCanvas, haloRing, auraRing } = createOverheadUI(group, emp, isSelected);
 
   return {
     group,
@@ -515,6 +598,10 @@ function buildRiggedAvatar(
     auraRing,
     nameSprite,
     speechBubble,
+    workBubble,
+    workBubbleCanvas,
+    workBubbleText: '',
+    workBubbleDrawnAt: 0,
     currentX: chosenPoi.x,
     currentZ: chosenPoi.z,
     targetX: chosenPoi.x,
@@ -534,11 +621,16 @@ export function OfficeCanvas({
   onSelectEmployee,
   selectedEmployeeId,
   speakingEmployeeId,
+  workActivity,
   isChatOpen,
   onToggleChat,
   focusEmployeeId,
   children,
 }: OfficeCanvasProps) {
+  // The render loop is built once and closes over its first render's props,
+  // so live work labels reach it through a ref rather than a dependency.
+  const workActivityRef = useRef<Record<string, WorkActivity>>({});
+  workActivityRef.current = workActivity || {};
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -1144,6 +1236,9 @@ export function OfficeCanvas({
       timer.update(timestamp);
       const delta = timer.getDelta();
       const time = timer.getElapsed();
+      // Wall clock, not the render timer: work bubbles show elapsed against
+      // task timestamps, which are absolute.
+      const nowMs = Date.now();
 
       if (cameraRef.current && controlsRef.current) {
         if (isTransitioningRef.current) {
@@ -1272,6 +1367,25 @@ export function OfficeCanvas({
           const bubblePulse = 1 + Math.sin(time * 5) * 0.1;
           av.speechBubble.scale.set(0.5 * bubblePulse, 0.5 * bubblePulse, 1);
         }
+
+        // Overhead "genuinely working" label. Chat wins the slot when the
+        // employee is mid-reply, so the two bubbles never overlap.
+        const work = workActivityRef.current[av.employeeId];
+        const showWork = !!work && !av.speechBubble.visible && av.zoneStatus === 'working';
+        av.workBubble.visible = showWork;
+        if (showWork && nowMs - av.workBubbleDrawnAt >= WORK_BUBBLE_REDRAW_MS) {
+          av.workBubbleDrawnAt = nowMs;
+          const activity = work.line !== undefined && work.lineTs !== undefined
+            ? { line: work.line, ts: work.lineTs }
+            : undefined;
+          const label = `${thinkingText(activity, work.prompt, nowMs)} · ${formatElapsed(nowMs / 1000 - work.since)}`;
+          if (label !== av.workBubbleText) {
+            av.workBubbleText = label;
+            drawWorkBubble(av.workBubbleCanvas, label);
+            const map = av.workBubble.material.map;
+            if (map) map.needsUpdate = true;
+          }
+        }
       });
 
       matScreenGlow.emissiveIntensity = anyWorking ? 0.75 + Math.sin(time * 3) * 0.25 : 0.8;
@@ -1326,6 +1440,8 @@ export function OfficeCanvas({
         av.nameSprite.material.dispose();
         av.speechBubble.material.map?.dispose();
         av.speechBubble.material.dispose();
+        av.workBubble.material.map?.dispose();
+        av.workBubble.material.dispose();
         currentMap.delete(id);
       }
     });

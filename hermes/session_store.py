@@ -140,7 +140,7 @@ class Store:
                 """
                 CREATE TABLE IF NOT EXISTS tasks(
                   task_id TEXT PRIMARY KEY, chat_id INTEGER, text TEXT,
-                  status TEXT, created REAL, session_id TEXT);
+                  status TEXT, created REAL, session_id TEXT, origin TEXT);
                 CREATE TABLE IF NOT EXISTS sessions(
                   session_id TEXT PRIMARY KEY, title TEXT, created REAL);
                 CREATE TABLE IF NOT EXISTS steps(
@@ -152,6 +152,18 @@ class Store:
                 CREATE TABLE IF NOT EXISTS artifacts(
                   id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
                   kind TEXT, path TEXT);
+                -- What the engine actually did, distilled from its
+                -- stream-json output (see hermes/engine_stream.py). Flat
+                -- columns rather than a JSON blob so the timeline can be
+                -- queried and rendered without re-parsing the CLI's shape.
+                CREATE TABLE IF NOT EXISTS trace_events(
+                  id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
+                  step_idx INTEGER, seq INTEGER, ts REAL, kind TEXT,
+                  text TEXT, tool_name TEXT, tool_use_id TEXT,
+                  tool_input TEXT, file_path TEXT, ok INTEGER,
+                  tokens_in INTEGER, tokens_out INTEGER, cost_usd REAL);
+                CREATE INDEX IF NOT EXISTS idx_trace_task
+                  ON trace_events(task_id, id);
                 CREATE TABLE IF NOT EXISTS messages(
                   id INTEGER PRIMARY KEY AUTOINCREMENT, conv_id TEXT,
                   role TEXT, content TEXT, ts REAL);
@@ -167,6 +179,10 @@ class Store:
             )
             try:
                 c.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                c.execute("ALTER TABLE tasks ADD COLUMN origin TEXT")
             except sqlite3.OperationalError:
                 pass
             try:
@@ -283,10 +299,21 @@ class Store:
             rows = c.execute("SELECT * FROM sessions ORDER BY created DESC").fetchall()
             return [dict(r) for r in rows]
 
-    def create_task(self, task_id, chat_id, text, session_id=None):
+    def create_task(self, task_id, chat_id, text, session_id=None, origin=None):
+        """`origin` names where the task was started from, when that is not
+        already implied by `session_id`.
+
+        Office tasks carry no chat session (they belong to an employee, not a
+        conversation), so without this they are indistinguishable from a plain
+        session-less task — and the UI cannot tell that "back" should return to
+        the Office rather than the dashboard. Recorded explicitly rather than
+        inferred from `chat_id == 0 and session_id is None`, which would
+        silently start mislabelling the day another caller shares that shape.
+        """
         with self._conn() as c:
-            c.execute("INSERT INTO tasks(task_id, chat_id, text, status, created, session_id) VALUES(?,?,?,?,?,?)",
-                      (task_id, chat_id, text, "queued", time.time(), session_id))
+            c.execute("INSERT INTO tasks(task_id, chat_id, text, status, created, session_id, origin) "
+                      "VALUES(?,?,?,?,?,?,?)",
+                      (task_id, chat_id, text, "queued", time.time(), session_id, origin))
         self.publish({"type": "task_created", "task_id": task_id, "session_id": session_id})
 
     def set_task_status(self, task_id, status):
@@ -341,6 +368,51 @@ class Store:
                       (task_id, time.time(), line))
         self.publish({"type": "log_appended", "task_id": task_id, "line": line})
 
+    # A runaway task must not be able to grow the database without bound. Past
+    # this many events the trace stops recording and says so, rather than
+    # silently going quiet.
+    TRACE_EVENT_CAP = 5000
+
+    def count_trace_events(self, task_id) -> int:
+        with self._conn() as c:
+            r = c.execute("SELECT COUNT(*) AS n FROM trace_events WHERE task_id=?",
+                          (task_id,)).fetchone()
+            return int(r["n"]) if r else 0
+
+    def add_trace_event(self, task_id, step_idx, seq, ev) -> None:
+        """Persist one distilled `engine_stream.TraceEvent` and publish it.
+
+        The SSE payload carries the event itself rather than a "go refetch"
+        nudge: this is the live timeline, and a round trip per tool call would
+        make it lag behind the engine.
+        """
+        row = {
+            "task_id": task_id, "step_idx": step_idx, "seq": seq, "ts": time.time(),
+            "kind": ev.kind, "text": ev.text, "tool_name": ev.tool_name,
+            "tool_use_id": ev.tool_use_id, "tool_input": ev.tool_input,
+            "file_path": ev.file_path,
+            "ok": None if ev.ok is None else int(ev.ok),
+            "tokens_in": ev.tokens_in, "tokens_out": ev.tokens_out,
+            "cost_usd": ev.cost_usd,
+        }
+        with self._conn() as c:
+            cur = c.execute(
+                "INSERT INTO trace_events(task_id,step_idx,seq,ts,kind,text,tool_name,"
+                "tool_use_id,tool_input,file_path,ok,tokens_in,tokens_out,cost_usd) "
+                "VALUES(:task_id,:step_idx,:seq,:ts,:kind,:text,:tool_name,"
+                ":tool_use_id,:tool_input,:file_path,:ok,:tokens_in,:tokens_out,:cost_usd)",
+                row)
+            row_id = cur.lastrowid
+        self.publish({"type": "trace_event", "task_id": task_id,
+                      "event": {"id": row_id, **row}})
+
+    def get_trace_events(self, task_id, after_id: int = 0, limit: int = 2000):
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM trace_events WHERE task_id=? AND id>? "
+                "ORDER BY id LIMIT ?", (task_id, after_id, limit)).fetchall()
+            return [dict(r) for r in rows]
+
     def add_artifact(self, task_id, kind, path):
         with self._conn() as c:
             c.execute("INSERT INTO artifacts(task_id,kind,path) VALUES(?,?,?)",
@@ -356,6 +428,19 @@ class Store:
         with self._conn() as c:
             rows = c.execute(
                 "SELECT * FROM tasks ORDER BY created DESC LIMIT ?", (limit,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_steps(self, task_id):
+        """The planner's steps for one task, in plan order.
+
+        Ordered by `id` rather than `idx`: a repair step is inserted with the
+        index of the step it fixes, so ordering by idx would interleave a fix
+        with the original it followed.
+        """
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, idx, kind, detail, status FROM steps "
+                "WHERE task_id=? ORDER BY id", (task_id,)).fetchall()
             return [dict(r) for r in rows]
 
     def get_logs(self, task_id):

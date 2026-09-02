@@ -1,9 +1,18 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { Task } from './types';
+import type { TraceEvent } from './trace';
 import { sharedSpeechQueue } from '../audio';
 import { loadTtsSettings, speechRequestFor, TTS_VOICE_DEFAULT } from '../tts';
 import type { SpeakEvent, TtsSettings } from '../tts';
 import { api } from './client';
+
+/** Newest log line seen for one task, stamped with the browser clock on
+ *  arrival — the server's `log_appended` carries no timestamp, and comparing
+ *  against `Date.now()` in the indicator keeps both ends on one clock. */
+export interface TaskActivity {
+  line: string;
+  ts: number;
+}
 
 interface TasksContextType {
   tasks: Task[];
@@ -12,6 +21,15 @@ interface TasksContextType {
   refresh: () => Promise<void>;
   isConnected: boolean;
   lastEventTimestamp: number;
+  /** Live "what is it doing right now", keyed by task id. Feeds the running
+   *  indicator so it shows real output instead of a canned phrase. */
+  activity: Record<string, TaskActivity>;
+  /** Distilled engine trace for the one task a detail view is watching. */
+  trace: TraceEvent[];
+  /** Point the trace subscription at a task, or null to stop. Deliberately one
+   *  task at a time: a session-wide map would accumulate thousands of rows per
+   *  task visited and never let them go. */
+  watchTrace: (taskId: string | null) => void;
 }
 
 const TasksContext = createContext<TasksContextType | undefined>(undefined);
@@ -30,6 +48,18 @@ export function TasksProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [lastEventTimestamp, setLastEventTimestamp] = useState<number>(0);
+  const [activity, setActivity] = useState<Record<string, TaskActivity>>({});
+  const [trace, setTrace] = useState<TraceEvent[]>([]);
+  const [traceTaskId, setTraceTaskId] = useState<string | null>(null);
+  // The SSE handler is built once, so it reads the watched id from a ref
+  // rather than closing over the first render's value.
+  const traceTaskIdRef = useRef<string | null>(null);
+
+  const watchTrace = useCallback((taskId: string | null) => {
+    traceTaskIdRef.current = taskId;
+    setTraceTaskId(taskId);
+    setTrace([]);
+  }, []);
   
   // Voice settings for server-driven speech. Read once on mount and kept in a
   // ref: the SSE handler is created once, so reading state there would pin the
@@ -102,6 +132,31 @@ export function TasksProvider({ children }: { children: React.ReactNode }) {
         const data = JSON.parse(event.data);
         if (data.type === 'keep-alive') return;
         if (data.type === 'speak') { handleSpeak(data as SpeakEvent); return; }
+        // `log_appended` already carries the line, so record it as this task's
+        // current activity rather than making the running indicator poll for
+        // it. Still falls through to the refetch below: detail views watch
+        // `lastEventTimestamp` to pull fresh logs.
+        // Returns early on purpose: a trace event changes neither the task
+        // list nor its logs, and these arrive per tool call — falling through
+        // to the refetch below would put the whole task list on the wire
+        // hundreds of times per run.
+        if (data.type === 'trace_event') {
+          if (data.task_id === traceTaskIdRef.current && data.event) {
+            setTrace((prev) => {
+              const last = prev.length > 0 ? prev[prev.length - 1].id : 0;
+              // Ids only grow, so anything at or below the tail is a duplicate
+              // of what the post-reconnect refetch already pulled in.
+              return data.event.id <= last ? prev : [...prev, data.event];
+            });
+          }
+          return;
+        }
+        if (data.type === 'log_appended' && typeof data.task_id === 'string') {
+          setActivity((prev) => ({
+            ...prev,
+            [data.task_id]: { line: typeof data.line === 'string' ? data.line : '', ts: Date.now() },
+          }));
+        }
         fetchTasksDebounced();
       } catch (e) {
         console.error('[SSE] Failed to parse event data:', e);
@@ -135,6 +190,18 @@ export function TasksProvider({ children }: { children: React.ReactNode }) {
       .catch(() => {});
   }, []);
 
+  // Initial load, and the gap-fill after a dropped SSE connection: rows that
+  // arrived while the stream was down are only reachable over HTTP.
+  useEffect(() => {
+    if (!traceTaskId) return;
+    let cancelled = false;
+    fetch(`/api/tasks/${traceTaskId}/trace`)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((rows: TraceEvent[]) => { if (!cancelled) setTrace(rows); })
+      .catch(() => { /* a missing trace is an empty timeline, not an error */ });
+    return () => { cancelled = true; };
+  }, [traceTaskId, isConnected]);
+
   useEffect(() => {
     fetchTasks();
     connectSSE();
@@ -147,7 +214,7 @@ export function TasksProvider({ children }: { children: React.ReactNode }) {
   }, [fetchTasks, connectSSE]);
 
   return (
-    <TasksContext.Provider value={{ tasks, loading, error, refresh: fetchTasks, isConnected, lastEventTimestamp }}>
+    <TasksContext.Provider value={{ tasks, loading, error, refresh: fetchTasks, isConnected, lastEventTimestamp, activity, trace, watchTrace }}>
       {children}
     </TasksContext.Provider>
   );

@@ -6,6 +6,10 @@ import { Markdown } from '../components/Markdown';
 import { Button } from '../components/Button';
 import { Field } from '../components/Field';
 import { useToast } from '../components/Toast';
+import { ClaudeThinkingIndicator } from '../components/TaskCard';
+import { PlanList, TraceHeader, TraceSummary, TraceTimeline } from '../components/TraceTimeline';
+import { planTodos, sessionInfo } from '../api/trace';
+import { ArrowLeft } from 'lucide-react';
 import { useTasksContext } from '../api/events';
 
 interface CollapsibleLogsProps {
@@ -72,9 +76,17 @@ function CollapsibleLogs({ logs }: CollapsibleLogsProps) {
 }
 
 export function TaskDetail() {
-  const { taskId } = useRoute();
+  const { taskId, navigate } = useRoute();
   const { task: taskData, loading, error, refresh } = useTask(taskId);
-  const { refresh: refreshGlobalTasks } = useTasksContext();
+  const { refresh: refreshGlobalTasks, activity, trace, watchTrace } = useTasksContext();
+
+  // Only the open task's trace is accumulated, so the subscription is tied to
+  // this view's lifetime rather than the session's.
+  useEffect(() => {
+    if (!taskId) return;
+    watchTrace(taskId);
+    return () => watchTrace(null);
+  }, [taskId, watchTrace]);
   const { toast } = useToast();
 
   const [confirming, setConfirming] = useState(false);
@@ -94,6 +106,27 @@ export function TaskDetail() {
     }
   }, [taskData, autoScroll]);
 
+  /** Return to wherever this task was opened from.
+   *
+   * History first, because a task is reached from several places — the main
+   * chat, an Office employee's chat, the session list — and only the history
+   * knows which. `length > 1` is the guard for the other case: a `#/task/<id>`
+   * link opened cold in a new tab has nothing to go back to, and calling
+   * back() there would leave the app entirely.
+   *
+   * Declared above the early returns so the error state gets it too: a task
+   * that fails to load otherwise leaves no way out but the browser chrome.
+   */
+  const goBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      window.history.back();
+      return;
+    }
+    const task = taskData?.task;
+    if (task?.origin === 'office') return navigate('#/office');
+    navigate(task?.session_id ? `#/session/${task.session_id}` : '#/');
+  };
+
   if (loading && !taskData) {
     return <div style={{ color: 'var(--text-dim)' }}>Memuat detail tugas...</div>;
   }
@@ -102,12 +135,16 @@ export function TaskDetail() {
     return (
       <div style={{ padding: '16px', backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--err)', borderRadius: 'var(--r-md)', color: 'var(--err)', display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'flex-start' }}>
         <span>{error || 'Tugas tidak ditemukan.'}</span>
-        <Button variant="danger" type="button" onClick={refresh}>Coba Lagi</Button>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <Button variant="danger" type="button" onClick={refresh}>Coba Lagi</Button>
+          <Button variant="secondary" type="button" onClick={goBack}>Kembali</Button>
+        </div>
       </div>
     );
   }
 
-  const { task, logs, artifacts, pending_confirm, pending_ask } = taskData;
+  const { task, logs, artifacts, steps, pending_confirm, pending_ask } = taskData;
+  const { engine, project } = sessionInfo(logs || []);
   const timeline = parseLogsToMessages(task, logs || [], artifacts || []);
 
   const handleConfirm = async (approved: boolean) => {
@@ -194,13 +231,31 @@ export function TaskDetail() {
       {/* Task Header */}
       <header className="page-header" style={{ flexShrink: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', minWidth: 0 }}>
+            <button
+              type="button"
+              onClick={goBack}
+              aria-label="Back"
+              title="Back"
+              style={{
+                display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px',
+                padding: '4px 8px', flexShrink: 0, cursor: 'pointer',
+                background: 'transparent', color: 'var(--text-dim)',
+                border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
+                fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)',
+              }}
+            >
+              <ArrowLeft size={13} />
+              Back
+            </button>
+          <div style={{ minWidth: 0 }}>
             <h1 className="page-title" style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-lg)' }}>
               Task: {task.task_id}
             </h1>
             <p className="page-subtitle" style={{ fontSize: 'var(--t-base)', color: 'var(--text)', marginTop: '4px' }}>
               {task.text}
             </p>
+          </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <span
@@ -233,6 +288,22 @@ export function TaskDetail() {
               {task.status.toUpperCase()}
             </span>
           </div>
+        </div>
+
+        {/* Long tasks can go minutes without emitting a log line — this is the
+            only thing on the page that keeps moving while that happens. */}
+        {(task.status === 'running' || task.status === 'queued') && (
+          <div style={{ marginTop: '8px' }}>
+            <ClaudeThinkingIndicator since={task.created} activity={activity[task.task_id]} />
+          </div>
+        )}
+
+        <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <TraceHeader events={trace} engine={engine} project={project} />
+          {/* The planner's steps, as the CLI's checklist — the one part of the
+              timeline that says where the run is going, not where it has been. */}
+          <PlanList todos={planTodos(steps || [])} />
+          <TraceSummary events={trace} />
         </div>
       </header>
 
@@ -377,7 +448,13 @@ export function TaskDetail() {
           minHeight: '200px',
         }}
       >
-        {timeline.length === 0 ? (
+        {/* The engine's own run first — reasoning, tool calls, answer. Empty
+            for an engine that emits no stream (antigravity) and for tasks that
+            ran before traces existed, which is why the log timeline below
+            stays exactly as it was rather than being replaced by this. */}
+        <TraceTimeline events={trace} />
+
+        {timeline.length === 0 && trace.length === 0 ? (
           <div style={{ color: 'var(--text-faint)', textAlign: 'center', margin: 'auto', fontFamily: 'var(--font-mono)' }}>
             NO ACTIVITY LOGS DETECTED.
           </div>

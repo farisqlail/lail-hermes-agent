@@ -1136,9 +1136,12 @@
 
 .claude-plain-thinking .claude-thinking-sparkle {
   font-size: 13px;
-  color: #3b82f6;
-  animation: sparkle-pulse 2s ease-in-out infinite;
+  /* Claude's terracotta, not an accent blue: the glyph is cycled from JS
+     rather than pulsed here, so it needs no animation of its own. */
+  color: #cd694a;
   display: inline-block;
+  width: 1ch;
+  text-align: center;
 }
 
 .claude-plain-thinking .claude-thinking-text {
@@ -1147,7 +1150,7 @@
   font-weight: 400;
   font-style: italic;
   letter-spacing: 0.01em;
-  background: linear-gradient(90deg, #9ca3af 0%, #ffffff 40%, #9ca3af 80%);
+  background: linear-gradient(100deg, #cd694a 43%, #e79475 50%, #cd694a 57%);
   background-size: 200% 100%;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -1164,6 +1167,47 @@
 .claude-plain-thinking .claude-thinking-text.fade-out {
   opacity: 0;
   transform: translateY(-2px);
+}
+
+/* Elapsed timer. Deliberately not shimmering — it is the one part that must
+   read as a hard fact rather than ambient motion. */
+.claude-plain-thinking .claude-thinking-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint, #64748b);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Dense variant for task cards and the Office work feed, where the indicator
+   sits inside an existing row rather than standing alone in a chat pane. */
+.claude-plain-thinking-dim {
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.claude-plain-thinking-dim .claude-thinking-text {
+  font-size: 12px;
+}
+
+.claude-plain-thinking-dim .claude-thinking-sparkle {
+  font-size: 11px;
+}
+
+.claude-plain-thinking-dim .claude-thinking-meta {
+  font-size: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .claude-plain-thinking .claude-thinking-sparkle,
+  .claude-plain-thinking .claude-thinking-text {
+    animation: none;
+  }
+  .claude-plain-thinking .claude-thinking-text {
+    background-image: none;
+    -webkit-text-fill-color: #cd694a;
+    color: #cd694a;
+  }
 }
 
 @keyframes claude-shimmer {
@@ -2326,3 +2370,109 @@
 
 
 
+
+/* --- Claude Code session timeline (TaskDetail) -----------------------------
+   Ported from the `claude-session` block. Its docs are explicit that the
+   terminal look must not cost the semantics: these rules hide the native
+   disclosure marker and the expand hint without replacing <details> with a
+   div, so the rows stay keyboard-operable and announced. */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.claude-tool > summary::-webkit-details-marker { display: none; }
+.claude-tool > summary::marker { content: ''; }
+.claude-tool[open] .claude-expand-hint { display: none; }
+.claude-tool > summary:focus-visible {
+  outline: 1px solid rgba(125, 207, 255, 0.6);
+  outline-offset: 1px;
+}
+
+/* Markdown inside a timeline row is prose in a terminal, not a document:
+   no outer margins, and code keeps the row's own mono sizing. */
+.claude-prose > div > :first-child { margin-top: 0; }
+.claude-prose > div > :last-child { margin-bottom: 0; }
+.claude-prose p { margin: 0 0 6px; }
+.claude-prose pre,
+.claude-prose code { font-family: var(--font-mono); font-size: 12px; }
+
+/* --- Selectable content ----------------------------------------------------
+   `.app-container` sets `user-select: none` so the shell drags and clicks like
+   a desktop app rather than a web page. That is right for chrome and wrong for
+   everything the agent actually says: it made every chat message, log line and
+   task trace impossible to select, so nothing could be copied out at all.
+
+   Selection is handed back only to the regions that hold content. Chrome keeps
+   its `none`, and the copy button stays available for whole messages. */
+
+.chat-bubble,
+.chat-thread-container,
+.office-chat-messages-area,
+.office-chat-welcome-bubble,
+.welcome-message-card,
+.claude-session,
+.chat-thread,
+.md-code,
+pre {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: auto;
+}
+
+/* Reading a message means selecting sentences, so the text cursor is the
+   honest affordance here even though the shell uses the default arrow. */
+.chat-bubble,
+.claude-session,
+.chat-thread {
+  cursor: text;
+}
+
+/* A copy button revealed on hover, so a bubble stays clean until wanted.
+   Kept visible whenever it has focus, or it would be unreachable by keyboard. */
+.copy-btn {
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  user-select: none;
+}
+
+.chat-message-row:hover .copy-btn,
+.copy-btn:focus-visible,
+.copy-btn.copied {
+  opacity: 1;
+}
+
+.copy-btn:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+.copy-btn.copied {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+@media (hover: none) {
+  /* No hover to reveal it on a touch screen. */
+  .copy-btn { opacity: 1; }
+}

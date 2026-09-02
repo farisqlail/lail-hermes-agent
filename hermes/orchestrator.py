@@ -751,6 +751,41 @@ class Orchestrator:
             self.store.append_log(
                 task_id, f"could not send {kind} to chat: {e}")
 
+    def _trace_sink(self, task_id: str, step_idx: int, engine: str):
+        """Per-step callback turning the engine's JSONL into stored events.
+
+        The only place the runner's stream and the store meet: `engine_runner`
+        knows nothing about persistence and `engine_stream` is pure, so the
+        wiring lives here. One sink spans a step's retry rounds, so `seq` keeps
+        counting rather than restarting and interleaving the timeline.
+        """
+        from .engine_stream import TraceEvent, distill_line
+        cap = getattr(self.store, "TRACE_EVENT_CAP", 0)
+        try:
+            stored = self.store.count_trace_events(task_id)
+        except Exception:
+            stored = 0
+        state = {"seq": 0, "stored": stored, "capped": False}
+
+        def sink(line: str) -> None:
+            if state["capped"]:
+                return
+            for ev in distill_line(line, engine):
+                if cap and state["stored"] >= cap:
+                    # Say so rather than going quiet: a timeline that just
+                    # stops looks like a crashed engine.
+                    state["capped"] = True
+                    self.store.add_trace_event(
+                        task_id, step_idx, state["seq"],
+                        TraceEvent("truncated",
+                                   text=f"trace stopped after {cap} events"))
+                    return
+                self.store.add_trace_event(task_id, step_idx, state["seq"], ev)
+                state["seq"] += 1
+                state["stored"] += 1
+
+        return sink
+
     async def _exec_step(self, task_id, proj: Path, step: dict, idx: int,
                          text: str = "", send_file=None, chat_id: int = 0,
                          budget: "Budget | None" = None, engine: str | None = None):
@@ -791,7 +826,11 @@ class Orchestrator:
             # answer never times the step out. Opt-in — a registry is injected
             # only in the live app, so the many run_engine-only test doubles
             # keep their narrow signature (the tuning/session pattern).
-            from .engine_runner import MCP_CONFIG_FLAG
+            from .engine_runner import MCP_CONFIG_FLAG, STREAMING
+            # Live trace, for the engines whose stdout is JSONL. One sink for
+            # the whole step so its rounds land in one ordered timeline.
+            trace_kw = ({"on_event": self._trace_sink(task_id, idx, engine)}
+                        if engine in STREAMING else {})
             ask = self.deps.get("ask_registry")
             ask_here = ask is not None and engine in MCP_CONFIG_FLAG
             # Hermes names the session rather than reading one back, so a
@@ -815,7 +854,7 @@ class Orchestrator:
                 try:
                     res = await self.deps["run_engine"](
                         engine, prompt, proj, self.settings.timeout_code_s,
-                        **tuning, **session, **ask_kw)
+                        **tuning, **session, **ask_kw, **trace_kw)
                 finally:
                     if token:
                         ask.close_run(token)

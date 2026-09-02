@@ -280,3 +280,45 @@ def test_delegation_meeting_min_subtasks_constant_is_at_least_two():
     # Sanity guard: a 1-2 person delegation is meant to skip the kickoff
     # meeting (see _run_delegation) — this constant must stay above that.
     assert DELEGATION_MEETING_MIN_SUBTASKS >= 2
+
+
+class RecordingMainStore(FakeMainStore):
+    """FakeMainStore plus the task surface `_run_code_work_item` touches."""
+    def __init__(self):
+        super().__init__()
+        self.tasks = {}
+
+    def create_task(self, task_id, chat_id, text, session_id=None, origin=None):
+        self.tasks[task_id] = {"task_id": task_id, "chat_id": chat_id, "text": text,
+                               "session_id": session_id, "origin": origin}
+
+    def get_task(self, task_id):
+        return self.tasks.get(task_id)
+
+
+class StubOrchestrator:
+    def __init__(self):
+        self.ran = []
+
+    async def run_task(self, task_id, **kw):
+        self.ran.append(task_id)
+
+
+async def test_office_code_work_stamps_the_task_with_its_origin(store, settings, secrets, tmp_path):
+    """An Office task carries no session_id — it belongs to an employee, not a
+    conversation — so `origin` is the only thing that can tell the detail page
+    to send "back" to the Office rather than the dashboard."""
+    main_store = RecordingMainStore()
+    orch = StubOrchestrator()
+    mgr = OfficeManager(store, main_store=main_store, orchestrator=orch,
+                        secrets_loader=lambda: secrets, settings_loader=lambda: settings)
+    store.create_employee("e1", "Ada")
+    work = store.create_work_item("w1", "e1", kind="code_task", prompt="fix the navbar")
+
+    await mgr._run_code_work_item(work["work_id"], store.get_employee("e1"),
+                                  "fix the navbar", tmp_path)
+
+    assert orch.ran, "the shared Orchestrator should still be what runs the work"
+    (task,) = main_store.tasks.values()
+    assert task["origin"] == "office"
+    assert task["session_id"] is None

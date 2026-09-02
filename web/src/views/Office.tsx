@@ -1,7 +1,10 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, errorMessage } from '../api/client';
 import { Employee, Team } from '../api/types';
 import { useOfficeEvents } from '../api/officeEvents';
+import { useTasksContext } from '../api/events';
+import { cleanLogLine } from '../components/TaskCard';
+import type { WorkActivity } from '../components/OfficeCanvas';
 import { useRoute } from '../router';
 import { Button } from '../components/Button';
 import { EmployeeModal } from '../components/EmployeeModal';
@@ -37,7 +40,29 @@ const STATUS_COLOR: Record<Employee['status'], string> = {
 export function Office() {
   const { toast } = useToast();
   const { officeSessionId, navigate } = useRoute();
-  const { employees, teams, loading, isConnected, refresh, lastEvent } = useOfficeEvents();
+  const { employees, teams, workItems, loading, isConnected, refresh, lastEvent } = useOfficeEvents();
+  const { activity } = useTasksContext();
+
+  // What each employee is visibly busy with, for the overhead bubble in the
+  // 3D office: their newest running work item, plus that run's live log line
+  // when the work item actually spawned a task. `employees.status` alone only
+  // says "working" — this says what they are working on.
+  const workActivity = useMemo(() => {
+    const out: Record<string, WorkActivity> = {};
+    for (const w of workItems) {
+      if (w.status !== 'running') continue;
+      const prev = out[w.employee_id];
+      if (prev && prev.since >= w.created) continue;
+      const live = w.task_id ? activity[w.task_id] : undefined;
+      out[w.employee_id] = {
+        prompt: cleanLogLine(w.prompt) || 'Working',
+        since: w.created,
+        line: live?.line,
+        lineTs: live?.ts,
+      };
+    }
+    return out;
+  }, [workItems, activity]);
 
   useEffect(() => {
     if (lastEvent?.type === 'office_meeting_done') {
@@ -287,6 +312,7 @@ export function Office() {
           selectedEmployeeId={selectedEmployeeId}
           onSelectEmployee={openChatFor}
           speakingEmployeeId={speakingEmployeeId}
+          workActivity={workActivity}
           isChatOpen={isChatOpen}
           onToggleChat={() => setIsChatOpen((v) => !v)}
           focusEmployeeId={focusEmployeeId}

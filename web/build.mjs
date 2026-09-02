@@ -37,6 +37,21 @@ function copyDirRecursive(srcDir, destDir) {
   }
 }
 
+/** Copy the export over a destination, dropping the previous `_next` first.
+ *
+ * A plain copy only ever adds, so every build left its hashed chunks behind —
+ * the served directory had accumulated 34 `app/page-*.js` against the 3 a
+ * build actually produces, going back weeks. Harmless-looking, and the reason
+ * a stale cached index.html could keep booting an old app instead of failing:
+ * the chunk names it referenced were all still there. Clearing `_next` makes
+ * a stale entry point 404 loudly rather than silently serve last week's UI.
+ * Only `_next` is cleared — the rest of the directory holds files this build
+ * does not own. */
+function syncExport(srcDir, destDir) {
+  safeRemoveDir(path.join(destDir, '_next'));
+  copyDirRecursive(srcDir, destDir);
+}
+
 function runNextBuild() {
   return new Promise((resolve, reject) => {
     const nextBin = path.join(__dirname, 'node_modules/next/dist/bin/next');
@@ -82,11 +97,11 @@ async function run() {
 
   // 1. Sync Next.js static export
   if (fs.existsSync(outDir)) {
-    copyDirRecursive(outDir, hermesStaticDir);
+    syncExport(outDir, hermesStaticDir);
     console.log(`[build] Successfully synced Next.js export from ${outDir} to ${hermesStaticDir}`);
 
     if (fs.existsSync(path.dirname(distBackendStaticDir))) {
-      copyDirRecursive(outDir, distBackendStaticDir);
+      syncExport(outDir, distBackendStaticDir);
       console.log(`[build] Successfully synced Next.js export to ${distBackendStaticDir}`);
     }
   } else {

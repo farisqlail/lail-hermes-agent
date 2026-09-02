@@ -6,6 +6,7 @@ import { errorMessage, api } from '../api/client';
 import { PendingAction } from '../api/types';
 import { Markdown } from '../components/Markdown';
 import { findTaskIds, InlineTaskCard, ClaudeThinkingIndicator, confirmTask } from '../components/TaskCard';
+import { CopyButton } from '../components/CopyButton';
 import { Button } from '../components/Button';
 import { Modal } from '../components/Modal';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -1160,6 +1161,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
               <div key={idx} className={`chat-message-row ${m.role}`}>
                 <div className="chat-author-line">
                   <span>{m.role === 'user' ? 'OPERATOR' : agentName.toUpperCase()}</span>
+                  <CopyButton text={m.content} />
                 </div>
                 <div className={`chat-bubble ${m.role}`}>
                   {m.role === 'user' ? (

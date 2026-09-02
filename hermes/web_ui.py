@@ -207,6 +207,13 @@ else:
 
 INDEX_HTML_CACHE: str | None = None
 
+# The HTML entry point must never be served from a browser cache. Its own body
+# is what names the hashed chunk files, so a stale copy silently boots a stale
+# app: the old chunk names it points at are still on disk and still load, and
+# nothing errors — the UI just stays on yesterday's build after a deploy.
+# The chunks themselves are content-hashed and stay cacheable.
+NO_STORE = {"Cache-Control": "no-store, must-revalidate"}
+
 
 def load_index_html() -> str:
     path = STATIC_DIR / "index.html"
@@ -380,11 +387,11 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
-        return HTMLResponse(content=load_index_html())
+        return HTMLResponse(content=load_index_html(), headers=NO_STORE)
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page():
-        return HTMLResponse(content=load_index_html())
+        return HTMLResponse(content=load_index_html(), headers=NO_STORE)
 
     @app.get("/api/artifacts/download")
     def download_artifact(path: str):
@@ -520,42 +527,39 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         loop = asyncio.get_running_loop()
 
         def listener(event):
-            print("API: listener called with event:", event)
             try:
                 loop.call_soon_threadsafe(queue.put_nowait, event)
-                print("API: event queued in loop")
             except Exception as e:
                 print("API: listener exception:", e)
 
         store.subscribe(listener)
 
         async def event_generator():
-            print("API: event_generator started")
             try:
                 while True:
                     if await request.is_disconnected():
-                        print("API: client disconnected")
                         break
                     try:
-                        print("API: waiting for queue...")
                         event = await asyncio.wait_for(queue.get(), timeout=15.0)
-                        print("API: got event from queue:", event)
                         yield brain.sse(event)
                         # Speech is decided here, not in the browser: the old
                         # notify effect lived in the Dashboard component, so a
                         # task that finished while the operator was on any
                         # other page was never announced. Every connected
                         # client gets the same utterance, on every page.
-                        utterance = brain.speech_for(
-                            event, config.load_settings(),
-                            task_text=lambda tid: (store.get_task(tid) or {}).get("text", ""))
-                        if utterance:
-                            yield brain.sse(utterance)
+                        #
+                        # Gated on the type first: `load_settings()` reads a
+                        # file, and a live engine trace publishes hundreds of
+                        # events a run that could never speak.
+                        if event.get("type") in brain.SPEAKABLE_EVENTS:
+                            utterance = brain.speech_for(
+                                event, config.load_settings(),
+                                task_text=lambda tid: (store.get_task(tid) or {}).get("text", ""))
+                            if utterance:
+                                yield brain.sse(utterance)
                     except asyncio.TimeoutError:
-                        print("API: timeout, yielding keep-alive")
                         yield "data: {\"type\": \"keep-alive\"}\n\n"
             finally:
-                print("API: event_generator finally, unsubscribing")
                 store.unsubscribe(listener)
 
         return StreamingResponse(
@@ -593,9 +597,25 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             "task": t,
             "logs": store.get_logs(task_id),
             "artifacts": store.get_artifacts(task_id),
+            # The planner's steps, rendered as the timeline's plan checklist.
+            # Small and bounded (a plan is a handful of rows), unlike the
+            # trace — which is why this rides along instead of getting its own
+            # endpoint.
+            "steps": store.get_steps(task_id),
             "pending_confirm": pending_confirm,
             "pending_ask": pending_ask
         }
+
+    @app.get("/api/tasks/{task_id}/trace")
+    def task_trace(task_id: str, after: int = 0):
+        """What the engine actually did, distilled (hermes/engine_stream.py).
+
+        Its own endpoint rather than a field on /api/tasks/{id}: a trace runs to
+        thousands of rows, and the timeline pulls it incrementally with `after`
+        — the same rows arrive live over SSE, so this is the initial load and
+        the gap-filler after a reconnect.
+        """
+        return store.get_trace_events(task_id, after_id=after)
 
     @app.post("/api/tasks")
     async def post_task(body: TaskSubmit):

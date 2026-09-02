@@ -102,3 +102,71 @@ def test_last_result_object_wins():
     out = parse_claude_json(first + "\n" + REAL)
     assert out.final_text == "pong"
     assert out.session_id.startswith("8d963e4e")
+
+
+# --- agy stream-json envelope ------------------------------------------------
+#
+# Captured verbatim from `agy -p ... --output-format stream-json` (2026-09-02).
+# Nothing like claude's: keyed `event`, payload nested, status a string, and no
+# cost field at all.
+
+from hermes.engine_result import parse_agy_stream
+
+AGY_RESULT = json.dumps({"event": "result", "result": {
+    "conversation_id": "2e612ee7-7560-4749-ab4d-3031b4fc23ec",
+    "status": "SUCCESS", "response": "all done", "duration_seconds": 7.46,
+    "num_turns": 1,
+    "usage": {"input_tokens": 26310, "output_tokens": 741,
+              "thinking_tokens": 586, "cache_read_tokens": 32572,
+              "total_tokens": 27051}}})
+
+AGY_STREAM = "\n".join([
+    json.dumps({"event": "init", "conversation_id": "c1",
+                "init": {"cwd": "C:\repo", "tools": [], "permission_mode": "request-review"}}),
+    json.dumps({"event": "step_update", "step_update": {
+        "conversation_id": "c1", "step_index": 0, "state": "DONE",
+        "step_type": "user_input"}}),
+    AGY_RESULT,
+])
+
+
+def test_agy_envelope_is_found_at_the_end_of_the_stream():
+    out = parse_agy_stream(AGY_STREAM)
+    assert out is not None
+    assert out.final_text == "all done"
+    assert out.session_id == "2e612ee7-7560-4749-ab4d-3031b4fc23ec"
+    assert out.num_turns == 1
+    assert out.api_error is None
+    assert out.usage["total_tokens"] == 27051
+
+
+def test_agy_reports_no_cost():
+    """agy bills in tokens only — inventing a number here would show a spend
+    the operator never incurred."""
+    assert parse_agy_stream(AGY_STREAM).cost_usd is None
+
+
+def test_agy_non_success_status_is_an_api_error():
+    line = json.dumps({"event": "result", "result": {
+        "status": "FAILED", "response": "", "conversation_id": "c1"}})
+    out = parse_agy_stream(line)
+    assert out.api_error == "FAILED"
+
+
+def test_agy_parser_returns_none_for_text_mode_output():
+    """The degrade path: an older agy, or a run that died before its envelope.
+    None means the caller reads raw stdout, exactly as it did before."""
+    assert parse_agy_stream("just some prose the CLI printed") is None
+    assert parse_agy_stream("") is None
+
+
+def test_agy_parser_ignores_a_stream_with_no_result_event():
+    stream = json.dumps({"event": "step_update", "step_update": {"step_index": 0}})
+    assert parse_agy_stream(stream) is None
+
+
+def test_the_two_engine_parsers_do_not_read_each_other():
+    """Both envelopes say `result`, but under different keys — a mix-up would
+    blank out final_text and silently break completion detection."""
+    assert parse_agy_stream(REAL) is None
+    assert parse_claude_json(AGY_RESULT) is None

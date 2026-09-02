@@ -3,7 +3,7 @@ import asyncio, json, os, shutil, tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
-from .engine_result import EngineOutcome, parse_claude_json
+from .engine_result import EngineOutcome, parse_agy_stream, parse_claude_json
 
 # each entry maps a prompt to an argv list; overridable in tests
 # Both CLIs run non-interactively (-p): neither can prompt for tool
@@ -12,10 +12,25 @@ from .engine_result import EngineOutcome, parse_claude_json
 # names this exact flag as the fix. Safe here: engines run inside an isolated
 # project dir and risky tasks are gated behind Telegram confirmation.
 COMMANDS: dict[str, Callable[[str], list[str]]] = {
+    # stream-json (not json): the same result envelope still ends the run — so
+    # engine_result.parse_claude_json reads it unchanged, scanning lines from
+    # the back — but everything leading up to it now arrives too, which is what
+    # the task timeline renders. --verbose is what makes the CLI emit the
+    # intermediate turns rather than the envelope alone.
     "claude": lambda p: ["claude", "-p", "--dangerously-skip-permissions",
-                         "--output-format", "json"],
-    "antigravity": lambda p: ["agy", "-p", p, "--dangerously-skip-permissions"],
+                         "--output-format", "stream-json", "--verbose"],
+    # agy gained --output-format (text|json|stream-json) after this module was
+    # written; verified against `agy --help` 2026-09-02. Its stream is shaped
+    # nothing like claude's — see engine_stream.distill_agy_line — but it
+    # carries the same substance: per-step tool calls, token usage, and a
+    # closing envelope. Switching it here is what makes final_text come from
+    # `result.response` instead of scraped prose, so PARSERS must know about
+    # it too or every reader gets JSONL.
+    "antigravity": lambda p: ["agy", "-p", p, "--dangerously-skip-permissions",
+                              "--output-format", "stream-json"],
 }
+# Whose stdout is line-delimited JSON worth handing to a live consumer.
+STREAMING = {"claude", "antigravity"}
 # engines that read the prompt from stdin instead of argv: sidesteps cmd.exe
 # quoting of newlines/quotes and the 8191-char command-line limit on Windows
 STDIN_PROMPT = {"claude"}
@@ -25,8 +40,11 @@ STDIN_PROMPT = {"claude"}
 MODEL_FLAG = {"claude", "antigravity"}
 EFFORT_FLAG = {"claude"}
 # Engines whose sessions Hermes can name and reopen. agy has --conversation,
-# but it only accepts ids agy itself issued and prints none of them in print
-# mode, so there is nothing to hand back. It stays on fresh sessions.
+# and since the switch to stream-json its `result` envelope does print the
+# `conversation_id` it issued — so the old blocker (no id to hand back) is
+# gone. Still excluded: agy has no way to *name* a session up front, so
+# resuming it needs the id threaded back from the previous round rather than
+# the pre-assigned uuid claude takes. Left for its own change.
 RESUMABLE = {"claude"}
 # agy's own print-mode budget defaults to 5m. Left alone, a 15m code step is
 # killed by the engine at minute five and surfaces as an engine failure rather
@@ -34,8 +52,10 @@ RESUMABLE = {"claude"}
 # clock.
 PRINT_TIMEOUT_FLAG = {"antigravity"}
 # Whose stdout carries a machine-readable envelope. Absent here means the
-# engine is read as plain text, exactly as before this module existed.
-PARSERS = {"claude": parse_claude_json}
+# engine is read as plain text, exactly as before this module existed. Both
+# entries are load-bearing now that both CLIs run in stream-json: without a
+# parser, final_text degrades to raw stdout, which is JSONL rather than prose.
+PARSERS = {"claude": parse_claude_json, "antigravity": parse_agy_stream}
 # Whose CLI accepts --mcp-config pointing at Hermes' in-process ask_user server.
 # claude namespaces the tool as mcp__hermes__ask_user; --dangerously-skip-
 # permissions (always passed) auto-approves it. agy's MCP config shape differs
@@ -144,24 +164,100 @@ def _resolve(argv: list[str]) -> list[str]:
         return ["cmd", "/c", exe, *argv[1:]]
     return [exe, *argv[1:]]
 
-async def _communicate_within(proc, send, deadline, poll_s: float = 1.0):
-    """`proc.communicate`, but bounded by a pausable `Deadline` instead of a
-    fixed timeout. While the engine blocks on `ask_user`, the registry pauses
-    the deadline, so `expired()` stays False and the subprocess is not killed
-    for the length of the operator's think — the whole reason Deadline exists.
+async def _pump(proc, send, on_line=None):
+    """`proc.communicate(send)`, but every stdout line reaches `on_line` as it
+    arrives instead of only at the end.
+
+    Keeps communicate's contract exactly — write stdin then close it, drain
+    both pipes concurrently, return the complete `(stdout, stderr)` bytes — so
+    every caller downstream, `parse_claude_json` included, is unaffected.
+    Draining stderr concurrently is not optional: a subprocess that fills its
+    stderr pipe blocks forever while we are still reading its stdout.
+    """
+    async def feed():
+        if send is None:
+            return
+        try:
+            proc.stdin.write(send)
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            # Engine died before reading the prompt. Its stdout/stderr still
+            # carry why, so this is reported by the caller, not raised here.
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+
+    def emit(raw: bytes):
+        if on_line is None:
+            return
+        try:
+            on_line(raw.decode(errors="replace").rstrip("\r\n"))
+        except Exception:
+            # A broken trace consumer must never take down a run whose real
+            # work is fine. Same posture as engine_result's parser.
+            pass
+
+    async def read_out():
+        # Chunked reads split by hand, deliberately not readline(): one
+        # stream-json line carrying a large tool result routinely beats
+        # asyncio's StreamReader limit, and readline() *clears its buffer*
+        # before raising — losing the very bytes the envelope parser needs to
+        # tell a finished run from a failed one.
+        chunks: list[bytes] = []
+        pending = b""
+        while True:
+            chunk = await proc.stdout.read(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if on_line is None:
+                continue
+            pending += chunk
+            while True:
+                nl = pending.find(b"\n")
+                if nl < 0:
+                    break
+                emit(pending[:nl])
+                pending = pending[nl + 1:]
+        if pending.strip():
+            emit(pending)  # last line, unterminated
+        return b"".join(chunks)
+
+    _, out, err = await asyncio.gather(feed(), read_out(), proc.stderr.read())
+    await proc.wait()
+    return out, err
+
+
+async def _await_within(work, deadline, poll_s: float = 1.0):
+    """Await `work`, bounded by a pausable `Deadline` instead of a fixed
+    timeout. While the engine blocks on `ask_user`, the registry pauses the
+    deadline, so `expired()` stays False and the subprocess is not killed for
+    the length of the operator's think — the whole reason Deadline exists.
     Raises `asyncio.TimeoutError` on expiry so the caller's kill path is shared
-    with the fixed-timeout branch."""
-    comm = asyncio.ensure_future(proc.communicate(send))
+    with the fixed-timeout branch.
+
+    Split from `_communicate_within` so the clock rule can be read and tested
+    without a process: what is awaited is not this function's concern.
+    """
+    fut = asyncio.ensure_future(work)
     try:
         while True:
-            done, _ = await asyncio.wait({comm}, timeout=poll_s)
-            if comm in done:
-                return comm.result()
+            done, _ = await asyncio.wait({fut}, timeout=poll_s)
+            if fut in done:
+                return fut.result()
             if deadline.expired():
                 raise asyncio.TimeoutError
     finally:
-        if not comm.done():
-            comm.cancel()
+        if not fut.done():
+            fut.cancel()
+
+
+async def _communicate_within(proc, send, deadline, on_line=None, poll_s: float = 1.0):
+    """`_pump`, bounded by a pausable `Deadline`."""
+    return await _await_within(_pump(proc, send, on_line), deadline, poll_s)
 
 async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
                      cwd: Path, timeout_s: int,
@@ -169,7 +265,11 @@ async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
                      model: str = "", effort: str = "",
                      session_id: str = "", resume_id: str = "",
                      ask_url: str = "", ask_token: str = "",
-                     deadline=None) -> RunResult:
+                     deadline=None, on_event=None) -> RunResult:
+    """`on_event(line)` receives each stdout line of a streaming engine as it
+    arrives — the hook the live task timeline hangs off. It stays a plain
+    callback taking a string: this module has no business knowing about the
+    store, so distilling and persisting belong to the caller."""
     # A wedged engine must never leave the config behind: it carries the run
     # token, and a stale one on disk would let a later engine reach a closed run.
     mcp_config_path = ""
@@ -188,11 +288,13 @@ async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
             *argv, cwd=str(cwd), env=env,
             stdin=asyncio.subprocess.PIPE if send is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        on_line = on_event if engine in STREAMING else None
         try:
             if deadline is None:
-                out, err = await asyncio.wait_for(proc.communicate(send), timeout=timeout_s)
+                out, err = await asyncio.wait_for(
+                    _pump(proc, send, on_line), timeout=timeout_s)
             else:
-                out, err = await _communicate_within(proc, send, deadline)
+                out, err = await _communicate_within(proc, send, deadline, on_line)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()

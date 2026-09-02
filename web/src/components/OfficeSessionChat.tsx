@@ -5,6 +5,7 @@ import { useTasksContext } from '../api/events';
 import { Button } from '../components/Button';
 import { Markdown } from '../components/Markdown';
 import { findTaskIds, InlineTaskCard, ClaudeThinkingIndicator } from '../components/TaskCard';
+import { CopyButton } from './CopyButton';
 import { useToast } from '../components/Toast';
 import { useOfficeChatSession } from '../hooks/useOfficeChatSession';
 import {
@@ -239,6 +240,7 @@ export function OfficeSessionChat({ sessionId, employees, onBack, onDeleted, onS
             <div key={i} className={`chat-message-row ${m.role}`}>
               <div className="chat-author-line">
                 <span>{m.role === 'user' ? 'YOU' : employeeName.toUpperCase()}</span>
+                <CopyButton text={m.content} />
               </div>
               <div className={`chat-bubble ${m.role}`}>
                 {m.role === 'user' ? (

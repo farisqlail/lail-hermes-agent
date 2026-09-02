@@ -232,6 +232,13 @@ def step_narration(kind: str | None) -> str:
     return _STEP_NARRATION.get(kind, f"Saya mulai langkah {kind} sekarang.")
 
 
+# The only event types speech_for can ever speak for. Published here so a
+# caller can skip building its arguments — `settings` costs a settings-file
+# read — for the many events that could never produce an utterance. A live
+# engine trace emits hundreds of those per run.
+SPEAKABLE_EVENTS = ("task_status", "step_status")
+
+
 def speech_for(event: dict, settings, task_text=None) -> dict | None:
     """The utterance one store event should produce, or None for silence.
 

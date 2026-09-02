@@ -170,8 +170,10 @@ async def test_round_without_an_envelope_falls_back_to_a_fresh_session(hermes_ho
 
 
 async def test_antigravity_never_receives_session_flags(hermes_home):
-    """agy cannot resume, so it keeps the narrow call shape it always had —
-    the same reason model/effort are only passed when configured."""
+    """agy cannot be handed a session to open or resume, so it must never see
+    those kwargs — the same reason model/effort are only passed when
+    configured. It does get a trace sink: agy streams stream-json now, so it
+    is in engine_runner.STREAMING alongside claude."""
     store = Store(hermes_home / "t.db"); store.init_schema()
     calls = []
     async def engine(engine_name, prompt, cwd, timeout_s, **kw):
@@ -180,7 +182,10 @@ async def test_antigravity_never_receives_session_flags(hermes_home):
 
     await _run(_orch(hermes_home, store, engine, "antigravity"), store)
 
-    assert calls == [{}]
+    assert len(calls) == 1
+    assert "session_id" not in calls[0]
+    assert "resume_id" not in calls[0]
+    assert set(calls[0]) <= {"on_event"}
 
 
 async def test_sentinel_only_in_stdout_does_not_confirm_a_structured_run(hermes_home):

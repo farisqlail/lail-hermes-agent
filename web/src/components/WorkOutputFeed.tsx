@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { useTasksContext } from '../api/events';
+import { ClaudeThinkingIndicator } from './TaskCard';
 import { WorkItem } from '../api/types';
 import { FileText, MessageSquare, Users2, Crown, Gavel, Loader2, CheckCircle2, XCircle, Clock, ChevronRight, ChevronDown } from 'lucide-react';
 
@@ -94,6 +96,9 @@ function DelegationSubtasks({ workId }: { workId: string }) {
 export function WorkOutputFeed({ employeeId, teamId }: { employeeId?: string; teamId?: string }) {
   const [items, setItems] = useState<WorkItem[]>([]);
   const [loading, setLoading] = useState(true);
+  // A work item only has live activity once it has spawned a real task run;
+  // chat/meeting kinds fall back to the rotating phrase.
+  const { activity } = useTasksContext();
 
   useEffect(() => {
     let cancelled = false;
@@ -149,6 +154,13 @@ export function WorkOutputFeed({ employeeId, teamId }: { employeeId?: string; te
             {STATUS_ICON[item.status]}
           </div>
           <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>{item.prompt}</div>
+          {item.status === 'running' && (
+            <ClaudeThinkingIndicator
+              since={item.created}
+              activity={item.task_id ? activity[item.task_id] : undefined}
+              dim
+            />
+          )}
           {item.kind === 'code_task' && item.task_id ? (
             <a href={`#/task/${item.task_id}`} style={{ fontSize: '11px', color: 'var(--accent)' }}>
               View task run →
@@ -159,7 +171,7 @@ export function WorkOutputFeed({ employeeId, teamId }: { employeeId?: string; te
             </div>
           ) : item.status === 'failed' ? (
             <div style={{ fontSize: '11px', color: 'var(--err)' }}>Failed — no output.</div>
-          ) : (
+          ) : item.status === 'running' ? null : (
             <div style={{ fontSize: '11px', color: 'var(--text-faint)', fontStyle: 'italic' }}>Working…</div>
           )}
           {(item.kind === 'delegation' || item.kind === 'meeting_transcript') && (

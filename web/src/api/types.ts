@@ -127,6 +127,12 @@ export interface Task {
   text: string;
   chat_id: number;
   created: number;
+  /** The conversation this task was started from. Optional: the column was
+   *  added later, so rows written before it carry no session. */
+  session_id?: string;
+  /** Where the task was started, when `session_id` cannot say. `"office"` for
+   *  employee work, which belongs to a roster rather than a chat. */
+  origin?: string;
 }
 
 export interface Artifact {
@@ -228,10 +234,21 @@ export interface OfficeSendMessageResult {
   work_id?: string;
 }
 
+/** One planner step. `detail` is the step object as JSON — the planner's own
+ *  shape, so it is parsed defensively where it is read. */
+export interface Step {
+  id: number;
+  idx: number;
+  kind: string;
+  detail: string;
+  status: string;
+}
+
 export interface TaskDetailResponse {
   task: Task;
   logs: string[];
   artifacts: Artifact[];
+  steps: Step[];
   pending_confirm: string[] | null;
   pending_ask: PendingAsk | null;
 }
