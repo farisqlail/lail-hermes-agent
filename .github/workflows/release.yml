@@ -47,6 +47,12 @@ jobs:
           pip install . "mcp[cli]" pyinstaller
           pyinstaller --noconfirm --distpath dist-backend --workpath build-backend hermes_engine.spec
 
+      # v0.0.2 shipped an engine that died on `import hermes.config`, so the
+      # installed app had no backend and needed deploy/start.bat running beside
+      # it. Import the whole graph out of the built exe before packaging it.
+      - name: Verify engine imports
+        run: dist-backend\hermes-engine\hermes-engine.exe --selftest
+
       - name: Build Windows installer
         working-directory: desktop
         run: |
@@ -54,6 +60,7 @@ jobs:
           npx electron-builder --win --publish never
 
       - name: Publish to release
+        if: startsWith(github.event.inputs.tag || github.ref_name, 'v')
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}

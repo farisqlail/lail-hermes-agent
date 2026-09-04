@@ -73,6 +73,15 @@ a = Analysis(
     noarchive=False,
 )
 
+# v0.0.2 shipped an engine whose PYZ was missing hermes.config: the exe died on
+# import, the desktop app never got a backend, and the operator had to keep
+# deploy/start.bat running. A silent drop must fail the build, not the install.
+_wanted = {m for m in hiddenimports if m == 'hermes' or m.startswith('hermes.')}
+_bundled = {entry[0] for entry in a.pure}
+_dropped = sorted(_wanted - _bundled)
+if _dropped:
+    raise SystemExit(f"PyInstaller dropped hermes modules from the PYZ: {_dropped}")
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(

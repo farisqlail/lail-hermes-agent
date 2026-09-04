@@ -124,6 +124,7 @@ function resolveBackendLauncher() {
 }
 
 const logFilePath = path.join(app.getPath('userData'), 'hermes-backend.log');
+let backendTail = '';
 
 function startBackendServer() {
   const launcher = resolveBackendLauncher();
@@ -151,12 +152,14 @@ function startBackendServer() {
     backendProcess.stdout.on('data', (data) => {
       const line = data.toString();
       logStream.write(line);
+      backendTail = (backendTail + line).slice(-2000);
       console.log(`[Hermes Core] ${line.trim()}`);
     });
 
     backendProcess.stderr.on('data', (data) => {
       const line = data.toString();
       logStream.write(`[ERR] ${line}`);
+      backendTail = (backendTail + line).slice(-2000);
       console.error(`[Hermes Core ERR] ${line.trim()}`);
     });
 
@@ -165,6 +168,15 @@ function startBackendServer() {
       logStream.write(msg);
       log(msg);
       backendProcess = null;
+      // A crash before the window exists means the app has no backend at all.
+      // Say so now with the actual traceback: waiting out the 60s health poll
+      // and blaming the network sent operators back to deploy/start.bat.
+      if (!mainWindow && !isQuitting) {
+        dialog.showErrorBox(
+          'Backend Lail Hermes Berhenti',
+          `Proses backend keluar dengan kode ${code} sebelum siap.\n\n${backendTail.trim() || '(tidak ada output)'}\n\nLog lengkap: ${logFilePath}`
+        );
+      }
     });
   } catch (err) {
     log('Failed to spawn backend process:', err);
@@ -671,7 +683,7 @@ app.whenReady().then(async () => {
       clearInterval(pollInterval);
       dialog.showErrorBox(
         'Gagal Memulai Backend Lail Hermes',
-        'Server backend Lail Hermes tidak dapat dimulai dalam waktu 60 detik.\nPeriksa log di %APPDATA%\\Hermes Agent\\hermes-backend.log atau coba jalankan deploy\\start.bat secara manual.'
+        `Server backend Lail Hermes tidak merespons dalam 60 detik.\n\n${backendTail.trim() || '(tidak ada output)'}\n\nLog lengkap: ${logFilePath}`
       );
       if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
     }
