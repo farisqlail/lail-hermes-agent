@@ -65,7 +65,11 @@
         }
       ]
     },
+    "portable": {
+      "artifactName": "Lail-Hermes-Portable-${version}.${ext}"
+    },
     "nsis": {
+      "artifactName": "Lail-Hermes-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
