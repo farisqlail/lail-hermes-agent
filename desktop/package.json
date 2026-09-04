@@ -1,6 +1,6 @@
 {
   "name": "hermes-desktop",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Hermes AI Agent - Native Windows Desktop Application",
   "main": "src/main.js",
   "author": "LAIL Hermes Team",
