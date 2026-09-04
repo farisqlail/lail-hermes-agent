@@ -12,6 +12,7 @@ const BACKEND_HOST = '127.0.0.1';
 const BACKEND_URL = `http://${BACKEND_HOST}:${BACKEND_PORT}`;
 const STATE_POLL_INTERVAL_MS = 800;
 const HEALTH_CHECK_TIMEOUT_MS = 60000;
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let mainWindow = null;
 let splashWindow = null;
@@ -21,6 +22,7 @@ let isQuitting = false;
 let isAlwaysOnTop = false;
 let currentVoiceState = 'idle';
 let statePollTimer = null;
+let updateCheckTimer = null;
 
 // Ensure single instance lock
 const gotLock = app.requestSingleInstanceLock();
@@ -251,7 +253,7 @@ function createMainWindow() {
 
   // Custom User-Agent tag so web app detects Hermes Desktop
   const userAgent = mainWindow.webContents.getUserAgent();
-  mainWindow.webContents.setUserAgent(`${userAgent} HermesDesktop/0.0.3`);
+  mainWindow.webContents.setUserAgent(`${userAgent} HermesDesktop/0.0.4`);
 
   if (windowState.isMaximized) {
     mainWindow.maximize();
@@ -328,7 +330,7 @@ function updateTrayMenu() {
 
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: 'Lail Hermes v1.0',
+      label: `Lail Hermes v${app.getVersion()}`,
       enabled: false
     },
     { type: 'separator' },
@@ -519,6 +521,10 @@ ipcMain.on('restart-backend', () => {
 // --- Auto-Updater via GitHub Releases ---
 
 let isManualCheck = false;
+// A download in flight or already staged must not be re-offered by the timer:
+// electron-updater re-emits update-downloaded from its cache, which would put
+// the restart dialog back on screen every few hours.
+let updateBusy = false;
 
 function setupAutoUpdater() {
   autoUpdater.autoDownload = false;
@@ -546,6 +552,7 @@ function setupAutoUpdater() {
     }).then((result) => {
       if (result.response === 0) {
         log('User menyetujui pengunduhan update.');
+        updateBusy = true;
         autoUpdater.downloadUpdate();
         if (tray) {
           tray.displayBalloon?.({
@@ -567,6 +574,7 @@ function setupAutoUpdater() {
 
   autoUpdater.on('update-downloaded', (info) => {
     log(`Pembaruan v${info.version} selesai diunduh.`);
+    updateBusy = true;
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.setProgressBar(-1);
     }
@@ -605,6 +613,7 @@ function setupAutoUpdater() {
 
   autoUpdater.on('error', (err) => {
     log('Info Auto-updater:', err ? err.message : err);
+    updateBusy = false;
     if (isManualCheck) {
       dialog.showMessageBox(mainWindow || null, {
         type: 'warning',
@@ -675,10 +684,15 @@ app.whenReady().then(async () => {
       log('Backend is responsive! Creating main window...');
       createMainWindow();
       startStatePolling();
-      // Check for updates silently 4s after startup
+      // Check for updates silently 4s after startup, then keep checking: the
+      // app lives in the tray for days at a time, so a startup-only check means
+      // a release published this morning is invisible until the next reboot.
       setTimeout(() => {
         checkForUpdates(false);
       }, 4000);
+      updateCheckTimer = setInterval(() => {
+        if (!updateBusy) checkForUpdates(false);
+      }, UPDATE_CHECK_INTERVAL_MS);
     } else if (Date.now() - startTime > HEALTH_CHECK_TIMEOUT_MS) {
       clearInterval(pollInterval);
       dialog.showErrorBox(
@@ -705,5 +719,6 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   if (statePollTimer) clearInterval(statePollTimer);
+  if (updateCheckTimer) clearInterval(updateCheckTimer);
   killBackendProcess();
 });
