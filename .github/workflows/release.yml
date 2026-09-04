@@ -67,4 +67,6 @@ jobs:
         shell: bash
         run: |
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --generate-notes
-          gh release upload "$TAG" dist/*.exe --clobber
+          # latest.yml (and the installer's blockmap) is what electron-updater reads;
+          # uploading only the .exe leaves every installed copy blind to the release.
+          gh release upload "$TAG" dist/*.exe dist/latest.yml dist/*.blockmap --clobber
