@@ -818,7 +818,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
                   <div>
                     <h2 style={{ fontSize: '18px', fontWeight: 700, margin: 0, letterSpacing: '0.05em' }}>LAIL HERMES</h2>
                     <div style={{ fontSize: '12px', color: 'var(--text-dim)', marginTop: '4px' }}>
-                      Windows-Local AI Agent & Autonomous Orchestrator (v0.0.2)
+                      Windows-Local AI Agent & Autonomous Orchestrator (v0.0.4)
                     </div>
                   </div>
                 </div>
