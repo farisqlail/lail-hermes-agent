@@ -479,12 +479,17 @@ def load_secrets() -> Secrets:
 
 def save_secrets(s: Secrets) -> None:
     paths.config_dir().mkdir(parents=True, exist_ok=True)
+    # Escaped out here, not inside the f-string: a backslash in an f-string
+    # expression only parses on 3.12+ (PEP 701), and pyproject supports 3.11.
+    # Inlined, this file silently failed to compile in the 3.11 release build
+    # and PyInstaller dropped hermes.config from the shipped engine.
+    private_key = s.github_app_private_key.replace(chr(10), "\\n")
     lines = [
         f"NVIDIA_API_KEY={s.nvidia_api_key}",
         f"TELEGRAM_BOT_TOKEN={s.telegram_bot_token}",
         f"UNSPLASH_ACCESS_KEY={s.unsplash_access_key}",
         f"GITHUB_APP_ID={s.github_app_id}",
-        f"GITHUB_APP_PRIVATE_KEY={s.github_app_private_key.replace(chr(10), '\\n')}",
+        f"GITHUB_APP_PRIVATE_KEY={private_key}",
         f"GITHUB_APP_INSTALLATION_ID={s.github_app_installation_id}",
     ]
     _env_file().write_text("\n".join(lines) + "\n", encoding="utf-8")

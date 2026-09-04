@@ -80,15 +80,10 @@ _wanted = {m for m in hiddenimports if m == 'hermes' or m.startswith('hermes.')}
 _bundled = {entry[0] for entry in a.pure}
 _dropped = sorted(_wanted - _bundled)
 if _dropped:
-    import os as _os, hermes as _h
-    _pkg = _os.path.dirname(_h.__file__)
-    print(f"DEBUG hermes resolved to {_h.__file__}")
-    print(f"DEBUG config.py on disk there: {_os.path.exists(_os.path.join(_pkg, 'config.py'))}")
-    print(f"DEBUG cwd hermes/config.py: {_os.path.exists('hermes/config.py')}")
-    for _m in _dropped:
-        print(f"DEBUG graph node {_m}: {a.graph.find_node(_m)!r}")
-        print(f"DEBUG in datas: {[d for d in a.datas if _m.replace('.', '/') in d[0].replace(chr(92), '/')]}")
-    raise SystemExit(f"PyInstaller dropped hermes modules from the PYZ: {_dropped}")
+    # The node type says why: InvalidSourceModule means the file did not compile
+    # under this interpreter (that is how hermes.config was lost in v0.0.2).
+    _why = {m: repr(a.graph.find_node(m)) for m in _dropped}
+    raise SystemExit(f"PyInstaller dropped hermes modules from the PYZ: {_why}")
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
