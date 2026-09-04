@@ -253,7 +253,7 @@ function createMainWindow() {
 
   // Custom User-Agent tag so web app detects Hermes Desktop
   const userAgent = mainWindow.webContents.getUserAgent();
-  mainWindow.webContents.setUserAgent(`${userAgent} HermesDesktop/0.0.4`);
+  mainWindow.webContents.setUserAgent(`${userAgent} HermesDesktop/0.0.5`);
 
   if (windowState.isMaximized) {
     mainWindow.maximize();
