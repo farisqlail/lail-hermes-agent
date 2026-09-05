@@ -249,6 +249,17 @@ _PLANNER_RETRY_DELAYS_S = (5, 15, 30)
 # because call sites want different ceilings (chat 120s, fact-extract 20s).
 _CLIENT_CACHE: dict[tuple[str, str, int], AsyncOpenAI] = {}
 
+def _effective_ai_key(provider: str, api_key: str) -> str:
+    """NVIDIA and DeepSeek require a real key; a custom OpenAI-compatible
+    gateway (9Router, a local LLM proxy, ...) is commonly unauthenticated, so
+    an empty key there is not a misconfiguration — only nvidia/deepseek must
+    hard-fail on a missing key.
+    """
+    if api_key:
+        return api_key
+    return "not-needed" if provider == "custom" else ""
+
+
 def _client(base_url: str, api_key: str, timeout: int) -> AsyncOpenAI:
     key = (base_url or "", api_key or "", timeout)
     c = _CLIENT_CACHE.get(key)
@@ -340,10 +351,11 @@ def build_nim_planner(settings, secrets, hub):
         'transaksi."}]}')
     async def planner(text: str, context: str = "") -> str:
         current_secrets = config.load_secrets()
-        if not current_secrets.nvidia_api_key:
-            raise ValueError("AI API Key is missing. Please configure it in Settings.")
         current_settings = config.load_settings()
-        client = _client(current_settings.nvidia_base_url, current_secrets.nvidia_api_key,
+        ai_key = _effective_ai_key(current_settings.ai_provider, current_secrets.nvidia_api_key)
+        if not ai_key:
+            raise ValueError("AI API Key is missing. Please configure it in Settings.")
+        client = _client(current_settings.nvidia_base_url, ai_key,
                          PLANNER_REQUEST_TIMEOUT_S)
         # Split the clock: discovery (MCP subprocess round-trips, cold-start
         # heavy) vs the planning LLM rounds. Read the log to see which half of a
@@ -584,12 +596,13 @@ def build_nim_chat(settings, secrets):
     )
 
     async def chat(history: list[dict], tools=None, dispatch=None, model: str | None = None) -> str:
-        if not secrets.nvidia_api_key:
-            raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
         current_settings = config.load_settings()
+        ai_key = _effective_ai_key(current_settings.ai_provider, secrets.nvidia_api_key)
+        if not ai_key:
+            raise ValueError("AI API Key is missing. Please configure it in Settings.")
         agent_name = current_settings.agent_name or "Lail Agent"
         system = system_template.format(agent_name=agent_name) + voice.voice_tag_instruction(current_settings) + _confirm_note(current_settings)
-        client = _client(current_settings.nvidia_base_url, secrets.nvidia_api_key,
+        client = _client(current_settings.nvidia_base_url, ai_key,
                          PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
         # An explicit per-turn model (the web/office chat pane's model picker,
@@ -653,12 +666,13 @@ def build_nim_chat(settings, secrets):
         mid-flight, so a transient NIM error surfaces to the SSE handler, which
         renders it as the assistant's turn rather than silently retrying.
         """
-        if not secrets.nvidia_api_key:
-            raise ValueError("NVIDIA API Key is missing. Please configure it in Settings.")
         current_settings = config.load_settings()
+        ai_key = _effective_ai_key(current_settings.ai_provider, secrets.nvidia_api_key)
+        if not ai_key:
+            raise ValueError("AI API Key is missing. Please configure it in Settings.")
         agent_name = current_settings.agent_name or "Lail Agent"
         system = system_template.format(agent_name=agent_name) + voice.voice_tag_instruction(current_settings) + _confirm_note(current_settings)
-        client = _client(current_settings.nvidia_base_url, secrets.nvidia_api_key,
+        client = _client(current_settings.nvidia_base_url, ai_key,
                          PLANNER_REQUEST_TIMEOUT_S)
         msgs = [{"role": "system", "content": system}, *history]
         effective_model = model or _pick_chat_model(current_settings, history)
@@ -768,9 +782,10 @@ def build_nim_title(settings, secrets):
     async def generate_title(text: str) -> str:
         text = (text or "").strip()
         s = config.load_settings()
-        if not s.title_gen_enabled or not secrets.nvidia_api_key or not text:
+        ai_key = _effective_ai_key(s.ai_provider, secrets.nvidia_api_key)
+        if not s.title_gen_enabled or not ai_key or not text:
             return ""
-        client = _client(s.nvidia_base_url, secrets.nvidia_api_key, 15)
+        client = _client(s.nvidia_base_url, ai_key, 15)
         try:
             resp = await client.chat.completions.create(
                 model=s.title_model or s.chat_model or s.model,
@@ -804,9 +819,10 @@ def build_nim_compressor(settings, secrets):
     """
     async def compress(prior_summary: str, messages: list[dict]) -> str:
         s = config.load_settings()
-        if not s.compression_enabled or not secrets.nvidia_api_key or not messages:
+        ai_key = _effective_ai_key(s.ai_provider, secrets.nvidia_api_key)
+        if not s.compression_enabled or not ai_key or not messages:
             return ""
-        client = _client(s.nvidia_base_url, secrets.nvidia_api_key, 30)
+        client = _client(s.nvidia_base_url, ai_key, 30)
         convo = "\n".join(f'{m["role"]}: {m["content"]}' for m in messages
                           if isinstance(m.get("content"), str))
         user_content = (f"Ringkasan sebelumnya:\n{prior_summary}\n\n" if prior_summary else "") \
@@ -851,9 +867,10 @@ def build_nim_approval_note(settings, secrets):
     """
     async def explain(tool: str, args: dict) -> str:
         s = config.load_settings()
-        if not s.approval_note_enabled or not secrets.nvidia_api_key:
+        ai_key = _effective_ai_key(s.ai_provider, secrets.nvidia_api_key)
+        if not s.approval_note_enabled or not ai_key:
             return ""
-        client = _client(s.nvidia_base_url, secrets.nvidia_api_key, 15)
+        client = _client(s.nvidia_base_url, ai_key, 15)
         try:
             resp = await client.chat.completions.create(
                 model=s.approval_model or s.chat_model or s.model,
@@ -893,10 +910,11 @@ def build_nim_mcp_router(settings, secrets):
     """
     async def pick_relevant_tools(user_text: str, tool_names: list[str]) -> list[str] | None:
         s = config.load_settings()
-        if (not s.mcp_routing_enabled or not secrets.nvidia_api_key
+        ai_key = _effective_ai_key(s.ai_provider, secrets.nvidia_api_key)
+        if (not s.mcp_routing_enabled or not ai_key
                 or not user_text.strip() or not tool_names):
             return None
-        client = _client(s.nvidia_base_url, secrets.nvidia_api_key, 15)
+        client = _client(s.nvidia_base_url, ai_key, 15)
         catalog = "\n".join(tool_names)
         try:
             resp = await client.chat.completions.create(
@@ -929,10 +947,11 @@ def build_nim_facts(settings, secrets):
     """
     async def extract(user_text: str, reply: str) -> list[dict]:
         current_secrets = config.load_secrets()
-        if not current_secrets.nvidia_api_key:
-            return []
         s = config.load_settings()
-        client = _client(s.nvidia_base_url, current_secrets.nvidia_api_key, 20)
+        ai_key = _effective_ai_key(s.ai_provider, current_secrets.nvidia_api_key)
+        if not ai_key:
+            return []
+        client = _client(s.nvidia_base_url, ai_key, 20)
         try:
             resp = await client.chat.completions.create(
                 model=s.chat_model or s.model,
@@ -990,10 +1009,11 @@ def build_propose_mcp_config():
     """
     async def propose(readme: str, errors: list[str]):
         secrets = config.load_secrets()
-        if not secrets.nvidia_api_key:
-            return None
         s = config.load_settings()
-        client = _client(s.nvidia_base_url, secrets.nvidia_api_key, 30)
+        ai_key = _effective_ai_key(s.ai_provider, secrets.nvidia_api_key)
+        if not ai_key:
+            return None
+        client = _client(s.nvidia_base_url, ai_key, 30)
         try:
             resp = await client.chat.completions.create(
                 model=s.chat_model or s.model,

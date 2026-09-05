@@ -1,6 +1,6 @@
 [project]
 name = "hermes"
-version = "0.1.0"
+version = "0.0.6"
 requires-python = ">=3.11"
 dependencies = [
   "python-telegram-bot>=21",
