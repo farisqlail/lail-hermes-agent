@@ -99,3 +99,70 @@ def emit_result(final_text: str, usage: dict, session_id: str = "",
         env.update(subtype="error_during_execution", is_error=True,
                    result=api_error)
     return env
+
+
+@dataclass
+class Turn:
+    text: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: dict = field(default_factory=dict)
+
+
+def _parse_args(raw: str) -> dict:
+    """Parsed tool arguments, or {} for anything unusable.
+
+    A truncated or malformed arguments string is a bad turn, not a dead run:
+    the tool layer reports the missing argument and the model gets to correct
+    itself on the next turn.
+    """
+    try:
+        data = json.loads(raw or "{}")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+async def _one_turn(client, model: str, messages: list[dict],
+                    tools: list[dict]) -> Turn:
+    """One assistant turn, assembled from its stream.
+
+    Streamed rather than blocking because the turn's text and tool calls are
+    what the live timeline renders. They are still emitted as ONE assistant
+    line per turn, not per delta: `distill_claude_line` reads whole content
+    blocks, and the CLIs emit per turn too.
+
+    Tool call fragments are keyed by `index`, not by position: a turn making
+    two calls at once interleaves their argument fragments in the stream.
+    """
+    kwargs = {"model": model, "messages": messages, "stream": True,
+              "stream_options": {"include_usage": True}}
+    if tools:
+        kwargs["tools"] = tools
+    stream = await client.chat.completions.create(**kwargs)
+
+    text_parts: list[str] = []
+    partial: dict[int, dict] = {}
+    usage = {}
+    async for chunk in stream:
+        if getattr(chunk, "usage", None):
+            usage = _usage_anthropic(
+                chunk.usage.model_dump() if hasattr(chunk.usage, "model_dump") else chunk.usage)
+        for choice in (chunk.choices or []):
+            delta = choice.delta
+            if getattr(delta, "content", None):
+                text_parts.append(delta.content)
+            for tc in (getattr(delta, "tool_calls", None) or []):
+                slot = partial.setdefault(tc.index, {"id": "", "name": "", "args": ""})
+                if getattr(tc, "id", None):
+                    slot["id"] = tc.id
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        slot["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        slot["args"] += fn.arguments
+
+    calls = [ToolCall(slot["id"], slot["name"], _parse_args(slot["args"]))
+             for _, slot in sorted(partial.items())]
+    return Turn("".join(text_parts), calls, usage)
+

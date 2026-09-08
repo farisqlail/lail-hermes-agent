@@ -69,3 +69,97 @@ def test_result_envelope_can_report_a_failed_session():
     env = engine_api.emit_result("", {}, api_error="429 rate limited")
     outcome = parse_claude_json(json.dumps(env))
     assert outcome.api_error
+
+
+from types import SimpleNamespace
+
+
+def _delta(content=None, tool_calls=None):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=SimpleNamespace(
+            content=content, tool_calls=tool_calls))],
+        usage=None)
+
+
+def _tc(index, id=None, name=None, arguments=None):
+    return SimpleNamespace(index=index, id=id, function=SimpleNamespace(
+        name=name, arguments=arguments))
+
+
+def _usage_chunk(prompt, completion):
+    return SimpleNamespace(choices=[], usage=SimpleNamespace(
+        model_dump=lambda: {"prompt_tokens": prompt, "completion_tokens": completion}))
+
+
+class FakeStream:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __aiter__(self):
+        async def gen():
+            for c in self._chunks:
+                yield c
+        return gen()
+
+
+class FakeClient:
+    """Scripted AsyncOpenAI double. Each entry in `scripts` is the chunk list
+    for one create() call, so a multi-turn loop is scripted turn by turn."""
+
+    def __init__(self, scripts):
+        self.scripts = list(scripts)
+        self.calls = []
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    async def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        return FakeStream(self.scripts.pop(0))
+
+
+async def test_one_turn_collects_streamed_text():
+    client = FakeClient([[_delta(content="Hel"), _delta(content="lo"),
+                          _usage_chunk(10, 2)]])
+    turn = await engine_api._one_turn(client, "m", [], [])
+    assert turn.text == "Hello"
+    assert turn.tool_calls == []
+    assert turn.usage == {"input_tokens": 10, "output_tokens": 2}
+
+
+async def test_one_turn_reassembles_tool_call_argument_fragments():
+    """The gateway streams `arguments` in pieces; a turn that parses a
+    fragment would call the tool with half an argument."""
+    client = FakeClient([[
+        _delta(tool_calls=[_tc(0, id="call_1", name="Read", arguments='{"file')]),
+        _delta(tool_calls=[_tc(0, arguments='_path": "a.py"}')]),
+    ]])
+    turn = await engine_api._one_turn(client, "m", [], [])
+    assert turn.tool_calls == [engine_api.ToolCall("call_1", "Read",
+                                                   {"file_path": "a.py"})]
+
+
+async def test_one_turn_keeps_parallel_tool_calls_apart_by_index():
+    client = FakeClient([[
+        _delta(tool_calls=[_tc(0, id="c1", name="Read", arguments='{"file_path":"a"}'),
+                           _tc(1, id="c2", name="Read", arguments='{"file_path":"b"}')]),
+    ]])
+    turn = await engine_api._one_turn(client, "m", [], [])
+    assert [c.id for c in turn.tool_calls] == ["c1", "c2"]
+    assert [c.args["file_path"] for c in turn.tool_calls] == ["a", "b"]
+
+
+async def test_one_turn_survives_unparseable_tool_arguments():
+    """A truncated arguments string must reach the tool layer as an empty
+    dict and be reported as a missing argument, not crash the run."""
+    client = FakeClient([[
+        _delta(tool_calls=[_tc(0, id="c1", name="Read", arguments='{"file_pa')]),
+    ]])
+    turn = await engine_api._one_turn(client, "m", [], [])
+    assert turn.tool_calls[0].args == {}
+
+
+async def test_one_turn_requests_streaming_usage():
+    client = FakeClient([[_delta(content="x")]])
+    await engine_api._one_turn(client, "m", [], [])
+    assert client.calls[0]["stream"] is True
+    assert client.calls[0]["stream_options"] == {"include_usage": True}
+
