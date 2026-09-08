@@ -221,12 +221,54 @@ def _sum_usage(turns: list[Turn]) -> dict:
     return total
 
 
-async def _loop(client, model: str, prompt: str, cwd: Path, emit) -> list[Turn]:
+ASK_TOOL_NAME = "ask_user"
+
+
+def _tools_for(ask_registry) -> list[dict]:
+    """The tool list for this run.
+
+    `ask_user` is offered only when a registry is injected: a tool the model
+    can call but nothing can answer is worse than no tool at all. The CLI
+    engines get this same tool over MCP (`engine_runner.mcp_config_dict`);
+    in-process there is no config file, token header or port to arrange.
+    """
+    if ask_registry is None:
+        return agent_tools.TOOLS
+    from .ask_server import TOOL_DESCRIPTION
+    return agent_tools.TOOLS + [{
+        "type": "function",
+        "function": {
+            "name": ASK_TOOL_NAME,
+            "description": TOOL_DESCRIPTION,
+            "parameters": {"type": "object", "properties": {
+                "question": {"type": "string"},
+                "options": {"type": "array", "items": {"type": "object"}},
+                "multi": {"type": "boolean"}},
+                "required": ["question"]}}}]
+
+
+async def _dispatch(call: ToolCall, cwd: Path, ask_registry, ask_token: str):
+    if call.name != ASK_TOOL_NAME:
+        return await agent_tools.call(call.name, call.args, cwd)
+    if ask_registry is None:
+        return f"unknown tool: {call.name}", False
+    from .ask_server import resolve_ask
+    # can_stream=True: that flag exists to detect an MCP client that cannot be
+    # held open long enough to reach a human. In-process there is no such
+    # timer, and no heartbeat to keep a connection warm either.
+    answer = await resolve_ask(ask_registry, ask_token, call.args.get("question"),
+                               call.args.get("options"), call.args.get("multi"),
+                               can_stream=True)
+    return answer, True
+
+
+async def _loop(client, model: str, prompt: str, cwd: Path, emit,
+                ask_registry=None, ask_token: str = "") -> list[Turn]:
     messages = [{"role": "system", "content": _system(cwd)},
                 {"role": "user", "content": prompt}]
     turns: list[Turn] = []
     for n in range(MAX_TURNS):
-        turn = await _one_turn(client, model, messages, agent_tools.TOOLS)
+        turn = await _one_turn(client, model, messages, _tools_for(ask_registry))
         turns.append(turn)
         emit(emit_assistant(turn.text, turn.tool_calls, turn.usage))
         if not turn.tool_calls:
@@ -244,7 +286,7 @@ async def _loop(client, model: str, prompt: str, cwd: Path, emit) -> list[Turn]:
             if last:
                 text, ok = _TURNS_EXHAUSTED, False
             else:
-                text, ok = await agent_tools.call(call.name, call.args, cwd)
+                text, ok = await _dispatch(call, cwd, ask_registry, ask_token)
             emit(emit_tool_result(call.id, text, is_error=not ok))
             messages.append({"role": "tool", "tool_call_id": call.id,
                              "content": text})
@@ -252,7 +294,8 @@ async def _loop(client, model: str, prompt: str, cwd: Path, emit) -> list[Turn]:
 
 
 async def run(prompt: str, cwd: Path, timeout_s: int, model: str = "",
-              on_event=None, deadline=None, client=None, **_) -> RunResult:
+              on_event=None, deadline=None, client=None,
+              ask_registry=None, ask_token: str = "", **_) -> RunResult:
     """One engine session against the 9Router gateway.
 
     Returns `engine_runner.RunResult` unchanged, so every caller — the retry
@@ -282,7 +325,7 @@ async def run(prompt: str, cwd: Path, timeout_s: int, model: str = "",
                 pass
 
     emit(emit_init(model))
-    work = _loop(client, model, prompt, Path(cwd), emit)
+    work = _loop(client, model, prompt, Path(cwd), emit, ask_registry, ask_token)
     try:
         if deadline is None:
             turns = await asyncio.wait_for(work, timeout=timeout_s)

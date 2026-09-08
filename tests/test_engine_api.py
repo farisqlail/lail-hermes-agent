@@ -282,3 +282,56 @@ async def test_run_times_out_with_the_same_shape_as_a_killed_subprocess(tmp_path
     assert res.stdout == "" and res.returncode is None
 
 
+from hermes.ask import AskRegistry
+
+
+async def test_ask_user_tool_is_absent_without_a_registry(tmp_path):
+    names = {t["function"]["name"] for t in engine_api._tools_for(None)}
+    assert "ask_user" not in names
+    assert "Read" in names
+
+
+async def test_ask_user_tool_appears_with_a_registry(tmp_path):
+    names = {t["function"]["name"] for t in engine_api._tools_for(AskRegistry())}
+    assert "ask_user" in names
+
+
+async def test_ask_user_reaches_the_registry_and_returns_the_answer(tmp_path):
+    registry = AskRegistry()
+    asked = {}
+
+    async def on_ask(a):
+        asked["question"] = a.question
+        registry.answer(a.ask_id, "pakai yang kedua")
+
+    registry.on_ask = on_ask
+    token = registry.open_run("t1", 42)
+
+    client = FakeClient([
+        _call_turn("c1", "ask_user", '{"question": "yang mana?"}'),
+        _text_turn("DONE"),
+    ])
+    res = await engine_api.run("x", tmp_path, 30, client=client,
+                               ask_registry=registry, ask_token=token)
+    assert asked["question"] == "yang mana?"
+    assert res.ok
+    second = client.calls[1]["messages"]
+    assert "pakai yang kedua" in second[-1]["content"]
+
+
+async def test_ask_user_without_a_bound_channel_degrades_not_errors(tmp_path):
+    """An unbound registry means no Telegram is wired. The engine must be told
+    to proceed on its own, never handed an error."""
+    from hermes.ask import NO_CHANNEL
+    registry = AskRegistry()
+    token = registry.open_run("t1", 42)
+    client = FakeClient([
+        _call_turn("c1", "ask_user", '{"question": "yang mana?"}'),
+        _text_turn("DONE"),
+    ])
+    await engine_api.run("x", tmp_path, 30, client=client,
+                         ask_registry=registry, ask_token=token)
+    assert NO_CHANNEL in client.calls[1]["messages"][-1]["content"]
+
+
+
