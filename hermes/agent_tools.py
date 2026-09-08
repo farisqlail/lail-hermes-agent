@@ -126,7 +126,22 @@ async def _grep(cwd: Path, pattern: str, path: str = "", glob: str = "") -> str:
 
 async def _glob(cwd: Path, pattern: str) -> str:
     root = Path(cwd).resolve()
-    out = [_rel(root, p) for p in sorted(root.glob(pattern))
-           if p.is_file()
-           and not any(part in _SKIP_DIRS for part in p.relative_to(root).parts[:-1])]
+    out = []
+    for p in sorted(root.glob(pattern)):
+        if not p.is_file():
+            continue
+
+        try:
+            rel_path = p.relative_to(root)
+            rel_str = rel_path.as_posix()
+            # Path.relative_to succeeds on .. paths, so we must validate through
+            # _resolve_in to ensure the path doesn't escape the project directory.
+            _resolve_in(root, rel_str)
+        except ValueError:
+            # Path escapes the project directory; skip it
+            continue
+
+        if any(part in _SKIP_DIRS for part in rel_path.parts[:-1]):
+            continue
+        out.append(_rel(root, p))
     return "\n".join(out) if out else NO_MATCHES

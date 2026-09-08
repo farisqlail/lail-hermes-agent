@@ -136,3 +136,16 @@ async def test_glob_lists_matching_files_relative_to_project(tmp_path):
 
 async def test_glob_no_match_says_so(tmp_path):
     assert "no matches" in (await agent_tools._glob(tmp_path, "**/*.rs")).lower()
+
+
+async def test_glob_cannot_escape_the_project_root(tmp_path):
+    """A glob pattern that would escape the project (e.g. "../*.py") must not
+    return files outside the project directory, even though Path.glob() will
+    find them and Path.relative_to() silently succeeds on .. paths."""
+    outside = tmp_path.parent / "escape_target.py"
+    outside.write_text("escaped", encoding="utf-8")
+    try:
+        out = await agent_tools._glob(tmp_path, "../*.py")
+        assert "escape_target.py" not in out
+    finally:
+        outside.unlink()
