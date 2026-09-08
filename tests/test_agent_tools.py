@@ -4,6 +4,7 @@ Scoping adalah alasan modul ini ada. `claude -p` dan MCP `pc` sama-sama
 berjalan tanpa batas folder; step code tidak punya alasan bisa menyentuh
 berkas di luar proyek yang sedang dikerjakan.
 """
+import sys
 import pytest
 from pathlib import Path
 
@@ -149,3 +150,35 @@ async def test_glob_cannot_escape_the_project_root(tmp_path):
         assert "escape_target.py" not in out
     finally:
         outside.unlink()
+
+
+async def test_bash_runs_in_the_project_directory(tmp_path):
+    (tmp_path / "marker.txt").write_text("", encoding="utf-8")
+    out = await agent_tools._bash(tmp_path, f'"{sys.executable}" -c "import os;print(os.listdir())"')
+    assert "marker.txt" in out
+
+
+async def test_bash_reports_a_non_zero_exit_without_raising(tmp_path):
+    out = await agent_tools._bash(tmp_path, f'"{sys.executable}" -c "raise SystemExit(3)"')
+    assert "exit code 3" in out
+
+
+async def test_bash_merges_stderr_into_the_output(tmp_path):
+    out = await agent_tools._bash(
+        tmp_path, f'"{sys.executable}" -c "import sys;sys.stderr.write(\'boom\')"')
+    assert "boom" in out
+
+
+async def test_bash_times_out_and_says_so(tmp_path):
+    out = await agent_tools._bash(
+        tmp_path, f'"{sys.executable}" -c "import time;time.sleep(10)"', timeout_s=1)
+    assert "timed out" in out
+
+
+async def test_bash_truncates_large_output_with_a_visible_marker(tmp_path):
+    """Silent truncation would let the model reason about output it never
+    saw the end of."""
+    out = await agent_tools._bash(
+        tmp_path, f'"{sys.executable}" -c "print(\'x\' * 50000)"')
+    assert len(out) < 50000
+    assert "truncated" in out

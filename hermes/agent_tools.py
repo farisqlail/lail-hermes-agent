@@ -11,6 +11,7 @@ without a model, a client, or a network.
 """
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import re
 from pathlib import Path
@@ -145,3 +146,46 @@ async def _glob(cwd: Path, pattern: str) -> str:
             continue
         out.append(_rel(root, p))
     return "\n".join(out) if out else NO_MATCHES
+
+
+# Shorter than the step's own timeout on purpose: one wedged command must not
+# consume the whole code step's clock.
+BASH_TIMEOUT_S = 180
+# Per call. Large enough for a real test run's tail, small enough that a
+# runaway build log cannot fill the turn or the trace row.
+MAX_OUTPUT_CHARS = 8000
+
+
+def _truncate_output(text: str) -> str:
+    if len(text) <= MAX_OUTPUT_CHARS:
+        return text
+    keep = MAX_OUTPUT_CHARS // 2
+    dropped = len(text) - 2 * keep
+    # Head and tail, because a command's first lines say what ran and its last
+    # lines say how it ended; the middle is the expendable part.
+    return (f"{text[:keep]}\n"
+            f"... [truncated {dropped} chars] ...\n"
+            f"{text[-keep:]}")
+
+
+async def _bash(cwd: Path, command: str, timeout_s: int = BASH_TIMEOUT_S) -> str:
+    """Run one shell command inside the project directory.
+
+    Never raises for a failing command: a non-zero exit is information the
+    model must read and react to, not a tool malfunction. Only the tool being
+    unable to run at all is an error.
+    """
+    proc = await asyncio.create_subprocess_shell(
+        command, cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return f"command timed out after {timeout_s}s: {command}"
+    text = _truncate_output(out.decode(errors="replace"))
+    if proc.returncode:
+        return f"{text}\n[exit code {proc.returncode}]"
+    return text or "[no output]"
