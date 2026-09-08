@@ -163,3 +163,122 @@ async def test_one_turn_requests_streaming_usage():
     assert client.calls[0]["stream"] is True
     assert client.calls[0]["stream_options"] == {"include_usage": True}
 
+
+import asyncio
+
+import pytest
+
+from hermes import agent_tools, failure
+from hermes.orchestrator import _confirmed_done
+
+
+def _text_turn(text):
+    return [_delta(content=text), _usage_chunk(5, 1)]
+
+
+def _call_turn(id, name, args_json):
+    return [_delta(tool_calls=[_tc(0, id=id, name=name, arguments=args_json)])]
+
+
+async def test_run_executes_a_tool_then_finishes(tmp_path):
+    from hermes.orchestrator import _DONE_SENTINEL
+    (tmp_path / "a.txt").write_text("isi", encoding="utf-8")
+    client = FakeClient([
+        _call_turn("c1", "Read", '{"file_path": "a.txt"}'),
+        _text_turn(f"file says isi\n{_DONE_SENTINEL}"),
+    ])
+    res = await engine_api.run("baca a.txt", tmp_path, 30, client=client)
+    assert res.ok
+    assert res.outcome.final_text.endswith(_DONE_SENTINEL)
+    assert _confirmed_done(res.final_text)
+
+
+async def test_run_answers_every_tool_call_before_the_next_request(tmp_path):
+    """The API rejects a request whose previous assistant turn has an
+    unanswered tool_call_id."""
+    (tmp_path / "a.txt").write_text("isi", encoding="utf-8")
+    client = FakeClient([
+        _call_turn("c1", "Read", '{"file_path": "a.txt"}'),
+        _text_turn("DONE"),
+    ])
+    await engine_api.run("x", tmp_path, 30, client=client)
+    second = client.calls[1]["messages"]
+    assert second[-1]["role"] == "tool"
+    assert second[-1]["tool_call_id"] == "c1"
+
+
+async def test_run_emits_a_trace_the_distiller_understands(tmp_path):
+    (tmp_path / "a.txt").write_text("isi", encoding="utf-8")
+    lines = []
+    client = FakeClient([
+        _call_turn("c1", "Read", '{"file_path": "a.txt"}'),
+        _text_turn("DONE"),
+    ])
+    await engine_api.run("x", tmp_path, 30, client=client, on_event=lines.append)
+    kinds = [e.kind for ln in lines for e in distill_claude_line(ln)]
+    assert kinds[0] == "init"
+    assert "tool_use" in kinds and "tool_result" in kinds
+    assert kinds[-1] == "result"
+
+
+async def test_run_marks_a_failed_tool_result_not_ok(tmp_path):
+    lines = []
+    client = FakeClient([
+        _call_turn("c1", "Read", '{"file_path": "../escape"}'),
+        _text_turn("cannot do that"),
+    ])
+    await engine_api.run("x", tmp_path, 30, client=client, on_event=lines.append)
+    results = [e for ln in lines for e in distill_claude_line(ln)
+               if e.kind == "tool_result"]
+    assert results[0].ok is False
+
+
+async def test_run_stops_at_max_turns(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine_api, "MAX_TURNS", 3)
+    (tmp_path / "a.txt").write_text("isi", encoding="utf-8")
+    client = FakeClient([_call_turn(f"c{i}", "Read", '{"file_path": "a.txt"}')
+                         for i in range(3)])
+    res = await engine_api.run("x", tmp_path, 30, client=client)
+    assert len(client.calls) == 3
+    assert not _confirmed_done(res.final_text)
+
+
+async def test_run_puts_an_api_error_where_the_classifier_reads_it(tmp_path):
+    class Boom:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._c))
+
+        async def _c(self, **kwargs):
+            raise RuntimeError("429 rate limit exceeded")
+
+    res = await engine_api.run("x", tmp_path, 30, client=Boom())
+    assert not res.ok
+    assert "429" in res.stderr
+    assert failure.classify(res.stderr) == failure.TRANSIENT
+
+
+async def test_run_reports_an_auth_error_as_environment(tmp_path):
+    class Boom:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._c))
+
+        async def _c(self, **kwargs):
+            raise RuntimeError("401 unauthorized")
+
+    res = await engine_api.run("x", tmp_path, 30, client=Boom())
+    assert failure.classify(res.stderr) == failure.ENVIRONMENT
+
+
+async def test_run_times_out_with_the_same_shape_as_a_killed_subprocess(tmp_path):
+    class Slow:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._c))
+
+        async def _c(self, **kwargs):
+            await asyncio.sleep(10)
+
+    res = await engine_api.run("x", tmp_path, 1, client=Slow())
+    assert res.timed_out and not res.ok
+    assert res.stdout == "" and res.returncode is None
+
+

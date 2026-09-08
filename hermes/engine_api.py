@@ -18,8 +18,13 @@ dict zeroes the token counts — which is why they are pinned by tests.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from . import agent_tools
+from .engine_runner import RunResult, _await_within
 
 
 @dataclass
@@ -165,4 +170,139 @@ async def _one_turn(client, model: str, messages: list[dict],
     calls = [ToolCall(slot["id"], slot["name"], _parse_args(slot["args"]))
              for _, slot in sorted(partial.items())]
     return Turn("".join(text_parts), calls, usage)
+
+
+# Tool turns inside ONE session, distinct from orchestrator's MAX_ENGINE_ROUNDS
+# (repair rounds, outer). A model stuck in a tool loop would otherwise spend the
+# whole timeout_code_s budget, and unlike the CLI engines there is no per-call
+# cost figure to stop it — see the budget note in the design spec.
+MAX_TURNS = 40
+
+# Sent to the model as the tool result when the loop is cut short. Better than
+# silence: the closing turn should say why it stopped.
+_TURNS_EXHAUSTED = ("Turn budget exhausted. Stop calling tools and state "
+                    "plainly what is done and what remains.")
+
+
+def _system(cwd: Path) -> str:
+    """The engine's own preamble. Deliberately thin.
+
+    The task, the project context and the completion contract all arrive in the
+    user prompt, composed by `orchestrator._compose_engine_prompt` — restating
+    them here would let the two drift apart.
+    """
+    return ("You are a coding agent working inside a single project directory. "
+            f"The project root is {cwd}, and every path you pass to a tool is "
+            "resolved inside it — paths outside are refused. "
+            "Inspect files with the tools before changing them; never guess a "
+            "file's contents. Make the change, verify it, then report. "
+            "Do not ask for permission to run a command: run it.")
+
+
+def _final_text(turns: list[Turn]) -> str:
+    """The model's own last words.
+
+    Scans backwards for the last turn that actually said something: a run
+    frequently ends with a tool-call-only turn, and reporting that turn's empty
+    text as the result would blank `final_text` — which `_confirmed_done` reads
+    to decide the step is finished.
+    """
+    for turn in reversed(turns):
+        if turn.text.strip():
+            return turn.text
+    return ""
+
+
+def _sum_usage(turns: list[Turn]) -> dict:
+    total = {"input_tokens": 0, "output_tokens": 0}
+    for turn in turns:
+        for key in total:
+            total[key] += turn.usage.get(key, 0)
+    return total
+
+
+async def _loop(client, model: str, prompt: str, cwd: Path, emit) -> list[Turn]:
+    messages = [{"role": "system", "content": _system(cwd)},
+                {"role": "user", "content": prompt}]
+    turns: list[Turn] = []
+    for n in range(MAX_TURNS):
+        turn = await _one_turn(client, model, messages, agent_tools.TOOLS)
+        turns.append(turn)
+        emit(emit_assistant(turn.text, turn.tool_calls, turn.usage))
+        if not turn.tool_calls:
+            break
+        messages.append({
+            "role": "assistant", "content": turn.text or None,
+            "tool_calls": [{"id": c.id, "type": "function",
+                            "function": {"name": c.name,
+                                         "arguments": json.dumps(c.args)}}
+                           for c in turn.tool_calls]})
+        last = n == MAX_TURNS - 1
+        for call in turn.tool_calls:
+            # Every id must be answered before the next request, including on
+            # the final turn — an unanswered tool_call_id is rejected outright.
+            if last:
+                text, ok = _TURNS_EXHAUSTED, False
+            else:
+                text, ok = await agent_tools.call(call.name, call.args, cwd)
+            emit(emit_tool_result(call.id, text, is_error=not ok))
+            messages.append({"role": "tool", "tool_call_id": call.id,
+                             "content": text})
+    return turns
+
+
+async def run(prompt: str, cwd: Path, timeout_s: int, model: str = "",
+              on_event=None, deadline=None, client=None, **_) -> RunResult:
+    """One engine session against the 9Router gateway.
+
+    Returns `engine_runner.RunResult` unchanged, so every caller — the retry
+    loop, the budget, the failure classifier, the step report — reads this
+    engine exactly as it reads a CLI. `**_` swallows the CLI-only kwargs
+    (`ask_url`, `session_id`, `effort`) that `run_engine` may pass through.
+    """
+    if client is None:
+        from openai import AsyncOpenAI
+        from . import config
+        settings, secrets = config.load_settings(), config.load_secrets()
+        model = model or settings.model
+        client = AsyncOpenAI(base_url=settings.nvidia_base_url,
+                             api_key=secrets.nvidia_api_key)
+
+    lines: list[str] = []
+
+    def emit(obj: dict) -> None:
+        line = json.dumps(obj, ensure_ascii=False)
+        lines.append(line)
+        if on_event is not None:
+            try:
+                on_event(line)
+            except Exception:
+                # A broken trace consumer must never take down a run whose real
+                # work is fine — same posture as engine_runner._pump.
+                pass
+
+    emit(emit_init(model))
+    work = _loop(client, model, prompt, Path(cwd), emit)
+    try:
+        if deadline is None:
+            turns = await asyncio.wait_for(work, timeout=timeout_s)
+        else:
+            turns = await _await_within(work, deadline)
+    except asyncio.TimeoutError:
+        # Same shape the subprocess branch returns for a killed engine.
+        return RunResult(False, "", "", True, None)
+    except Exception as e:
+        # The message, not the type: `failure.classify` matches on text like
+        # "429" or "401", and the retry loop's whole decision hangs off it.
+        why = f"{type(e).__name__}: {e}"
+        emit(emit_result("", {}, api_error=why))
+        stdout = "\n".join(lines)
+        from .engine_result import parse_claude_json
+        return RunResult(False, stdout, why, False, 1, parse_claude_json(stdout))
+
+    emit(emit_result(_final_text(turns), _sum_usage(turns), num_turns=len(turns)))
+    stdout = "\n".join(lines)
+    from .engine_result import parse_claude_json
+    return RunResult(True, stdout, "", False, 0, parse_claude_json(stdout))
+
 
