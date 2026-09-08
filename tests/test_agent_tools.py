@@ -65,3 +65,38 @@ async def test_write_creates_parent_directories(tmp_path):
 async def test_write_outside_project_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="escapes project directory"):
         await agent_tools._write(tmp_path, "../evil.txt", "x")
+
+
+async def test_edit_replaces_a_unique_string(tmp_path):
+    f = tmp_path / "a.py"
+    f.write_text("x = 1\ny = 2\n", encoding="utf-8")
+    await agent_tools._edit(tmp_path, "a.py", "x = 1", "x = 99")
+    assert f.read_text(encoding="utf-8") == "x = 99\ny = 2\n"
+
+
+async def test_edit_refuses_a_non_unique_string(tmp_path):
+    """Replacing the first of several matches is how an edit tool silently
+    corrupts a file: the model asked for one change and got a different one."""
+    f = tmp_path / "a.py"
+    f.write_text("v = 1\nv = 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="appears 2 times"):
+        await agent_tools._edit(tmp_path, "a.py", "v = 1", "v = 2")
+    assert f.read_text(encoding="utf-8") == "v = 1\nv = 1\n"
+
+
+async def test_edit_replace_all_is_opt_in(tmp_path):
+    f = tmp_path / "a.py"
+    f.write_text("v = 1\nv = 1\n", encoding="utf-8")
+    await agent_tools._edit(tmp_path, "a.py", "v = 1", "v = 2", replace_all=True)
+    assert f.read_text(encoding="utf-8") == "v = 2\nv = 2\n"
+
+
+async def test_edit_missing_string_says_so(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="not found"):
+        await agent_tools._edit(tmp_path, "a.py", "nope", "y")
+
+
+async def test_edit_outside_project_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="escapes project directory"):
+        await agent_tools._edit(tmp_path, "../a.py", "a", "b")

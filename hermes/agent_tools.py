@@ -50,3 +50,26 @@ async def _write(cwd: Path, file_path: str, content: str) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return f"wrote {len(content)} chars to {file_path}"
+
+
+async def _edit(cwd: Path, file_path: str, old_string: str,
+                new_string: str, replace_all: bool = False) -> str:
+    """Replace an exact string in a file.
+
+    Uniqueness is enforced rather than assumed. Replacing the first of several
+    matches is the classic way an edit tool corrupts a file quietly: the model
+    asked for one change and a different one happened, and nothing errored.
+    """
+    target = _resolve_in(cwd, file_path)
+    if not target.is_file():
+        raise ValueError(f"no such file: {file_path}")
+    text = target.read_text(encoding="utf-8", errors="replace")
+    count = text.count(old_string)
+    if count == 0:
+        raise ValueError(f"old_string not found in {file_path}")
+    if count > 1 and not replace_all:
+        raise ValueError(
+            f"old_string appears {count} times in {file_path} — pass "
+            "replace_all=true, or include more surrounding context to make it unique")
+    target.write_text(text.replace(old_string, new_string), encoding="utf-8")
+    return f"replaced {count if replace_all else 1} occurrence(s) in {file_path}"
