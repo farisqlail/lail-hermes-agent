@@ -521,7 +521,7 @@ function AppContent() {
                 <Sparkles size={11} style={{ color: 'var(--accent)' }} />
                 <span>Gateway ready</span>
               </div>
-              <span className="status-version"># v0.0.5</span>
+              <span className="status-version"># v0.0.6</span>
             </div>
           </div>
         </aside>
