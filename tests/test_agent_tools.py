@@ -233,3 +233,13 @@ async def test_call_unknown_tool_is_a_failed_result(tmp_path):
 async def test_call_missing_required_argument_is_a_failed_result(tmp_path):
     text, ok = await agent_tools.call("Read", {}, tmp_path)
     assert not ok and "file_path" in text
+
+
+async def test_call_malformed_regex_in_grep_is_a_failed_result(tmp_path):
+    text, ok = await agent_tools.call("Grep", {"pattern": "("}, tmp_path)
+    assert not ok and text
+
+
+async def test_call_required_argument_passed_as_none_is_a_failed_result(tmp_path):
+    text, ok = await agent_tools.call("Read", {"file_path": None}, tmp_path)
+    assert not ok and text

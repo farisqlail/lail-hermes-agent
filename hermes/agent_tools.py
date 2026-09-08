@@ -239,10 +239,10 @@ TOOLS = [
 async def call(name: str, args: dict, cwd: Path) -> tuple[str, bool]:
     """Run one tool call. Returns `(text, ok)` and never raises.
 
-    A bad argument, a missing file, a path outside the project: every one of
-    these is something the model can see and correct on the next turn. Letting
-    the exception escape would instead end the whole engine run over a mistake
-    that costs one turn to fix.
+    A bad argument, a missing file, a malformed regex, a path outside the
+    project: every one of these is something the model can see and correct on the
+    next turn. Letting the exception escape would instead end the whole engine
+    run over a mistake that costs one turn to fix.
     """
     args = args if isinstance(args, dict) else {}
     try:
@@ -263,5 +263,5 @@ async def call(name: str, args: dict, cwd: Path) -> tuple[str, bool]:
         return f"unknown tool: {name}", False
     except KeyError as e:
         return f"missing required argument: {e.args[0]}", False
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError, TypeError, re.error) as e:
         return str(e), False
