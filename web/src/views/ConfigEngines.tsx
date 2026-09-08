@@ -120,6 +120,7 @@ export function ConfigEngines() {
           <option value="auto">Auto (Dianalisis otomatis oleh Planner)</option>
           <option value="claude">Claude CLI (claude -p)</option>
           <option value="antigravity">Antigravity CLI (agy -p)</option>
+          <option value="api">9Router API (in-process, tanpa CLI)</option>
         </select>
       </Field>
 

@@ -1510,7 +1510,9 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
               className="ask-tool-icon-btn"
               title={`Engine: ${selectedEngine.toUpperCase()} (Klik untuk ganti)`}
               onClick={() => {
-                const nextEng = selectedEngine === 'auto' ? 'claude' : selectedEngine === 'claude' ? 'antigravity' : 'auto';
+                const nextEng = selectedEngine === 'auto' ? 'claude'
+                  : selectedEngine === 'claude' ? 'antigravity'
+                  : selectedEngine === 'antigravity' ? 'api' : 'auto';
                 handleEngineChange(nextEng);
               }}
             >

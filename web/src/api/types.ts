@@ -57,7 +57,7 @@ export interface Settings {
   chat_temperature: number;
   agent_name: string;
   allowed_user_ids: number[];
-  default_engine: 'claude' | 'antigravity' | 'auto';
+  default_engine: 'claude' | 'antigravity' | 'api' | 'auto';
   claude_model: string;
   claude_effort: '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   agy_model: string;

@@ -179,6 +179,7 @@ export function OfficeSessionChat({ sessionId, employees, onBack, onDeleted, onS
                 <option value="auto">Auto</option>
                 <option value="claude">Claude</option>
                 <option value="antigravity">Antigravity</option>
+                <option value="api">9Router</option>
               </select>
             </div>
           )}
