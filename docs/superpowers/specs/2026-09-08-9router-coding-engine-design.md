@@ -87,12 +87,33 @@ kosong** — bukan error. Maka tool native memakai nama persis punya claude.
 
 Baseline suite saat spec ditulis: 985 lulus.
 
+Probe kedua, terhadap gateway hidup di `http://127.0.0.1:20128/v1` dengan model
+`cc/claude-opus-5`, membuktikan prasyarat yang tersisa:
+
+- `tools` diterima; `finish_reason` `tool_calls`; nama dan argumen benar
+- round-trip lengkap: `assistant.tool_calls` → `role: tool` → jawaban akhir
+  yang membaca hasil tool, bukan menebak
+- streaming membawa delta `tool_calls`, fragmen argumen tersusun ulang utuh,
+  dan `stream_options={"include_usage": True}` memang mengirim usage
+
+Temuan kedua yang mengubah rancangan: **bentuk usage berbeda dan gagal secara
+senyap.** 9Router menjawab gaya OpenAI (`prompt_tokens`, `completion_tokens`),
+sedangkan `engine_stream._total_input_tokens` membaca `input_tokens`,
+`cache_creation_input_tokens`, `cache_read_input_tokens`. Meneruskan usage apa
+adanya membuat hitungan token menjadi `None` tanpa error — kelas kegagalan yang
+sama dengan temuan `_EDIT_TOOLS`. Maka `engine_api` wajib menerjemahkan kunci
+usage ke penamaan Anthropic saat menyusun baris `assistant` dan envelope.
+`prompt_tokens_details` bernilai `None`, jadi tidak ada rincian cache dan
+`input_tokens = prompt_tokens` utuh — tidak ada risiko hitung ganda.
+
 ### Yang belum dibuktikan
 
-9Router memancarkan `tool_calls` untuk model yang terkonfigurasi
-(`cc/claude-opus-5`). Gateway berjalan lokal di `http://127.0.0.1:20128/v1` dan
-sedang mati saat probe dicoba. Ini prasyarat sebelum satu baris `engine_api.py`
-ditulis; kalau gagal, seluruh rencana batal di titik itu.
+`prompt_tokens` yang dilaporkan gateway tidak konsisten antara panggilan
+streaming dan non-streaming untuk `messages` yang identik (2097 vs 4771 pada
+probe). Bukan penghalang implementasi, tetapi total token di timeline belum
+boleh dipercaya sebelum ini dijelaskan. Diperiksa saat gerbang manual fase 2,
+bersamaan dengan keputusan cost cap — keduanya soal akuntansi angka dari
+gateway yang sama.
 
 ## Arsitektur
 
@@ -295,6 +316,9 @@ pola yang sudah dipakai `conftest.py` untuk `main.AsyncOpenAI`:
   diharapkan, termasuk `file_path` hanya untuk tool edit
 - envelope penutup berisi teks asisten terakhir → `_confirmed_done` melihat
   `DONE`
+- usage gaya OpenAI (`prompt_tokens`/`completion_tokens`) diterjemahkan ke
+  penamaan Anthropic, sehingga `distill_claude_line` melaporkan angka dan bukan
+  `None`
 - setiap `tool_call_id` dijawab sebelum permintaan berikutnya
 - tool gagal → `is_error` → `ok=False` di trace
 - `MAX_TURNS` menghentikan loop
