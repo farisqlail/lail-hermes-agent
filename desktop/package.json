@@ -1,6 +1,6 @@
 {
   "name": "hermes-desktop",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Hermes AI Agent - Native Windows Desktop Application",
   "main": "src/main.js",
   "author": "LAIL Hermes Team",
@@ -17,6 +17,8 @@
     "electron-updater": "^6.3.9"
   },
   "devDependencies": {
+    "7zip-bin": "^5.2.0",
+    "app-builder-bin": "^4.2.0",
     "electron": "^31.3.1",
     "electron-builder": "^24.13.3"
   },

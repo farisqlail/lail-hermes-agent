@@ -19,9 +19,16 @@ Write-Host ""
 # 1. Generate Icons
 Write-Host "[1/5] Generating Application & Tray Icons from user logo..." -ForegroundColor Yellow
 
-$py = "$RepoRoot\.venv\Scripts\python.exe"
-if (-not (Test-Path $py)) {
-    $py = "python"
+$py = "python"
+if (Test-Path "$RepoRoot\.venv\Scripts\python.exe") {
+    try {
+        & "$RepoRoot\.venv\Scripts\python.exe" --version *>$null
+        if ($LASTEXITCODE -eq 0) {
+            $py = "$RepoRoot\.venv\Scripts\python.exe"
+        }
+    } catch {
+        $py = "python"
+    }
 }
 & $py "$DesktopDir\generate_icons.py"
 Write-Host "  Icons generated successfully." -ForegroundColor Green
