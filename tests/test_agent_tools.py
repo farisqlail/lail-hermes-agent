@@ -182,3 +182,14 @@ async def test_bash_truncates_large_output_with_a_visible_marker(tmp_path):
         tmp_path, f'"{sys.executable}" -c "print(\'x\' * 50000)"')
     assert len(out) < 50000
     assert "truncated" in out
+
+
+async def test_bash_truncation_never_returns_more_than_it_received(tmp_path):
+    """A truncator that lengthens its input violates the cap. Exercise the
+    boundary band (cap+1 to cap+29 chars) where the marker's variable width
+    can cause this bug."""
+    # Generate output of exactly MAX_OUTPUT_CHARS + 1
+    output_size = agent_tools.MAX_OUTPUT_CHARS + 1
+    out = await agent_tools._bash(
+        tmp_path, f'"{sys.executable}" -c "print(\'y\' * {output_size})"')
+    assert len(out) <= agent_tools.MAX_OUTPUT_CHARS

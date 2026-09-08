@@ -159,7 +159,12 @@ MAX_OUTPUT_CHARS = 8000
 def _truncate_output(text: str) -> str:
     if len(text) <= MAX_OUTPUT_CHARS:
         return text
-    keep = MAX_OUTPUT_CHARS // 2
+    # The marker occupies part of the cap, and its width varies with the digit
+    # count, so the budget is computed from a worst-case rendering rather than
+    # guessed. Without this, an input a few chars over the cap comes back
+    # LONGER than it went in — a truncator that lengthens its input.
+    budget = MAX_OUTPUT_CHARS - len(f"\n... [truncated {len(text)} chars] ...\n")
+    keep = max(0, budget // 2)
     dropped = len(text) - 2 * keep
     # Head and tail, because a command's first lines say what ran and its last
     # lines say how it ended; the middle is the expendable part.
