@@ -100,3 +100,39 @@ async def test_edit_missing_string_says_so(tmp_path):
 async def test_edit_outside_project_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="escapes project directory"):
         await agent_tools._edit(tmp_path, "../a.py", "a", "b")
+
+
+async def test_grep_reports_file_and_line(tmp_path):
+    (tmp_path / "a.py").write_text("import os\nvalue = 42\n", encoding="utf-8")
+    out = await agent_tools._grep(tmp_path, r"value\s*=")
+    assert "a.py:2" in out and "value = 42" in out
+
+
+async def test_grep_filters_by_glob(tmp_path):
+    (tmp_path / "a.py").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("needle\n", encoding="utf-8")
+    out = await agent_tools._grep(tmp_path, "needle", glob="*.py")
+    assert "a.py" in out and "a.txt" not in out
+
+
+async def test_grep_no_match_says_so_rather_than_returning_empty(tmp_path):
+    """hub-style callers treat empty output as failure; a search that
+    legitimately found nothing must not read as a broken tool."""
+    (tmp_path / "a.py").write_text("x\n", encoding="utf-8")
+    assert "no matches" in (await agent_tools._grep(tmp_path, "zzz")).lower()
+
+
+async def test_grep_path_outside_project_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="escapes project directory"):
+        await agent_tools._grep(tmp_path, "x", path="..")
+
+
+async def test_glob_lists_matching_files_relative_to_project(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("", encoding="utf-8")
+    out = await agent_tools._glob(tmp_path, "**/*.py")
+    assert "src/a.py" in out.replace("\\", "/")
+
+
+async def test_glob_no_match_says_so(tmp_path):
+    assert "no matches" in (await agent_tools._glob(tmp_path, "**/*.rs")).lower()

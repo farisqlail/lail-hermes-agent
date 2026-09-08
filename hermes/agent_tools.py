@@ -11,6 +11,8 @@ without a model, a client, or a network.
 """
 from __future__ import annotations
 
+import fnmatch
+import re
 from pathlib import Path
 
 # Read/Write refuse anything larger. A file this big is not something the model
@@ -73,3 +75,58 @@ async def _edit(cwd: Path, file_path: str, old_string: str,
             "replace_all=true, or include more surrounding context to make it unique")
     target.write_text(text.replace(old_string, new_string), encoding="utf-8")
     return f"replaced {count if replace_all else 1} occurrence(s) in {file_path}"
+
+
+# Matches beyond this are cut. A search that hits thousands of lines is a
+# search the model should narrow, and the full list would blow the turn's
+# context long before it helped.
+MAX_GREP_MATCHES = 200
+
+NO_MATCHES = "no matches"
+
+# Never walked. These are large, machine-generated, and never what a code step
+# is looking for.
+_SKIP_DIRS = frozenset({".git", "node_modules", ".venv", "venv", "__pycache__",
+                        ".next", "dist", "build", ".pytest_cache"})
+
+
+def _walk(root: Path):
+    """Every file under `root`, skipping the directories nobody greps."""
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if any(part in _SKIP_DIRS for part in path.relative_to(root).parts[:-1]):
+            continue
+        yield path
+
+
+def _rel(root: Path, path: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+async def _grep(cwd: Path, pattern: str, path: str = "", glob: str = "") -> str:
+    root = _resolve_in(cwd, path) if path else Path(cwd).resolve()
+    rx = re.compile(pattern)
+    hits: list[str] = []
+    for f in _walk(root):
+        if glob and not fnmatch.fnmatch(f.name, glob):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue           # unreadable file is not a failed search
+        for n, line in enumerate(text.splitlines(), 1):
+            if rx.search(line):
+                hits.append(f"{_rel(root, f)}:{n}: {line.strip()[:200]}")
+                if len(hits) >= MAX_GREP_MATCHES:
+                    hits.append(f"... stopped at {MAX_GREP_MATCHES} matches")
+                    return "\n".join(hits)
+    return "\n".join(hits) if hits else NO_MATCHES
+
+
+async def _glob(cwd: Path, pattern: str) -> str:
+    root = Path(cwd).resolve()
+    out = [_rel(root, p) for p in sorted(root.glob(pattern))
+           if p.is_file()
+           and not any(part in _SKIP_DIRS for part in p.relative_to(root).parts[:-1])]
+    return "\n".join(out) if out else NO_MATCHES
