@@ -35,13 +35,13 @@ def parse_project_ref(text: str) -> tuple[str | None, str]:
     return m.group(1), re.sub(r"\s{2,}", " ", cleaned)
 
 
-_ENGINE_REF = re.compile(r"(?:^|(?<=\s))!(claude|agy|antigravity|auto)\b", re.I)
+_ENGINE_REF = re.compile(r"(?:^|(?<=\s))!(claude|agy|antigravity|api|9router|auto)\b", re.I)
 
 
 def parse_engine_ref(text: str) -> tuple[str | None, str]:
     """Split a task text into (engine name, text without the sigil).
 
-    Matches !claude, !agy, !antigravity, or !auto.
+    Matches !claude, !agy, !antigravity, !api, !9router, or !auto.
     """
     m = _ENGINE_REF.search(text)
     if m is None:
@@ -49,6 +49,8 @@ def parse_engine_ref(text: str) -> tuple[str | None, str]:
     eng = m.group(1).lower()
     if eng == "agy":
         eng = "antigravity"
+    if eng == "9router":
+        eng = "api"
     cleaned = (text[:m.start()] + text[m.end():]).strip()
     return eng, re.sub(r"\s{2,}", " ", cleaned)
 

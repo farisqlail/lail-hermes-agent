@@ -394,12 +394,14 @@ def _why(res) -> str:
 
 
 def choose_engine(step: dict, settings: Settings, task_engine: str | None = None) -> str:
-    if task_engine in ("claude", "antigravity"):
+    if task_engine in ("claude", "antigravity", "api"):
         return task_engine
-    if step.get("engine") in ("claude", "antigravity"):
+    if step.get("engine") in ("claude", "antigravity", "api"):
         return step["engine"]
-    if settings.default_engine in ("claude", "antigravity"):
+    if settings.default_engine in ("claude", "antigravity", "api"):
         return settings.default_engine
+    # Phase 1 leaves `auto` on the CLIs. Flipping this to "api" is phase 2, and
+    # is gated on the manual comparison run recorded in the design spec.
     return "antigravity" if step.get("scope") == "large" else "claude"
 
 class Orchestrator:
@@ -820,19 +822,21 @@ class Orchestrator:
                     tuning["effort"] = self.settings.claude_effort
             elif engine == "antigravity" and self.settings.agy_model:
                 tuning["model"] = self.settings.agy_model
+            elif engine == "api" and self.settings.api_model:
+                tuning["model"] = self.settings.api_model
             # An engine that can call ask_user gets a per-round run token and a
             # pausable clock: the token maps its tool calls back to this chat,
             # and the deadline is suspended while the operator thinks so a slow
             # answer never times the step out. Opt-in — a registry is injected
             # only in the live app, so the many run_engine-only test doubles
             # keep their narrow signature (the tuning/session pattern).
-            from .engine_runner import MCP_CONFIG_FLAG, STREAMING
+            from .engine_runner import ASK_CAPABLE, STREAMING
             # Live trace, for the engines whose stdout is JSONL. One sink for
             # the whole step so its rounds land in one ordered timeline.
             trace_kw = ({"on_event": self._trace_sink(task_id, idx, engine)}
                         if engine in STREAMING else {})
             ask = self.deps.get("ask_registry")
-            ask_here = ask is not None and engine in MCP_CONFIG_FLAG
+            ask_here = ask is not None and engine in ASK_CAPABLE
             # Hermes names the session rather than reading one back, so a
             # round that dies before printing anything is still resumable.
             session_id, resume_id = str(uuid.uuid4()), ""
@@ -850,7 +854,8 @@ class Orchestrator:
                     token = ask.open_run(task_id, chat_id, deadline)
                     ask_kw = {"deadline": deadline,
                               "ask_url": self.deps.get("ask_url", ""),
-                              "ask_token": token}
+                              "ask_token": token,
+                              "ask_registry": ask}
                 try:
                     res = await self.deps["run_engine"](
                         engine, prompt, proj, self.settings.timeout_code_s,

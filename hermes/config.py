@@ -171,7 +171,7 @@ class Settings(BaseModel):
     image_retention_days: int = 7
     agent_name: str = "Lail Agent"
     allowed_user_ids: list[int] = Field(default_factory=list)
-    default_engine: Literal["claude", "antigravity", "auto"] = "auto"
+    default_engine: Literal["claude", "antigravity", "api", "auto"] = "auto"
     # Per-engine tuning ("" = leave that CLI's own default). Model fields are
     # free text on purpose: the valid sets (claude aliases like "opus", agy
     # model ids) change faster than this code. Per-engine because the two
@@ -181,6 +181,10 @@ class Settings(BaseModel):
     claude_model: str = ""
     claude_effort: Literal["", "low", "medium", "high", "xhigh", "max"] = ""
     agy_model: str = ""
+    # The 9Router model the in-process `api` engine drives. Empty falls back to
+    # `model` — the same id the planner and chat already use, which is the
+    # right default given they share one gateway and one key.
+    api_model: str = ""
     projects_path: str = ""
     projects: dict[str, str] = Field(default_factory=dict)  # name -> absolute path
     android_sdk_path: str = ""
@@ -303,6 +307,17 @@ class Settings(BaseModel):
             raise ValueError(
                 "claude model must be a single ASCII token, e.g. 'opus' or "
                 "'claude-fable-5' — check for spaces or smart quotes")
+        return v
+
+    @field_validator("api_model")
+    @classmethod
+    def _api_model_shape(cls, v: str) -> str:
+        # Gateway model ids ('cc/claude-opus-5') carry no spaces; ASCII-only
+        # catches smart quotes from copy-paste, same as the claude field.
+        if v and (not v.isascii() or any(c.isspace() for c in v)):
+            raise ValueError(
+                "api model must be a single ASCII token, e.g. 'cc/claude-opus-5' "
+                "— check for spaces or smart quotes")
         return v
 
     @field_validator("agy_model")

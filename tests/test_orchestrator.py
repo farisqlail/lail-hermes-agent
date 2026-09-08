@@ -1164,3 +1164,30 @@ async def test_a_second_task_cannot_swap_settings_mid_run(hermes_home):
     await running
 
     assert seen and set(seen) == {"claude"}   # the engine loop may retry
+
+
+def test_choose_engine_honours_an_explicit_api_task_engine():
+    from hermes.config import Settings
+    from hermes.orchestrator import choose_engine
+    assert choose_engine({}, Settings(), task_engine="api") == "api"
+
+
+def test_choose_engine_honours_api_as_the_configured_default():
+    from hermes.config import Settings
+    from hermes.orchestrator import choose_engine
+    assert choose_engine({}, Settings(default_engine="api")) == "api"
+
+
+def test_auto_still_picks_a_cli_engine_in_phase_one():
+    """Phase 1 is additive: `auto` must behave exactly as it did before."""
+    from hermes.config import Settings
+    from hermes.orchestrator import choose_engine
+    assert choose_engine({"scope": "large"}, Settings()) == "antigravity"
+    assert choose_engine({}, Settings()) == "claude"
+
+
+def test_engine_sigil_accepts_api_and_9router():
+    from hermes.project_resolve import parse_engine_ref
+    assert parse_engine_ref("!api perbaiki login")[0] == "api"
+    assert parse_engine_ref("!9router perbaiki login")[0] == "api"
+

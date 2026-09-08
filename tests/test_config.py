@@ -272,3 +272,22 @@ def test_mcp_server_rejects_unknown_transport():
     import pytest
     with pytest.raises(Exception):
         config.McpServer(name="x", type="http", transport="carrier-pigeon")
+
+
+def test_api_engine_is_a_valid_default_engine():
+    from hermes.config import Settings
+    assert Settings(default_engine="api").default_engine == "api"
+
+
+def test_api_model_defaults_to_empty_meaning_the_chat_model():
+    from hermes.config import Settings
+    assert Settings().api_model == ""
+
+
+def test_api_model_rejects_a_value_with_whitespace():
+    import pytest
+    from pydantic import ValidationError
+    from hermes.config import Settings
+    with pytest.raises(ValidationError):
+        Settings(api_model="cc/claude opus 5")
+
