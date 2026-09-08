@@ -30,14 +30,14 @@ COMMANDS: dict[str, Callable[[str], list[str]]] = {
                               "--output-format", "stream-json"],
 }
 # Whose stdout is line-delimited JSON worth handing to a live consumer.
-STREAMING = {"claude", "antigravity"}
+STREAMING = {"claude", "antigravity", "api"}
 # engines that read the prompt from stdin instead of argv: sidesteps cmd.exe
 # quoting of newlines/quotes and the 8191-char command-line limit on Windows
 STDIN_PROMPT = {"claude"}
 # which tuning flags each CLI accepts (verified against --help 2026-07-17):
 # both take --model; only claude has --effort. An unknown flag crashes the
 # engine on every step, so unsupported tuning is dropped, not passed through.
-MODEL_FLAG = {"claude", "antigravity"}
+MODEL_FLAG = {"claude", "antigravity", "api"}
 EFFORT_FLAG = {"claude"}
 # Engines whose sessions Hermes can name and reopen. agy has --conversation,
 # and since the switch to stream-json its `result` envelope does print the
@@ -55,7 +55,13 @@ PRINT_TIMEOUT_FLAG = {"antigravity"}
 # engine is read as plain text, exactly as before this module existed. Both
 # entries are load-bearing now that both CLIs run in stream-json: without a
 # parser, final_text degrades to raw stdout, which is JSONL rather than prose.
-PARSERS = {"claude": parse_claude_json, "antigravity": parse_agy_stream}
+PARSERS = {"claude": parse_claude_json, "antigravity": parse_agy_stream,
+           "api": parse_claude_json}
+# Which engines can reach the operator through ask_user. Distinct from
+# MCP_CONFIG_FLAG, which is narrower: that one says whose *argv* carries
+# --mcp-config. The api engine asks in-process — same registry, no config file,
+# no token header, no port — so it belongs to one set and not the other.
+ASK_CAPABLE = {"claude", "api"}
 # Whose CLI accepts --mcp-config pointing at Hermes' in-process ask_user server.
 # claude namespaces the tool as mcp__hermes__ask_user; --dangerously-skip-
 # permissions (always passed) auto-approves it. agy's MCP config shape differs
@@ -259,17 +265,26 @@ async def _communicate_within(proc, send, deadline, on_line=None, poll_s: float 
     """`_pump`, bounded by a pausable `Deadline`."""
     return await _await_within(_pump(proc, send, on_line), deadline, poll_s)
 
-async def run_engine(engine: Literal["claude", "antigravity"], prompt: str,
+async def run_engine(engine: Literal["claude", "antigravity", "api"], prompt: str,
                      cwd: Path, timeout_s: int,
                      extra_env: dict | None = None,
                      model: str = "", effort: str = "",
                      session_id: str = "", resume_id: str = "",
                      ask_url: str = "", ask_token: str = "",
+                     ask_registry=None,
                      deadline=None, on_event=None) -> RunResult:
     """`on_event(line)` receives each stdout line of a streaming engine as it
     arrives — the hook the live task timeline hangs off. It stays a plain
     callback taking a string: this module has no business knowing about the
     store, so distilling and persisting belong to the caller."""
+    # The api engine has no binary, no argv and no stdout to pump: it runs the
+    # loop in this process. Everything below this line is subprocess plumbing.
+    if engine == "api":
+        from . import engine_api
+        return await engine_api.run(prompt, cwd, timeout_s, model=model,
+                                    on_event=on_event, deadline=deadline,
+                                    ask_registry=ask_registry, ask_token=ask_token)
+
     # A wedged engine must never leave the config behind: it carries the run
     # token, and a stale one on disk would let a later engine reach a closed run.
     mcp_config_path = ""

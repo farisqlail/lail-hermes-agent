@@ -339,8 +339,11 @@ def distill_agy_line(line: str) -> list[TraceEvent]:
 
 
 # Which distiller reads which engine. Absent means the engine emits no stream
-# worth rendering, and its tasks simply have no trace.
-DISTILLERS = {"claude": distill_claude_line, "antigravity": distill_agy_line}
+# worth rendering, and its tasks simply have no trace. `api` is deliberately
+# the same reader as claude: engine_api emits claude-shaped stream-json so that
+# nothing in this module has to know it exists.
+DISTILLERS = {"claude": distill_claude_line, "antigravity": distill_agy_line,
+              "api": distill_claude_line}
 
 
 def distill_line(line: str, engine: str) -> list[TraceEvent]:

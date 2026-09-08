@@ -372,3 +372,54 @@ def test_extra_tool_dirs_skips_missing_dirs(monkeypatch, tmp_path):
     real = tmp_path / "npm"; real.mkdir()
     monkeypatch.setenv("APPDATA", str(tmp_path))
     assert str(real) in engine_runner._extra_tool_dirs()
+
+
+async def test_api_engine_never_spawns_a_subprocess(tmp_path, monkeypatch):
+    """The whole point of the api engine is that there is no binary to find;
+    reaching _resolve would mean the dispatch branch was missed."""
+    def boom(argv):
+        raise AssertionError("api engine must not resolve a binary")
+
+    monkeypatch.setattr(engine_runner, "_resolve", boom)
+
+    async def fake_run(prompt, cwd, timeout_s, **kwargs):
+        return engine_runner.RunResult(True, "ok", "", False, 0)
+
+    from hermes import engine_api
+    monkeypatch.setattr(engine_api, "run", fake_run)
+    res = await engine_runner.run_engine("api", "x", tmp_path, timeout_s=5)
+    assert res.ok and res.stdout == "ok"
+
+
+async def test_api_engine_forwards_model_and_trace_hook(tmp_path, monkeypatch):
+    seen = {}
+
+    async def fake_run(prompt, cwd, timeout_s, **kwargs):
+        seen.update(kwargs)
+        return engine_runner.RunResult(True, "", "", False, 0)
+
+    from hermes import engine_api
+    monkeypatch.setattr(engine_api, "run", fake_run)
+    sink = lambda line: None
+    await engine_runner.run_engine("api", "x", tmp_path, timeout_s=5,
+                                   model="cc/claude-opus-5", on_event=sink)
+    assert seen["model"] == "cc/claude-opus-5"
+    assert seen["on_event"] is sink
+
+
+def test_api_engine_is_streaming_and_parsed():
+    from hermes.engine_result import parse_claude_json
+    assert "api" in engine_runner.STREAMING
+    assert engine_runner.PARSERS["api"] is parse_claude_json
+
+
+def test_api_engine_is_ask_capable_but_takes_no_mcp_config():
+    """--mcp-config is an argv flag for a CLI; the api engine has no argv.
+    Its ask_user is injected in-process, so the two sets must differ."""
+    assert "api" in engine_runner.ASK_CAPABLE
+    assert "api" not in engine_runner.MCP_CONFIG_FLAG
+
+
+def test_api_engine_is_not_resumable_in_phase_one():
+    assert "api" not in engine_runner.RESUMABLE
+

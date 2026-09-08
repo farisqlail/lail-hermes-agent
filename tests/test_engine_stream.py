@@ -383,3 +383,9 @@ def test_distill_line_routes_by_engine():
 
 def test_distill_line_is_silent_for_an_engine_with_no_stream():
     assert distill_line('{"type":"result"}', "some-future-engine") == []
+
+
+def test_api_engine_is_distilled_as_claude():
+    from hermes.engine_stream import DISTILLERS, distill_claude_line
+    assert DISTILLERS["api"] is distill_claude_line
+
