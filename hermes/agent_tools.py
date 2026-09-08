@@ -194,3 +194,74 @@ async def _bash(cwd: Path, command: str, timeout_s: int = BASH_TIMEOUT_S) -> str
     if proc.returncode:
         return f"{text}\n[exit code {proc.returncode}]"
     return text or "[no output]"
+
+
+def _fn(name: str, description: str, properties: dict, required: list[str]) -> dict:
+    return {"type": "function", "function": {
+        "name": name, "description": description,
+        "parameters": {"type": "object", "properties": properties,
+                       "required": required}}}
+
+
+_STR = {"type": "string"}
+_BOOL = {"type": "boolean"}
+
+# Names are claude's, deliberately. Two reasons, and the first is not cosmetic:
+# engine_stream._EDIT_TOOLS matches these literals to decide which tool calls
+# changed a file, so a rename empties the edited-files list silently. The
+# second is that these are the names the model was trained to call.
+TOOLS = [
+    _fn("Read", "Read a UTF-8 text file from the project. Always read a file "
+                "before editing it.",
+        {"file_path": {**_STR, "description": "Path relative to the project root"}},
+        ["file_path"]),
+    _fn("Write", "Create or overwrite a file with the given content. Parent "
+                 "directories are created.",
+        {"file_path": _STR, "content": _STR}, ["file_path", "content"]),
+    _fn("Edit", "Replace an exact string in a file. old_string must appear "
+                "exactly once unless replace_all is true — include surrounding "
+                "context to make it unique.",
+        {"file_path": _STR, "old_string": _STR, "new_string": _STR,
+         "replace_all": _BOOL}, ["file_path", "old_string", "new_string"]),
+    _fn("Bash", "Run one shell command in the project directory. A non-zero "
+                "exit is reported, not raised.",
+        {"command": _STR}, ["command"]),
+    _fn("Grep", "Search file contents with a regular expression.",
+        {"pattern": _STR,
+         "path": {**_STR, "description": "Subdirectory to search; defaults to the project root"},
+         "glob": {**_STR, "description": "Filename filter, e.g. *.py"}},
+        ["pattern"]),
+    _fn("Glob", "List files matching a glob pattern, e.g. **/*.py.",
+        {"pattern": _STR}, ["pattern"]),
+]
+
+
+async def call(name: str, args: dict, cwd: Path) -> tuple[str, bool]:
+    """Run one tool call. Returns `(text, ok)` and never raises.
+
+    A bad argument, a missing file, a path outside the project: every one of
+    these is something the model can see and correct on the next turn. Letting
+    the exception escape would instead end the whole engine run over a mistake
+    that costs one turn to fix.
+    """
+    args = args if isinstance(args, dict) else {}
+    try:
+        if name == "Read":
+            return await _read(cwd, args["file_path"]), True
+        if name == "Write":
+            return await _write(cwd, args["file_path"], args["content"]), True
+        if name == "Edit":
+            return await _edit(cwd, args["file_path"], args["old_string"],
+                               args["new_string"], bool(args.get("replace_all"))), True
+        if name == "Bash":
+            return await _bash(cwd, args["command"]), True
+        if name == "Grep":
+            return await _grep(cwd, args["pattern"], args.get("path", ""),
+                               args.get("glob", "")), True
+        if name == "Glob":
+            return await _glob(cwd, args["pattern"]), True
+        return f"unknown tool: {name}", False
+    except KeyError as e:
+        return f"missing required argument: {e.args[0]}", False
+    except (ValueError, OSError) as e:
+        return str(e), False

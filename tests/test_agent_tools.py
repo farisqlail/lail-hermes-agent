@@ -193,3 +193,43 @@ async def test_bash_truncation_never_returns_more_than_it_received(tmp_path):
     out = await agent_tools._bash(
         tmp_path, f'"{sys.executable}" -c "print(\'y\' * {output_size})"')
     assert len(out) <= agent_tools.MAX_OUTPUT_CHARS
+
+
+def test_tool_names_match_claudes_exactly():
+    """engine_stream._EDIT_TOOLS matches literal names. Renaming Edit or
+    Write here empties the edited-files list with no error at all."""
+    from hermes.engine_stream import _EDIT_TOOLS
+    names = {t["function"]["name"] for t in agent_tools.TOOLS}
+    assert names == {"Read", "Edit", "Write", "Bash", "Grep", "Glob"}
+    assert {"Edit", "Write"} <= _EDIT_TOOLS
+
+
+def test_every_tool_declares_an_object_schema():
+    for t in agent_tools.TOOLS:
+        fn = t["function"]
+        assert t["type"] == "function"
+        assert fn["description"].strip()
+        assert fn["parameters"]["type"] == "object"
+
+
+async def test_call_dispatches_and_reports_ok(tmp_path):
+    (tmp_path / "a.txt").write_text("isi", encoding="utf-8")
+    text, ok = await agent_tools.call("Read", {"file_path": "a.txt"}, tmp_path)
+    assert ok and text == "isi"
+
+
+async def test_call_turns_a_scope_violation_into_a_failed_result(tmp_path):
+    """The model must be told and allowed to correct itself; an exception
+    escaping here would kill the whole engine run instead."""
+    text, ok = await agent_tools.call("Read", {"file_path": "../x"}, tmp_path)
+    assert not ok and "escapes project directory" in text
+
+
+async def test_call_unknown_tool_is_a_failed_result(tmp_path):
+    text, ok = await agent_tools.call("Nope", {}, tmp_path)
+    assert not ok and "unknown tool" in text.lower()
+
+
+async def test_call_missing_required_argument_is_a_failed_result(tmp_path):
+    text, ok = await agent_tools.call("Read", {}, tmp_path)
+    assert not ok and "file_path" in text
