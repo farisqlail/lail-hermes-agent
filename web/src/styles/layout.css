@@ -2476,3 +2476,187 @@ pre {
   /* No hover to reveal it on a touch screen. */
   .copy-btn { opacity: 1; }
 }
+
+/* --------------------------------------------------------------------------
+   Action Rows (Compact File Edit & Command Execution Display)
+   Matches Antigravity / Cursor / Claude Code tool call aesthetic
+   -------------------------------------------------------------------------- */
+.action-item-edited {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 3px 0;
+  margin: 3px 0;
+  user-select: text;
+}
+
+.action-item-edited .action-label {
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.action-item-edited .action-icon {
+  color: #d1d5db;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.action-item-edited .action-name {
+  color: #f3f4f6;
+  font-weight: 600;
+}
+
+.action-item-edited .action-added {
+  color: #22c55e;
+  font-weight: 500;
+  margin-left: 2px;
+}
+
+.action-item-edited .action-removed {
+  color: #ef4444;
+  font-weight: 500;
+}
+
+.action-item-command-batch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 3px 0;
+  margin: 4px 0;
+  color: #9ca3af;
+  user-select: none;
+}
+
+.action-item-command-batch .action-label {
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.action-item-command {
+  margin: 4px 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+}
+
+.action-item-command summary,
+.action-code-fold summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  outline: none;
+  padding: 3px 0;
+  color: #9ca3af;
+  user-select: none;
+  transition: color 0.12s ease;
+}
+
+.action-item-command summary::-webkit-details-marker,
+.action-code-fold summary::-webkit-details-marker {
+  display: none;
+}
+
+.action-item-command summary:hover,
+.action-code-fold summary:hover {
+  color: #f3f4f6;
+}
+
+.action-item-command .action-label {
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.action-item-command .action-cmd-text {
+  color: #e5e7eb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 680px;
+}
+
+.action-arrow {
+  color: #6b7280;
+  font-size: 14px;
+  margin-left: 4px;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+
+details[open] > summary .action-arrow {
+  transform: rotate(90deg);
+}
+
+.action-command-detail {
+  margin-top: 6px;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  background: #090c10;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: #e5e7eb;
+  overflow-x: auto;
+}
+
+.action-code-fold {
+  margin: 6px 0;
+}
+
+.action-code-fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.action-code-fold > summary:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.action-code-fold .action-label {
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.action-code-fold .action-icon {
+  color: #d1d5db;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.action-code-fold .action-name {
+  color: #f3f4f6;
+  font-weight: 600;
+}
+
+.action-code-fold .action-added {
+  color: #22c55e;
+  font-weight: 500;
+}
+
+.action-code-fold .action-removed {
+  color: #ef4444;
+  font-weight: 500;
+}
+
+.action-code-fold pre {
+  margin-top: 6px;
+  margin-bottom: 6px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+

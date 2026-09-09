@@ -18,12 +18,71 @@ export function renderMarkdown(src: string): string {
   const blocks: string[] = [];
   const SENT = String.fromCharCode(0); // sentinel that user text cannot contain
   
-  // Code blocks
-  s = s.replace(/```([\s\S]*?)```/g, (_, code) => {
-    blocks.push(`<pre class="md-pre"><code>${code.replace(/^\n+|\n+$/g, '')}</code></pre>`);
+  // Code blocks (fold long code or diffs into compact Edited <> action rows)
+  s = s.replace(/```([a-zA-Z0-9_\.\/-]*)\s*([\s\S]*?)```/g, (_, lang, rawCode) => {
+    const code = rawCode.replace(/^\n+|\n+$/g, '');
+    const lines = code.split('\n');
+
+    const l = (lang || '').toLowerCase();
+    const isDiff = l === 'diff' || l === 'patch' || lines.some(line => line.startsWith('+') || line.startsWith('-'));
+    const isLong = lines.length > 5;
+
+    if (isDiff || isLong) {
+      let added = 0;
+      let removed = 0;
+      for (const line of lines) {
+        if (line.startsWith('+') && !line.startsWith('+++')) added++;
+        else if (line.startsWith('-') && !line.startsWith('---')) removed++;
+      }
+      if (added === 0 && removed === 0 && isLong) {
+        added = lines.length;
+      }
+
+      const fileLabel = lang ? lang.replace(/^(diff|patch)\s*/i, '').trim() : '';
+      const cleanLabel = fileLabel || 'Code';
+
+      blocks.push(
+        `<details class="action-code-fold">` +
+          `<summary class="action-code-summary">` +
+            `<span class="action-label">Edited</span> ` +
+            `<span class="action-icon">&lt;&gt;</span> ` +
+            `<span class="action-name">${cleanLabel}</span> ` +
+            `<span class="action-added">+${added}</span> ` +
+            `<span class="action-removed">-${removed}</span>` +
+            `<span class="action-arrow">&#8250;</span>` +
+          `</summary>` +
+          `<pre class="md-pre"><code>${code}</code></pre>` +
+        `</details>`
+      );
+    } else {
+      blocks.push(`<pre class="md-pre"><code>${code}</code></pre>`);
+    }
     return SENT + (blocks.length - 1) + SENT;
   });
-  
+
+  // Action item: Edited <> Name +X -Y (matches Antigravity / Cursor file edits)
+  s = s.replace(/^[ \t]*Edited\s*(?:&lt;&gt;|<>)?[ \t]*([^+\-\n\r]+?)[ \t]*\+(\d+)[ \t]*\-(\d+)[ \t]*$/gm,
+    (_m, name, added, removed) =>
+      `<div class="action-item-edited"><span class="action-label">Edited</span> <span class="action-icon">&lt;&gt;</span> <span class="action-name">${name.trim()}</span> <span class="action-added">+${added}</span> <span class="action-removed">-${removed}</span></div>`
+  );
+
+  // Action item: Ran X commands (optional >)
+  s = s.replace(/^[ \t]*Ran\s+(\d+\s+commands?)(?:\s*(?:&gt;|>))?[ \t]*$/gm,
+    (_m, text) =>
+      `<div class="action-item-command-batch"><span class="action-label">Ran ${text}</span> <span class="action-arrow">&#8250;</span></div>`
+  );
+
+  // Action item: Ran/Run [command] (optional >)
+  s = s.replace(/^[ \t]*(Ran|Run)\s+([^\n\r]+?)(?:\s*(?:&gt;|>))?[ \t]*$/gm,
+    (_m, verb, cmd) => {
+      const trimmed = cmd.trim();
+      if (trimmed.includes('\\') || trimmed.includes('/') || trimmed.startsWith('node ') || trimmed.startsWith('npm ') || trimmed.startsWith('python ') || trimmed.startsWith('git ') || trimmed.startsWith('cargo ') || trimmed.startsWith('cat ') || trimmed.startsWith('ls ') || trimmed.startsWith('cd ')) {
+        return `<details class="action-item-command"><summary class="action-command-summary"><span class="action-label">${verb}</span> <span class="action-cmd-text">${trimmed}</span> <span class="action-arrow">&#8250;</span></summary><div class="action-command-detail"><code>${trimmed}</code></div></details>`;
+      }
+      return _m;
+    }
+  );
+
   // Inline code
   s = s.replace(/`([^`\n]+)`/g, '<code class="md-code">$1</code>');
   
@@ -129,6 +188,9 @@ export function renderMarkdown(src: string): string {
                     trimmed.startsWith('<blockquote') ||
                     trimmed.startsWith('<hr') ||
                     trimmed.startsWith('<pre') ||
+                    trimmed.startsWith('<details') ||
+                    trimmed.startsWith('</details') ||
+                    trimmed.startsWith('<div class="action-') ||
                     trimmed.startsWith('</table');
     
     finalHtml += line;
