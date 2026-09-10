@@ -298,6 +298,7 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
     # Write actions the chat agent proposed, awaiting operator approval (button
     # or voice). Executed only from the resolve endpoint, never in the tool loop.
     app.state.pending = app.state.engine.pending
+    app.state.active_tasks = {}
 
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR), check_dir=False), name="static")
     app.mount("/_next", StaticFiles(directory=str(STATIC_DIR / "_next"), check_dir=False), name="next_static")
@@ -690,6 +691,8 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             t = asyncio.create_task(bridge.handle_task(
                 user_id=0, chat_id=0, text=prompt, task_id=task_id,
                 trusted=True, **kwargs))
+            app.state.active_tasks[task_id] = t
+            t.add_done_callback(lambda _: app.state.active_tasks.pop(task_id, None))
             t.add_done_callback(_bg_crash_cb(store, task_id))
             return {"task_id": task_id, "status": "queued"}
         elif text.lower().startswith("/help"):
@@ -761,8 +764,65 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
         if not bridge:
             raise HTTPException(status_code=503, detail="Bridge not configured")
         t = asyncio.create_task(bridge.resolve_confirm(user_id=0, task_id=task_id, approved=body.approved, trusted=True))
+        app.state.active_tasks[task_id] = t
+        t.add_done_callback(lambda _: app.state.active_tasks.pop(task_id, None))
         t.add_done_callback(_bg_crash_cb(store, task_id))
         return {"ok": True}
+
+    @app.post("/api/tasks/{task_id}/cancel")
+    @app.post("/api/tasks/{task_id}/stop")
+    async def cancel_task_endpoint(task_id: str):
+        t = store.get_task(task_id)
+        if not t:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        status = t.get("status")
+        if status in ("done", "failed", "cancelled", "interrupted"):
+            return {"ok": True, "task_id": task_id, "status": status, "already_finished": True}
+
+        bridge = getattr(app.state, "bridge", None)
+        office = getattr(app.state, "office", None)
+        cancelled = False
+
+        # 1. If awaiting confirm in bridge
+        if bridge and task_id in getattr(bridge, "pending", {}):
+            await bridge.resolve_confirm(user_id=0, task_id=task_id, approved=False, trusted=True)
+            cancelled = True
+
+        # 2. If running via web_ui active_tasks
+        active_t = getattr(app.state, "active_tasks", {}).get(task_id)
+        if active_t and not active_t.done():
+            active_t.cancel()
+            cancelled = True
+
+        # 3. If bridge has cancel_task
+        if bridge and hasattr(bridge, "cancel_task"):
+            if await bridge.cancel_task(task_id):
+                cancelled = True
+
+        # 4. If office has cancel_task
+        if office and hasattr(office, "cancel_task"):
+            if office.cancel_task(task_id):
+                cancelled = True
+
+        # 5. Dismiss any active ask
+        ask_reg = getattr(app.state, "ask_registry", None)
+        if ask_reg:
+            active_ask = ask_reg.active_for_task(task_id)
+            if active_ask:
+                ask_reg.answer(active_ask.ask_id, "")
+
+        # 6. Ensure store status is marked cancelled
+        curr = store.get_task(task_id)
+        if curr and curr.get("status") in ("running", "queued", "awaiting_confirm"):
+            store.append_log(task_id, "Task stopped/cancelled by operator.")
+            store.set_task_status(task_id, "cancelled")
+            for s in store.get_steps(task_id):
+                if s.get("status") in ("running", "queued"):
+                    store.set_step_status(s.get("id"), "cancelled")
+            cancelled = True
+
+        return {"ok": True, "task_id": task_id, "status": "cancelled", "cancelled": cancelled}
 
     @app.post("/api/tasks/{task_id}/answer")
     async def answer_task(task_id: str, body: TaskAnswer):
@@ -1522,6 +1582,30 @@ def create_app(store: Store, bridge=None, ask_registry=None, chat=None,
             "enabled": s.stt_enabled,
             "language": s.stt_language,
         }
+
+    @app.post("/api/stt/install")
+    async def post_stt_install():
+        """Install faster-whisper in the running Python environment."""
+        import sys
+        import asyncio
+
+        cmd = [sys.executable, "-m", "pip", "install", "faster-whisper>=1.0"]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                import importlib
+                importlib.invalidate_caches()
+                return {"ok": True, "message": "faster-whisper berhasil diinstal"}
+            else:
+                err_msg = stderr.decode("utf-8", errors="replace").strip()
+                return {"ok": False, "error": f"Gagal menginstal: {err_msg[:300]}"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     @app.post("/api/stt")
     async def post_stt(request: Request):

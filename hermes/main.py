@@ -1422,6 +1422,26 @@ async def run():
                 t = asyncio.create_task(bridge.handle_task(update.effective_user.id, c, prompt))
                 t.add_done_callback(crash_reporter(c))
 
+            async def on_cancel(update: Update, ctx):
+                if not await check_auth_and_respond(update):
+                    return
+                c = update.effective_chat.id
+                text = (update.message.text or "").strip()
+                parts = text.split(maxsplit=1)
+                target_id = parts[1].strip() if len(parts) > 1 else None
+                if not target_id:
+                    tasks = [t for t in store.list_tasks() if t.get("chat_id") == c and t.get("status") in ("running", "queued", "awaiting_confirm")]
+                    if not tasks:
+                        await sender(c, "Tidak ada task yang sedang berjalan untuk dibatalkan.")
+                        return
+                    target_id = tasks[0]["task_id"]
+
+                ok = await bridge.cancel_task(target_id)
+                if ok:
+                    await sender(c, f"Task {target_id} berhasil dibatalkan.")
+                else:
+                    await sender(c, f"Gagal membatalkan task {target_id} (mungkin sudah selesai).")
+
             async def on_confirm(update: Update, ctx):
                 q = update.callback_query
                 await q.answer()
@@ -1728,6 +1748,7 @@ async def run():
                 t.add_done_callback(crash_reporter(c))
 
             app.add_handler(CommandHandler("task", on_task))
+            app.add_handler(CommandHandler(["cancel", "stop"], on_cancel))
             app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^confirm:"))
             app.add_handler(CallbackQueryHandler(on_ask, pattern=r"^ask:"))
             app.add_handler(CallbackQueryHandler(on_pending, pattern=r"^pend:"))

@@ -316,6 +316,18 @@ async def run_engine(engine: Literal["claude", "antigravity", "api"], prompt: st
             print(f"[timing engine] {engine} TIMEOUT after {time.monotonic() - _t0:.1f}s "
                   f"(limit {timeout_s}s, model={model or 'default'})")
             return RunResult(False, "", "", True, None)
+        except asyncio.CancelledError:
+            try:
+                if os.name == "nt":
+                    import subprocess as _sp
+                    _sp.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                            capture_output=True, timeout=5)
+                else:
+                    proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            raise
         print(f"[timing engine] {engine} {time.monotonic() - _t0:.1f}s "
               f"(model={model or 'default'}, effort={effort or 'default'})")
         stdout = out.decode(errors="replace")

@@ -534,7 +534,7 @@ function AppContent() {
             )}
 
             {path === '/task' && (
-              <div className="config-container">
+              <div className="config-container task-detail-container">
                 <TaskDetail />
               </div>
             )}

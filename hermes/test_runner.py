@@ -122,4 +122,16 @@ async def _default_unit_run(project_dir: Path, timeout_s: int) -> TestResult:
             return TestResult(False, None, detail)
     except FileNotFoundError:
         return TestResult(False, None, f"[WinError 2] The system cannot find the file specified: '{argv[0]}'")
+    except asyncio.CancelledError:
+        try:
+            if sys.platform == "win32":
+                import subprocess as _sp
+                _sp.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        capture_output=True, timeout=5)
+            else:
+                proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        raise
 

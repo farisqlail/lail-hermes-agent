@@ -110,7 +110,7 @@ async function run() {
 
   // 2. Also bundle SPA fallback via esbuild into hermes/static
   try {
-    await esbuild.build({
+    const esbuildPromise = esbuild.build({
       entryPoints: [path.join(__dirname, 'src/main.tsx')],
       bundle: true,
       outfile: path.join(hermesStaticDir, 'app.js'),
@@ -118,6 +118,10 @@ async function run() {
       loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
       define: { 'process.env.NODE_ENV': '"production"' },
     });
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('esbuild timed out after 3s')), 3000)
+    );
+    await Promise.race([esbuildPromise, timeoutPromise]);
     console.log(`[build] Successfully bundled SPA app.js and app.css to ${hermesStaticDir}`);
   } catch (e) {
     console.warn('[build] Note: esbuild fallback bundle skipped:', e.message);

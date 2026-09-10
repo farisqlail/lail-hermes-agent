@@ -48,11 +48,14 @@ hiddenimports += collect_submodules('pydantic')
 hiddenimports += collect_submodules('pydantic_settings')
 hiddenimports += collect_submodules('edge_tts')
 
-for pkg in ['uvicorn', 'fastapi', 'starlette', 'sse_starlette', 'edge_tts', 'mcp']:
-    d, b, h = collect_all(pkg)
-    datas += d
-    binaries += b
-    hiddenimports += h
+for pkg in ['uvicorn', 'fastapi', 'starlette', 'sse_starlette', 'edge_tts', 'mcp', 'faster_whisper', 'ctranslate2']:
+    try:
+        d, b, h = collect_all(pkg)
+        datas += d
+        binaries += b
+        hiddenimports += h
+    except Exception:
+        pass
 
 # Remove duplicates
 hiddenimports = list(set(hiddenimports))

@@ -410,9 +410,18 @@ class Orchestrator:
         self.store = store
         self.planner = planner          # async (text, tools) -> str
         self.deps = deps                # run_engine, build_apk, detect, test_*
+        self.running_tasks: dict[str, asyncio.Task] = {}
         # False on the one instance main.py builds and shares; True on the
         # per-task clone run_task makes. See run_task.
         self._task_local = False
+
+    def cancel_task(self, task_id: str) -> bool:
+        """Cancels a running or queued task execution."""
+        t = self.running_tasks.get(task_id)
+        if t and not t.done():
+            t.cancel()
+            return True
+        return False
 
     def get_settings(self):
         from . import config, paths
@@ -441,97 +450,115 @@ class Orchestrator:
         # whatever config.yaml currently holds — without it every task silently
         # reloads the global settings here, clobbering any per-call choice.
         self.settings = settings_override or self.get_settings()
-        self.store.set_task_status(task_id, "running")
-        # Captured before the workspace is created: afterwards the two cases are
-        # indistinguishable on disk, and an empty workspace detects as `unknown`
-        # exactly like an unrecognised existing project would.
-        is_new = proj is None
-        if proj is None:
-            # No registered project: fresh throwaway workspace, named for the task.
-            projects_path = self.settings.projects_path or str(paths.projects_dir())
-            proj = Path(projects_path) / task_id
-            proj.mkdir(parents=True, exist_ok=True)
-        # Snapshot the project *before* any step edits it, so the end-of-task
-        # summary reflects only this task's work. None for a non-git workspace.
-        from . import git_status
-        try:
-            snapshot = await git_status.start_snapshot(proj)
-        except Exception:
-            snapshot = None
-        await report(task_id, "planning...")
-        try:
-            raw = await self.planner(text, self._plan_context(proj, is_new, text))
-            try:
-                steps = parse_plan(raw)
-                validate_plan(steps, self.settings.default_test_mode)
-            except PlanShapeError as e:
-                # The planner understood the task well enough to write a plan —
-                # it just used its own JSON shape instead of ours: either no
-                # `steps` list at all (keyed "implementation_plan"), or steps
-                # shaped {step,name,details} with no `type`. Some models drift
-                # off-schema on nearly every call. Rather than fail a runnable
-                # request, degrade to what rule 1 says most tasks are anyway: a
-                # single code step over the original request. Reported, not
-                # silent, so the operator sees the planner misbehaved. A plain
-                # ValueError from validate_plan (e.g. an emulator test with no
-                # build) is a real, unrecoverable plan error and still fails.
-                if not text.strip():
-                    raise
-                steps = [{"type": "code", "prompt": text}]
-                await report(task_id,
-                             f"planner replied off-schema ({e}) — running the "
-                             f"task as a single code step.")
-        except Exception as e:
-            self.store.set_task_status(task_id, "failed")
-            raw_val = locals().get("raw", "")
-            msg = f"planning failed: {e}"
-            if raw_val:
-                msg += f"\n\nPlanner output:\n{raw_val}"
-            self.store.append_log(task_id, msg)
-            await report(task_id, msg)
-            return
+        current_t = asyncio.current_task()
+        if current_t:
+            self.running_tasks[task_id] = current_t
 
-        await report(task_id, f"plan ready: {len(steps)} step(s) — "
-                              + ", ".join(s.get("type", "?") for s in steps))
-        # One allowance for the whole task, not per step: a three-step plan
-        # that spends the cap on step 0 has still spent it.
-        budget = Budget(getattr(self.settings, "max_task_cost_usd", 0))
-        for i, step in enumerate(steps):
-            sid = self.store.add_step(task_id, i, step.get("type", "?"), json.dumps(step))
-            self.store.set_step_status(sid, "running")
-            await report(task_id, f"step {i} [{step.get('type')}] started...")
-            ok, msg = await self._run_step_with_repair(
-                task_id, proj, step, i, text, send_file, chat_id, budget, report, engine=engine)
-            self.store.set_step_status(sid, "done" if ok else "failed")
-            self.store.append_log(task_id, f"step {i} [{step.get('type')}]: {msg}")
-            await report(task_id, f"step {i} [{step.get('type')}]: {msg}")
-            if not ok:
+        try:
+            self.store.set_task_status(task_id, "running")
+            # Captured before the workspace is created: afterwards the two cases are
+            # indistinguishable on disk, and an empty workspace detects as `unknown`
+            # exactly like an unrecognised existing project would.
+            is_new = proj is None
+            if proj is None:
+                # No registered project: fresh throwaway workspace, named for the task.
+                projects_path = self.settings.projects_path or str(paths.projects_dir())
+                proj = Path(projects_path) / task_id
+                proj.mkdir(parents=True, exist_ok=True)
+            # Snapshot the project *before* any step edits it, so the end-of-task
+            # summary reflects only this task's work. None for a non-git workspace.
+            from . import git_status
+            try:
+                snapshot = await git_status.start_snapshot(proj)
+            except Exception:
+                snapshot = None
+            await report(task_id, "planning...")
+            try:
+                raw = await self.planner(text, self._plan_context(proj, is_new, text))
+                try:
+                    steps = parse_plan(raw)
+                    validate_plan(steps, self.settings.default_test_mode)
+                except PlanShapeError as e:
+                    # The planner understood the task well enough to write a plan —
+                    # it just used its own JSON shape instead of ours: either no
+                    # `steps` list at all (keyed "implementation_plan"), or steps
+                    # shaped {step,name,details} with no `type`. Some models drift
+                    # off-schema on nearly every call. Rather than fail a runnable
+                    # request, degrade to what rule 1 says most tasks are anyway: a
+                    # single code step over the original request. Reported, not
+                    # silent, so the operator sees the planner misbehaved. A plain
+                    # ValueError from validate_plan (e.g. an emulator test with no
+                    # build) is a real, unrecoverable plan error and still fails.
+                    if not text.strip():
+                        raise
+                    steps = [{"type": "code", "prompt": text}]
+                    await report(task_id,
+                                 f"planner replied off-schema ({e}) — running the "
+                                 f"task as a single code step.")
+            except Exception as e:
                 self.store.set_task_status(task_id, "failed")
-                return
-            if budget.exhausted and i + 1 < len(steps):
-                # Stop between steps too. The round-level check cannot see a
-                # plan that spends its allowance on step 0 and still has a
-                # build and a test queued behind it.
-                msg = (f"stopped before step {i + 1}: {budget.report()}")
-                self.store.set_task_status(task_id, "failed")
+                raw_val = locals().get("raw", "")
+                msg = f"planning failed: {e}"
+                if raw_val:
+                    msg += f"\n\nPlanner output:\n{raw_val}"
                 self.store.append_log(task_id, msg)
                 await report(task_id, msg)
                 return
-        self.store.set_task_status(task_id, "done")
-        # A change summary is a courtesy: a failure computing it must never
-        # turn a completed task into a reported failure.
-        try:
-            summary = await git_status.summarize_since(proj, snapshot)
-        except Exception:
-            summary = None
-        done_msg = "task complete" if not summary else f"task complete\n\n{summary}"
-        # The log feeds the web UI, which escapes what it renders — store the
-        # tag-free form so the summary reads as a table there too.
-        from . import tg_format
-        self.store.append_log(task_id, tg_format.plain_text(done_msg))
-        # The summary embeds a <pre> table, so it — and only it — goes out as
-        # HTML. Every other report is raw engine text that must not be parsed.
-        await report(task_id, done_msg, html=summary is not None)
+
+            await report(task_id, f"plan ready: {len(steps)} step(s) — "
+                                  + ", ".join(s.get("type", "?") for s in steps))
+            # One allowance for the whole task, not per step: a three-step plan
+            # that spends the cap on step 0 has still spent it.
+            budget = Budget(getattr(self.settings, "max_task_cost_usd", 0))
+            for i, step in enumerate(steps):
+                sid = self.store.add_step(task_id, i, step.get("type", "?"), json.dumps(step))
+                self.store.set_step_status(sid, "running")
+                await report(task_id, f"step {i} [{step.get('type')}] started...")
+                ok, msg = await self._run_step_with_repair(
+                    task_id, proj, step, i, text, send_file, chat_id, budget, report, engine=engine)
+                self.store.set_step_status(sid, "done" if ok else "failed")
+                self.store.append_log(task_id, f"step {i} [{step.get('type')}]: {msg}")
+                await report(task_id, f"step {i} [{step.get('type')}]: {msg}")
+                if not ok:
+                    self.store.set_task_status(task_id, "failed")
+                    return
+                if budget.exhausted and i + 1 < len(steps):
+                    # Stop between steps too. The round-level check cannot see a
+                    # plan that spends its allowance on step 0 and still has a
+                    # build and a test queued behind it.
+                    msg = (f"stopped before step {i + 1}: {budget.report()}")
+                    self.store.set_task_status(task_id, "failed")
+                    self.store.append_log(task_id, msg)
+                    await report(task_id, msg)
+                    return
+            self.store.set_task_status(task_id, "done")
+            # A change summary is a courtesy: a failure computing it must never
+            # turn a completed task into a reported failure.
+            try:
+                summary = await git_status.summarize_since(proj, snapshot)
+            except Exception:
+                summary = None
+            done_msg = "task complete" if not summary else f"task complete\n\n{summary}"
+            # The log feeds the web UI, which escapes what it renders — store the
+            # tag-free form so the summary reads as a table there too.
+            from . import tg_format
+            self.store.append_log(task_id, tg_format.plain_text(done_msg))
+            # The summary embeds a <pre> table, so it — and only it — goes out as
+            # HTML. Every other report is raw engine text that must not be parsed.
+            await report(task_id, done_msg, html=summary is not None)
+        except asyncio.CancelledError:
+            try:
+                for s in self.store.get_steps(task_id):
+                    if s.get("status") in ("running", "queued"):
+                        self.store.set_step_status(s.get("id"), "cancelled")
+                self.store.append_log(task_id, "Task stopped/cancelled by operator.")
+                self.store.set_task_status(task_id, "cancelled")
+                await report(task_id, "task cancelled by operator")
+            except Exception:
+                pass
+            raise
+        finally:
+            self.running_tasks.pop(task_id, None)
 
     def _plan_context(self, proj: Path, is_new: bool, text: str = "") -> str:
         """The project facts handed to the planner.

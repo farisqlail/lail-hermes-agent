@@ -14,6 +14,7 @@ import {
   Save,
   Activity,
   AlertCircle,
+  CheckCircle2,
 } from 'lucide-react';
 import {
   TtsVoice,
@@ -53,6 +54,7 @@ export function ConfigVoice() {
   const [sttLanguage, setSttLanguage] = useState('id');
   const [sttModel, setSttModel] = useState<'tiny' | 'base' | 'small' | 'medium' | 'large'>('base');
   const [sttStatus, setSttStatus] = useState<SttStatus | null>(null);
+  const [installingStt, setInstallingStt] = useState(false);
 
   useEffect(() => {
     fetchSttStatus()
@@ -119,6 +121,25 @@ export function ConfigVoice() {
       toast(errorMessage(err, 'Gagal menyimpan konfigurasi suara.'), 'err');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleInstallStt = async () => {
+    setInstallingStt(true);
+    toast('Memulai instalasi faster-whisper di background...');
+    try {
+      const res = await fetch('/api/stt/install', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.message || 'Gagal menginstal faster-whisper');
+      }
+      toast(data.message || 'faster-whisper berhasil diinstal!', 'ok');
+      const status = await fetchSttStatus();
+      setSttStatus(status);
+    } catch (err) {
+      toast(errorMessage(err, 'Gagal menginstal faster-whisper.'), 'err');
+    } finally {
+      setInstallingStt(false);
     }
   };
 
@@ -487,16 +508,51 @@ export function ConfigVoice() {
 
       {/* Section 6: Voice Input (STT) */}
       <section style={sectionStyle}>
-        <h3 style={headingStyle}>
-          <Mic size={16} style={{ color: 'var(--accent)' }} />
-          <span>Voice Input (STT)</span>
-        </h3>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+          <h3 style={{ ...headingStyle, marginBottom: 0 }}>
+            <Mic size={16} style={{ color: 'var(--accent)' }} />
+            <span>Voice Input (STT)</span>
+          </h3>
+          {sttStatus?.available && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: 'var(--t-sm)', color: 'var(--ok)' }}>
+              <CheckCircle2 size={14} />
+              faster-whisper terpasang
+            </span>
+          )}
+        </div>
 
         {sttStatus && !sttStatus.available && (
-          <p style={{ color: 'var(--warn)', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <AlertCircle size={14} />
-            faster-whisper belum terinstal.
-          </p>
+          <div style={{
+            backgroundColor: 'var(--surface-2)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--r-md)',
+            padding: '14px 16px',
+            marginBottom: '16px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--warn)' }}>
+              <AlertCircle size={16} />
+              <span style={{ fontWeight: 500, fontSize: 'var(--t-sm)' }}>
+                Modul faster-whisper belum terinstal
+              </span>
+            </div>
+            <p style={{ margin: 0, fontSize: 'var(--t-xs)', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+              Fitur input suara (Speech-to-Text) memerlukan library <code>faster-whisper</code> untuk mentranskripsi suara langsung secara lokal tanpa kuota API eksternal.
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' }}>
+              <Button
+                variant="primary"
+                type="button"
+                onClick={handleInstallStt}
+                loading={installingStt}
+                style={{ fontSize: 'var(--t-xs)', padding: '6px 14px' }}
+              >
+                📦 Install faster-whisper Sekarang
+              </Button>
+            </div>
+          </div>
         )}
 
         <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>

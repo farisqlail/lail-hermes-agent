@@ -168,6 +168,7 @@ export function InlineTaskCard({ taskId, tasks, confirming, onConfirm }: InlineT
   // three chat panes — `TasksProvider` wraps the whole app shell, so Office's
   // chats sit inside it exactly like the main dashboard does.
   const { activity } = useTasksContext();
+  const [cancelling, setCancelling] = useState(false);
   const task = tasks.find((t) => t.task_id === taskId);
 
   if (!task) {
@@ -234,7 +235,7 @@ export function InlineTaskCard({ taskId, tasks, confirming, onConfirm }: InlineT
         "{task.text}"
       </div>
 
-      {task.status === 'running' && (
+      {(task.status === 'running' || task.status === 'queued') && (
         <ClaudeThinkingIndicator since={task.created} activity={activity[task.task_id]} dim />
       )}
 
@@ -273,6 +274,24 @@ export function InlineTaskCard({ taskId, tasks, confirming, onConfirm }: InlineT
             </Button>
           </div>
         )}
+
+        {(task.status === 'running' || task.status === 'queued') && (
+          <div style={{ marginLeft: 'auto' }}>
+            <Button
+              variant="danger"
+              size="small"
+              onClick={async () => {
+                setCancelling(true);
+                await cancelTask(taskId);
+                setCancelling(false);
+              }}
+              disabled={cancelling}
+              style={{ padding: '2px 8px', fontSize: '9px', minHeight: '20px' }}
+            >
+              {cancelling ? 'Stopping...' : 'Stop'}
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -287,6 +306,15 @@ export async function confirmTask(taskId: string, approved: boolean): Promise<bo
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ approved }),
+  });
+  return res.ok;
+}
+
+/** Cancel/stop a running or queued orchestration task. */
+export async function cancelTask(taskId: string): Promise<boolean> {
+  const res = await fetch(`/api/tasks/${taskId}/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
   });
   return res.ok;
 }

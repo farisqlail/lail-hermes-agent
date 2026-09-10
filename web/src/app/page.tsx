@@ -33,6 +33,7 @@ import {
   X,
   Send,
   Sparkles,
+  Columns2,
 } from 'lucide-react';
 
 import '../styles/tokens.css';
@@ -68,6 +69,23 @@ function AppContent() {
     setIsSettingsOpen(true);
   }, []);
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
+
+  // Split Chat (Side-by-Side Dual Session) View State
+  const [isSplitView, setIsSplitView] = useState(false);
+  const [secondarySessionId, setSecondarySessionId] = useState<string | null>(null);
+
+  const toggleSplitView = useCallback(() => {
+    setIsSplitView((prev) => {
+      const next = !prev;
+      if (next && (!secondarySessionId || secondarySessionId === sessionId)) {
+        const other = sessions.find((s) => s.session_id !== sessionId);
+        if (other) {
+          setSecondarySessionId(other.session_id);
+        }
+      }
+      return next;
+    });
+  }, [sessionId, secondarySessionId, sessions]);
 
   // Pinned session IDs saved to localStorage
   const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
@@ -192,7 +210,12 @@ function AppContent() {
           inputEl.select();
         }
       }
-      // 8. Escape: Close modals
+      // 8. Split Chat toggle: Ctrl+\ or Cmd+\ (matching VS Code editor split)
+      else if ((e.ctrlKey || e.metaKey) && e.key === '\\') {
+        e.preventDefault();
+        toggleSplitView();
+      }
+      // 9. Escape: Close modals
       else if (e.key === 'Escape') {
         if (activeModal) {
           e.preventDefault();
@@ -205,7 +228,7 @@ function AppContent() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [createNewSession, activeModal, isSettingsOpen]);
+  }, [createNewSession, activeModal, isSettingsOpen, toggleSplitView]);
 
   const handleNavClick = (e: React.MouseEvent<HTMLAnchorElement>, hash: string) => {
     e.preventDefault();
@@ -526,13 +549,102 @@ function AppContent() {
 
         {/* Main Content Area */}
         <main className="main-content">
-          <div className="page-container">
+          <div className="page-container" style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
             {path === '/' && (
-              <Dashboard sessionId={sessionId} onRefreshSessions={fetchSessions} />
+              <>
+                {/* Header Toolbar (Split View Controls) */}
+                <div className="main-header-toolbar">
+                  <div className="main-header-left">
+                    <span className="main-header-title">
+                      {isSplitView
+                        ? '⚡ SPLIT WORKSPACE (DUAL CONCURRENT SESSIONS)'
+                        : (sessions.find((s) => s.session_id === sessionId)?.title || 'Lail Hermes Agent')}
+                    </span>
+                  </div>
+                  <div className="main-header-right">
+                    <button
+                      type="button"
+                      className={`split-chat-btn ${isSplitView ? 'active' : ''}`}
+                      onClick={toggleSplitView}
+                      title={
+                        isSplitView
+                          ? 'Tutup Split View (Kembali ke 1 jendela)'
+                          : 'Buka Split Chat (2 sesi chat aktif bersamaan seperti VS Code) — Ctrl+\\'
+                      }
+                    >
+                      <Columns2 size={14} />
+                      <span>{isSplitView ? 'Single View' : 'Split Chat'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {isSplitView ? (
+                  <div className="split-workspace-container">
+                    {/* Left Pane (Session 1) */}
+                    <div className="split-pane">
+                      <div className="split-pane-top-tab">
+                        <span className="split-pane-num">PANE 1</span>
+                        <select
+                          className="split-pane-select"
+                          value={sessionId || ''}
+                          onChange={(e) => navigate(e.target.value ? `#/session/${e.target.value}` : '#/')}
+                        >
+                          {sessions.map((s) => (
+                            <option key={s.session_id} value={s.session_id}>
+                              {s.title || 'Percakapan'}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="split-pane-content">
+                        <Dashboard sessionId={sessionId} onRefreshSessions={fetchSessions} isSplitView={true} />
+                      </div>
+                    </div>
+
+                    {/* Split Divider */}
+                    <div className="split-divider" />
+
+                    {/* Right Pane (Session 2) */}
+                    <div className="split-pane">
+                      <div className="split-pane-top-tab">
+                        <span className="split-pane-num">PANE 2</span>
+                        <select
+                          className="split-pane-select"
+                          value={secondarySessionId || ''}
+                          onChange={(e) => setSecondarySessionId(e.target.value)}
+                        >
+                          {sessions.map((s) => (
+                            <option key={s.session_id} value={s.session_id}>
+                              {s.title || 'Percakapan'}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="split-pane-close"
+                          title="Tutup Split View"
+                          onClick={() => setIsSplitView(false)}
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                      <div className="split-pane-content">
+                        <Dashboard
+                          sessionId={secondarySessionId || undefined}
+                          onRefreshSessions={fetchSessions}
+                          isSplitView={true}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <Dashboard sessionId={sessionId} onRefreshSessions={fetchSessions} />
+                )}
+              </>
             )}
 
             {path === '/task' && (
-              <div className="config-container">
+              <div className="config-container task-detail-container">
                 <TaskDetail />
               </div>
             )}

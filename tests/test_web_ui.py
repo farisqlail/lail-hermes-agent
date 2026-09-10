@@ -2150,3 +2150,61 @@ async def test_install_tap_fetches_and_installs_from_a_trusted_tap(hermes_home, 
 
     listed = client.get("/api/skills").json()
     assert len(listed) == 1 and listed[0]["content"] == "Isi panduan PDF."
+
+
+async def test_cancel_task_running_and_pending_endpoints(hermes_home):
+    paths.ensure_dirs()
+    store = Store(paths.db_path()); store.init_schema()
+
+    class FakeBridge:
+        def __init__(self):
+            self.pending = {}
+            self.confirm_reasons = {}
+            self.active_tasks = {}
+            self.cancelled_tasks = []
+        async def handle_task(self, user_id, chat_id, text, task_id=None, **kw):
+            store.create_task(task_id, chat_id, text)
+            store.set_task_status(task_id, "running")
+            # Hang until cancelled
+            await asyncio.sleep(10)
+        async def cancel_task(self, task_id):
+            self.cancelled_tasks.append(task_id)
+            store.set_task_status(task_id, "cancelled")
+            return True
+        async def resolve_confirm(self, user_id, task_id, approved, trusted=False):
+            self.pending.pop(task_id, None)
+            store.set_task_status(task_id, "cancelled" if not approved else "running")
+            return True
+
+    bridge = FakeBridge()
+    client = TestClient(create_app(store, bridge=bridge))
+
+    # 1. 404 for nonexistent task
+    r_404 = client.post("/api/tasks/not-a-task/cancel")
+    assert r_404.status_code == 404
+
+    # 2. Already finished task
+    store.create_task("t-done", 0, "finished task")
+    store.set_task_status("t-done", "done")
+    r_done = client.post("/api/tasks/t-done/cancel")
+    assert r_done.status_code == 200
+    assert r_done.json().get("already_finished") is True
+
+    # 3. Awaiting confirm task
+    store.create_task("t-pending", 0, "risky task")
+    store.set_task_status("t-pending", "awaiting_confirm")
+    bridge.pending["t-pending"] = (0, 0, "risky task", None, None)
+    r_pending = client.post("/api/tasks/t-pending/cancel")
+    assert r_pending.status_code == 200
+    assert r_pending.json().get("status") == "cancelled"
+    assert store.get_task("t-pending")["status"] == "cancelled"
+
+    # 4. Running task via active_tasks
+    r_submit = client.post("/api/tasks", json={"text": "/task sleep a while"})
+    tid = r_submit.json()["task_id"]
+    await asyncio.sleep(0.05)  # give loop a tick to start
+    r_cancel = client.post(f"/api/tasks/{tid}/cancel")
+    assert r_cancel.status_code == 200
+    assert r_cancel.json().get("status") == "cancelled"
+    assert store.get_task(tid)["status"] == "cancelled"
+

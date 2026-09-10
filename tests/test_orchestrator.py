@@ -1191,3 +1191,44 @@ def test_engine_sigil_accepts_api_and_9router():
     assert parse_engine_ref("!api perbaiki login")[0] == "api"
     assert parse_engine_ref("!9router perbaiki login")[0] == "api"
 
+
+async def test_orchestrator_cancel_task_aborts_and_marks_status_cancelled(hermes_home):
+    import asyncio
+    from hermes.engine_runner import RunResult
+    store = Store(hermes_home / "t.db"); store.init_schema()
+    settings = Settings(projects_path=str(hermes_home / "proj"), default_engine="claude")
+
+    plan = json.dumps({"steps": [
+        {"type": "code", "prompt": "step 0"},
+        {"type": "code", "prompt": "step 1"}
+    ]})
+
+    started = asyncio.Event()
+    async def fake_planner(t, tools):
+        return plan
+
+    async def fake_run_engine(*a, **k):
+        started.set()
+        await asyncio.sleep(10)
+        return RunResult(True, "out", "", False, 0)
+
+    orch = Orchestrator(settings, store, fake_planner, dict(run_engine=fake_run_engine))
+    async def report(tid, msg, html=False): pass
+
+    store.create_task("t_cancel", 0, "run and stop")
+    t = asyncio.create_task(orch.run_task("t_cancel", 0, "run and stop", report))
+
+    await started.wait()
+    assert orch.cancel_task("t_cancel") is True
+
+    try:
+        await t
+    except asyncio.CancelledError:
+        pass
+
+    assert store.get_task("t_cancel")["status"] == "cancelled"
+    steps = store.get_steps("t_cancel")
+    assert len(steps) >= 1
+    assert steps[0]["status"] == "cancelled"
+
+

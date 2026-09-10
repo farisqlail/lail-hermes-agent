@@ -230,6 +230,9 @@ class OfficeManager:
         try:
             text = await run_employee_completion(employee, prompt, secrets, settings)
             self.store.update_work_item(work_id, output_text=text, status="done")
+        except asyncio.CancelledError:
+            self.store.update_work_item(work_id, output_text="Work cancelled by operator", status="cancelled")
+            raise
         except Exception as e:
             self.store.update_work_item(work_id, output_text=f"error: {e}", status="failed")
         finally:
@@ -271,6 +274,9 @@ class OfficeManager:
             task = self.main_store.get_task(task_id)
             ok = bool(task) and task.get("status") == "done"
             self.store.update_work_item(work_id, status="done" if ok else "failed")
+        except asyncio.CancelledError:
+            self.store.update_work_item(work_id, status="cancelled", output_text="Work cancelled by operator")
+            raise
         except Exception as e:
             self.store.update_work_item(work_id, status="failed", output_text=f"error: {e}")
         finally:
@@ -317,6 +323,12 @@ class OfficeManager:
         work, _task = self._spawn_employee_work(
             employee, prompt, project, team_id=employee.get("team_id"))
         return work
+
+    def cancel_task(self, task_id: str) -> bool:
+        """Cancels an employee's task via the orchestrator."""
+        if self.orchestrator and hasattr(self.orchestrator, "cancel_task"):
+            return self.orchestrator.cancel_task(task_id)
+        return False
 
     def _least_busy(self, members: list[dict]) -> dict:
         """Picks the member with the fewest open (queued/running) work_items,

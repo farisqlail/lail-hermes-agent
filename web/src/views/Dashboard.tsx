@@ -96,9 +96,10 @@ interface DashboardProps {
   onSelectNode?: (node: { id: string; label: string; type: string; details?: string; status?: string } | null) => void;
   isDrawerOpen?: boolean;
   onToggleDrawer?: () => void;
+  isSplitView?: boolean;
 }
 
-export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawerOpen, onToggleDrawer }: DashboardProps) {
+export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawerOpen, onToggleDrawer, isSplitView }: DashboardProps) {
   const { isConnected } = useTasks();
   const { tasks } = useTasksContext();
   const { toast } = useToast();
@@ -1169,7 +1170,7 @@ export function Dashboard({ sessionId, onRefreshSessions, onSelectNode, isDrawer
   }, [messages]);
 
   return (
-    <div className="page-container" style={{ position: 'relative' }}>
+    <div className={`page-container ${isSplitView ? 'is-split-view' : ''}`} style={{ position: 'relative' }}>
       {/* Cognitive Server Disconnection Bar */}
       {!isConnected && (
         <div

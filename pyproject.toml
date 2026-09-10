@@ -18,6 +18,8 @@ dependencies = [
   # GitHub App auth for the PR-review chat tool (hermes/github_app.py) —
   # RS256-signs the App JWT used to mint installation access tokens.
   "PyJWT[crypto]>=2.8",
+  # STT for voice input: local faster-whisper transcription
+  "faster-whisper>=1.0",
 ]
 
 [project.optional-dependencies]

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import re, secrets, time
+import asyncio, re, secrets, time
 from pathlib import Path
 from .config import Settings
 from .session_store import Store
@@ -80,6 +80,7 @@ class TelegramBridge:
         self.send_file = send_file
         self.pending: dict[str, tuple[int, int, str, Path | None, str | None]] = {}
         self.confirm_reasons: dict[str, list[str]] = {}
+        self.active_tasks: dict[str, asyncio.Task] = {}
 
     def get_settings(self):
         from . import config, paths
@@ -183,7 +184,13 @@ class TelegramBridge:
         elif chat_id > 0:
             await self.sender(chat_id, f"Task {task_id} queued.")
         decided("running", reasons)
-        await self._run(task_id, chat_id, text, proj, engine)
+        cur_t = asyncio.current_task()
+        if cur_t:
+            self.active_tasks[task_id] = cur_t
+        try:
+            await self._run(task_id, chat_id, text, proj, engine)
+        finally:
+            self.active_tasks.pop(task_id, None)
         return task_id
 
     async def resolve_confirm(self, user_id: int, task_id: str, approved: bool,
@@ -205,8 +212,38 @@ class TelegramBridge:
             await self.sender(chat_id, f"Task {task_id} cancelled.")
             return True
         await self.sender(chat_id, f"Task {task_id} confirmed, queued.")
-        await self._run(task_id, chat_id, text, proj, engine)
+        cur_t = asyncio.current_task()
+        if cur_t:
+            self.active_tasks[task_id] = cur_t
+        try:
+            await self._run(task_id, chat_id, text, proj, engine)
+        finally:
+            self.active_tasks.pop(task_id, None)
         return True
+
+    async def cancel_task(self, task_id: str) -> bool:
+        """Cancels a task if it is pending confirmation, running, or queued."""
+        # 1. If awaiting confirm
+        if task_id in self.pending:
+            return await self.resolve_confirm(user_id=0, task_id=task_id, approved=False, trusted=True)
+        # 2. If running via orchestrator
+        if hasattr(self.orchestrator, "cancel_task") and self.orchestrator.cancel_task(task_id):
+            return True
+        # 3. If running via active_tasks
+        t = self.active_tasks.get(task_id)
+        if t and not t.done():
+            t.cancel()
+            return True
+        # 4. Fallback: if status in store is running or queued, cancel it directly
+        cur = self.store.get_task(task_id)
+        if cur and cur.get("status") in ("running", "queued"):
+            self.store.append_log(task_id, "Task stopped/cancelled by operator.")
+            self.store.set_task_status(task_id, "cancelled")
+            for s in self.store.get_steps(task_id):
+                if s.get("status") in ("running", "queued"):
+                    self.store.set_step_status(s.get("id"), "cancelled")
+            return True
+        return False
 
     async def _run(self, task_id: str, chat_id: int, text: str,
                    proj: Path | None = None, engine: str | None = None):
