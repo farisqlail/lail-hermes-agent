@@ -2,8 +2,6 @@ import React, { useState, useEffect } from 'react';
 import {
   Box,
   Cpu,
-  Clock,
-  Smartphone,
   MessageSquare,
   FolderGit2,
   Mic,
@@ -28,8 +26,6 @@ import { ConfigProvider } from '../views/ConfigProvider';
 import { ConfigSkills } from '../views/ConfigSkills';
 import { ConfigChat } from '../views/ConfigChat';
 import { ConfigEngines } from '../views/ConfigEngines';
-import { ConfigTimeouts } from '../views/ConfigTimeouts';
-import { ConfigAndroid } from '../views/ConfigAndroid';
 import { ConfigTelegram } from '../views/ConfigTelegram';
 import { ConfigSecrets } from '../views/ConfigSecrets';
 import { ConfigMcp } from '../views/ConfigMcp';
@@ -44,8 +40,6 @@ export type SettingsTab =
   | 'model'
   | 'chat'
   | 'engine'
-  | 'timeouts'
-  | 'android'
   | 'telegram'
   | 'workspace'
   | 'voice'
@@ -261,24 +255,6 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
               >
                 <Cpu size={14} className="nav-icon" />
                 <span>Execution Engines</span>
-              </button>
-
-              <button
-                type="button"
-                className={`settings-nav-btn ${activeTab === 'timeouts' ? 'active' : ''}`}
-                onClick={() => setActiveTab('timeouts')}
-              >
-                <Clock size={14} className="nav-icon" />
-                <span>Timeouts & Budget</span>
-              </button>
-
-              <button
-                type="button"
-                className={`settings-nav-btn ${activeTab === 'android' ? 'active' : ''}`}
-                onClick={() => setActiveTab('android')}
-              >
-                <Smartphone size={14} className="nav-icon" />
-                <span>Android & Testing</span>
               </button>
 
               <button
@@ -516,21 +492,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'model' }: Props) 
               </div>
             )}
 
-            {/* 4. TIMEOUTS & BUDGET TAB */}
-            {activeTab === 'timeouts' && (
-              <div className="settings-tab-panel">
-                <ConfigTimeouts />
-              </div>
-            )}
-
-            {/* 5. ANDROID & EMULATORS TAB */}
-            {activeTab === 'android' && (
-              <div className="settings-tab-panel">
-                <ConfigAndroid />
-              </div>
-            )}
-
-            {/* 6. TELEGRAM BOT TAB */}
+            {/* 4. TELEGRAM BOT TAB */}
             {activeTab === 'telegram' && (
               <div className="settings-tab-panel">
                 <ConfigTelegram />

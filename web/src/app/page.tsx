@@ -132,6 +132,22 @@ function AppContent() {
     setSidebarTab(path === '/office' ? 'office' : 'sessions');
   }, [path]);
 
+  // Zero-Page-Switching: If #/task/:id is directly visited, redirect into the owning chat session or office
+  useEffect(() => {
+    if (path === '/task' && taskId) {
+      fetch(`/api/tasks/${taskId}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.task?.session_id) {
+            navigate(`#/session/${data.task.session_id}`);
+          } else if (data?.task?.origin === 'office') {
+            navigate('#/office');
+          }
+        })
+        .catch(() => {});
+    }
+  }, [path, taskId, navigate]);
+
   const createNewSession = useCallback(async () => {
     try {
       const res = await fetch('/api/sessions', { method: 'POST' });

@@ -103,7 +103,14 @@ def build_persona_system_prompt(employee: dict, settings, interactive: bool = Tr
         for sk in wanted:
             body = skills_mod.read_skill_file(base, sk.id)
             if body and body.get("content"):
-                lines.append(f"\n--- Skill: {sk.name or sk.id} ---\n{body['content']}")
+                lines.append(f"\n--- Primary Skill: {sk.name or sk.id} ---\n{body['content']}")
+
+    other_skills = [s for s in settings.skills if s.enabled and s.id not in skill_ids]
+    if other_skills:
+        lines.append("\nAvailable team skills: if relevant to the task, invoke `use_skill(name)` to follow full instructions:")
+        for s in other_skills:
+            desc = (s.description or "").strip()
+            lines.append(f"- {s.name}: {desc}" if desc else f"- {s.name}")
 
     lines.append(
         "\nRespond directly with the finished work product for whatever task "

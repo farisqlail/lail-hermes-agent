@@ -75,7 +75,8 @@ def active_project(tasks: list[dict]) -> str:
 
 
 def context_block(facts: list[dict], tasks: list[dict], projects: list[str],
-                  now: datetime | None = None) -> str:
+                  now: datetime | None = None,
+                  skills: list[dict] | None = None) -> str:
     """The situational preamble, as one system message.
 
     Always non-empty: even with no facts and no tasks, the clock and the
@@ -100,6 +101,15 @@ def context_block(facts: list[dict], tasks: list[dict], projects: list[str],
                   for t in live[:5]]
     else:
         lines.append("Tidak ada task yang sedang berjalan.")
+
+    if skills:
+        lines.append("")
+        lines.append("# Skill Terpasang & Siap Pakai")
+        lines.append("Bila permintaan pengguna relevan dengan keahlian berikut, kamu WAJIB memanggil `use_skill` dengan nama skill persis untuk membaca panduan instruksi lengkapnya:")
+        for sk in skills:
+            name = sk.get("name") or ""
+            desc = (sk.get("description") or "").strip()
+            lines.append(f"- {name}: {desc}" if desc else f"- {name}")
 
     if facts:
         lines.append("")

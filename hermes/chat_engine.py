@@ -790,10 +790,13 @@ class ChatEngine:
 
     def brain_context(self) -> dict:
         s = config.load_settings()
+        skills_summary = [{"name": sk.name, "description": sk.description}
+                          for sk in s.skills if sk.enabled]
         return {"role": "system",
                 "content": brain.context_block(self.store.list_facts(),
                                                self.store.list_tasks(limit=20),
-                                               list(s.projects))}
+                                               list(s.projects),
+                                               skills=skills_summary)}
 
     def history_with_context(self, sid: str, images: list[Path] | None = None,
                              documents: list[Path] | None = None,
@@ -817,8 +820,8 @@ class ChatEngine:
                            "content": uploads.as_content_parts(said, images or [], documents)}
         return history
 
-    async def history_for_turn(self, sid: str, text: str, images: list[Path] | None,
-                               dispatch, documents: list[Path] | None = None,
+    async def history_for_turn(self, sid: str, text: str, images: list[Path] | None = None,
+                               dispatch=None, documents: list[Path] | None = None,
                                system_override: str | None = None,
                                reply_quote_text: str | None = None,
                                reply_quote_role: str | None = None,
@@ -831,6 +834,30 @@ class ChatEngine:
                 self.history_with_context, sid, images, documents, system_override)
         else:
             history = self.history_with_context(sid, images, documents, system_override)
+
+        # /skill <name> <request> fast-path: inlines the skill immediately without tool rounds
+        skill_match = re.match(r"^/skill\s+([\w-]+)(?:\s+(.*))?$", (text or "").strip(), re.DOTALL | re.IGNORECASE)
+        if skill_match:
+            skill_name = skill_match.group(1).strip()
+            rest_text = (skill_match.group(2) or "").strip()
+            s = config.load_settings()
+            sk = next((sk for sk in s.skills if sk.enabled and (sk.name.lower() == skill_name.lower() or sk.id.lower() == skill_name.lower())), None)
+            if sk:
+                on_disk = skills.read_skill_file(paths.skills_dir(), sk.id)
+                if on_disk and on_disk.get("content"):
+                    skill_instruction = (
+                        f"--- INSTRUKSI SKILL AKTIF: {sk.name} ---\n"
+                        f"{on_disk['content']}\n"
+                        f"Ikuti seluruh instruksi skill di atas secara ketat saat menyelesaikan permintaan."
+                    )
+                    # Insert right before the current turn's user message so user message remains last
+                    insert_pos = max(0, len(history) - 1)
+                    history.insert(insert_pos, {"role": "system", "content": skill_instruction})
+                    if rest_text:
+                        text = rest_text
+                        if history and history[-1]["role"] == "user" and isinstance(history[-1]["content"], str):
+                            history[-1]["content"] = rest_text
+
         # Quote prefix is model-facing only — the stored row keeps the raw
         # text plus the snippet/role separately for the UI's own quote box.
         # reply_quote_text is the snippet itself (captured client-side at

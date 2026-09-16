@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { useTasksContext } from '../api/events';
-import { ClaudeThinkingIndicator } from './TaskCard';
+import { ClaudeThinkingIndicator, InlineTaskCard } from './TaskCard';
 import { WorkItem } from '../api/types';
 import { FileText, MessageSquare, Users2, Crown, Gavel, Loader2, CheckCircle2, XCircle, Clock, ChevronRight, ChevronDown } from 'lucide-react';
 
@@ -162,9 +162,7 @@ export function WorkOutputFeed({ employeeId, teamId }: { employeeId?: string; te
             />
           )}
           {item.kind === 'code_task' && item.task_id ? (
-            <a href={`#/task/${item.task_id}`} style={{ fontSize: '11px', color: 'var(--accent)' }}>
-              View task run →
-            </a>
+            <InlineTaskCard taskId={item.task_id} />
           ) : item.output_text ? (
             <div style={{ fontSize: '12px', color: 'var(--text)', whiteSpace: 'pre-wrap', opacity: 0.9 }}>
               {item.output_text}

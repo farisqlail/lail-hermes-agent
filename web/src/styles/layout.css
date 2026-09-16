@@ -3191,4 +3191,28 @@ details[open] > summary .action-arrow {
   max-width: 100% !important;
 }
 
+/* --- Antigravity-Style Inline Chat Task Execution Block --- */
+.antigravity-inline-task-card {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.antigravity-inline-task-card:hover {
+  border-color: rgba(59, 130, 246, 0.35) !important;
+}
+
+.antigravity-inline-task-card .pulsing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  animation: pulseDot 1.4s ease-in-out infinite;
+  display: inline-block;
+}
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 0.4; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
 

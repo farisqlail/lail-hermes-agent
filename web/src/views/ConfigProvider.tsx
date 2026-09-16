@@ -193,21 +193,6 @@ export function ConfigProvider() {
         />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '14px' }}>
-        <Field label="Planner Temperature" helpText="Suhu kreativitas planner (Disarankan 0.0)">
-          <input
-            type="number"
-            step="0.1"
-            min="0"
-            max="2"
-            className="field-input"
-            value={formState.planner_temperature ?? 0.0}
-            onChange={(e) => handleChange('planner_temperature', parseFloat(e.target.value) || 0.0)}
-            required
-          />
-        </Field>
-      </div>
-
       <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '4px' }}>
         <Button variant="primary" type="submit" loading={saving}>
           <Save size={13} />

@@ -133,3 +133,18 @@ def test_step_status_event_carries_its_kind(tmp_path):
     store.set_step_status(sid, "running")
     status_events = [e for e in seen if e["type"] == "step_status"]
     assert status_events[0]["kind"] == "build"
+
+
+def test_context_block_includes_active_skills():
+    out = brain.context_block(
+        facts=[],
+        tasks=[],
+        projects=[],
+        skills=[
+            {"name": "code-simplifier", "description": "Review and simplify code"},
+            {"name": "test-runner", "description": ""}
+        ]
+    )
+    assert "# Skill Terpasang & Siap Pakai" in out
+    assert "- code-simplifier: Review and simplify code" in out
+    assert "- test-runner" in out

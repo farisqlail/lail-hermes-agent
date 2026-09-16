@@ -595,3 +595,27 @@ def test_figma_schema_caps_container_nesting_at_two_levels():
     assert "STACK" not in level2["properties"]["type"]["enum"]
     assert "children" not in level2["properties"]
 
+
+async def test_history_for_turn_skill_fast_path(hermes_home, monkeypatch):
+    from hermes import paths, skills
+    store = _store(hermes_home)
+    store.add_message("tg-fast", "user", "/skill test-skill tolong optimasi ini")
+    engine = ChatEngine(store)
+
+    sk_dir = hermes_home / "skills" / "test-skill"
+    sk_dir.mkdir(parents=True)
+    (sk_dir / "SKILL.md").write_text("# Test Skill Instruction\nDo things efficiently.", encoding="utf-8")
+
+    from hermes import config
+    config.save_settings(config.Settings(skills=[
+        Skill(id="test-skill", name="test-skill", description="A test skill", enabled=True)
+    ]))
+
+    history, task_id = await engine.history_for_turn("tg-fast", "/skill test-skill tolong optimasi ini")
+    system_msgs = [m["content"] for m in history if m["role"] == "system"]
+    assert any("INSTRUKSI SKILL AKTIF: test-skill" in sm for sm in system_msgs)
+    assert any("Do things efficiently" in sm for sm in system_msgs)
+    # Ensure the user prompt text was stripped of the /skill prefix
+    assert history[-1]["role"] == "user"
+    assert history[-1]["content"] == "tolong optimasi ini"
+
